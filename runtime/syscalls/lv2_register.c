@@ -11,6 +11,7 @@
  */
 
 #include <stdlib.h>   /* calloc, free */
+#include <stdatomic.h>
 #include "ps3emu/nid.h"   /* ps3_compute_nid (static inline) */
 #include "lv2_syscall_table.h"
 #include "lv2_lock_line.h"
@@ -24,6 +25,7 @@
 #include "sys_memory.h"
 #include "sys_vm.h"
 #include "sys_fs.h"
+#include "../ps3_console.h"
 extern void sys_rsx_init(lv2_syscall_table* tbl);   /* libs/video/sys_rsx.c */
 extern void sys_raw_spu_init(lv2_syscall_table* tbl);   /* runtime/spu/spu_raw.c */
 extern void spu_raw_note_image(uint32_t src_ea, uint32_t entry);
@@ -45,9 +47,15 @@ extern void spu_raw_note_image(uint32_t src_ea, uint32_t entry);
 
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include "../platform/win32_compat.h"   /* QueryPerformanceCounter shim for the SPU_SPEED timing */
 #include "ps3emu/log_first.h"
+
+#if !defined(_WIN32)
+extern long timezone; /* seconds west of UTC, set by tzset() */
+extern int daylight;
+#endif
 
 /* ---------------------------------------------------------------------------
  * TTY syscalls (used by PS3 CRT for debug output)
@@ -68,12 +76,9 @@ static int64_t sys_tty_write(ppu_context* ctx)
     uint32_t len    = (uint32_t)ctx->gpr[5];
     uint32_t pwr_ea = (uint32_t)ctx->gpr[6];
 
-    (void)ch; /* channel number, ignored */
-
     if (buf_ea && len > 0 && vm_base) {
-        /* Write guest string data to host stderr */
-        fwrite(vm_base + buf_ea, 1, len, stderr);
-        fflush(stderr);
+        /* Keep guest diagnostics out of the host warning/error stream. */
+        ps3_console_write_tty(ch, vm_base + buf_ea, len);
         /* TTY_BT=<substring>: dump the guest LR back-chain whenever the title
          * prints a line containing it. The two hooks below do exactly this for
          * one hardcoded string each, which only ever helped the title they were
@@ -254,13 +259,23 @@ static int64_t sys_tty_read(ppu_context* ctx)
 #define SPU_GROUP_STATE_RUNNING      2
 #define SPU_GROUP_STATE_STOPPED      3
 #define SPU_GROUP_STATE_DESTROYED    4
+#define SPU_GROUP_STATE_SUSPENDED    5
 
 #define SPU_GROUP_CAUSE_GROUP_EXIT        0x0001u
 #define SPU_GROUP_CAUSE_ALL_THREADS_EXIT  0x0002u
 #define SPU_GROUP_CAUSE_TERMINATED        0x0004u
 
 #define MAX_SPU_GROUPS   32
+
+/* RPCS3_REFERENCE_REVIEWED: group-event types and keys follow the LV2 ABI
+ * contract in RPCS3 sys_spu.h. No RPCS3 implementation body is copied. */
+#define SYS_SPU_THREAD_GROUP_EVENT_RUN           1u
+#define SYS_SPU_THREAD_GROUP_EVENT_EXCEPTION     2u
+#define SYS_SPU_THREAD_GROUP_EVENT_SYSTEM_MODULE 4u
+#define SYS_SPU_THREAD_GROUP_EVENT_RUN_KEY UINT64_C(0xFFFFFFFF53505500)
+#define SYS_SPU_THREAD_GROUP_TYPE_COOPERATE_WITH_SYSTEM 0x20u
 #define MAX_SPU_THREADS  (MAX_SPU_GROUPS * 8)
+#define MAX_SPU_QUEUE_BINDINGS 32
 
 #ifdef _WIN32
 #  include <windows.h>
@@ -336,24 +351,27 @@ typedef struct {
      * queue. Keeping a single connected_queue let the second bind clobber
      * the first, so every reply went to the printf server and the PPU
      * waiting on the command queue never woke. */
-    struct { uint32_t spup; uint32_t queue; } evt_bind[8];
+    struct { uint32_t spup; uint32_t queue; } evt_bind[64];
     int                 evt_bind_n;
+    struct { uint32_t number; uint32_t queue_id; } spuq[MAX_SPU_QUEUE_BINDINGS];
 } spu_thread_t;
 
 typedef struct {
     int      in_use;
     uint32_t id;
-    int      state;
+    atomic_int state;
+    atomic_int stop_requested;
     uint32_t num_threads;
     uint32_t thread_indices[8];  /* table index into s_spu_threads */
     char     name[32];
+    uint32_t type;               /* sys_spu_thread_group_attribute.type */
     int32_t  exit_status;        /* final ppu-side status the group reports */
     uint32_t cause;              /* how the group ended */
-    /* Event queue connected via sys_spu_thread_group_connect_event[_all_threads].
-     * When the group transitions to STOPPED (in group_join), an event is pushed
-     * into this queue with source = SYS_SPU_THREAD_GROUP_EVENT (0x100..) so
-     * PPU code blocked on sys_event_queue_receive wakes up. */
+    /* Queues connected by event type. RUN receives the group-start event;
+     * EXCEPTION and SYSTEM_MODULE are independent event-port connections. */
     uint32_t event_queue_id;
+    uint32_t exception_event_queue_id;
+    uint32_t sysmodule_event_queue_id;
     uint32_t user_event_ports[64];
 } spu_group_t;
 
@@ -362,6 +380,13 @@ static spu_thread_t s_spu_threads[MAX_SPU_THREADS];
 static uint32_t     s_spu_next_group_id  = 0x1000;
 static uint32_t     s_spu_next_thread_id = 0x2000;
 static int          s_spu_initialized    = 0;
+static atomic_uint  s_spu_suspended_groups;
+
+/* The lifted SPU dispatcher and interpreter call spu_group_pause_point at
+ * safe execution boundaries. This gives group suspend/resume real cooperative
+ * effect without suspending host threads in the middle of a guest memory op. */
+static SRWLOCK s_spu_group_pause_lock = SRWLOCK_INIT;
+static CONDITION_VARIABLE s_spu_group_pause_cv = CONDITION_VARIABLE_INIT;
 
 static spu_group_t* spu_find_group(uint32_t id)
 {
@@ -372,6 +397,31 @@ static spu_group_t* spu_find_group(uint32_t id)
     return NULL;
 }
 
+void spu_group_pause_point(uint32_t group_id)
+{
+    if (!atomic_load_explicit(&s_spu_suspended_groups, memory_order_acquire))
+        return;
+    spu_group_t* g = spu_find_group(group_id);
+    if (!g) return;
+
+    AcquireSRWLockExclusive(&s_spu_group_pause_lock);
+    while (g->in_use && g->id == group_id &&
+           atomic_load_explicit(&g->state, memory_order_acquire) == SPU_GROUP_STATE_SUSPENDED &&
+           !atomic_load(&g->stop_requested)) {
+        if (!SleepConditionVariableSRW(&s_spu_group_pause_cv,
+                                       &s_spu_group_pause_lock, INFINITE, 0))
+            break;
+    }
+    ReleaseSRWLockExclusive(&s_spu_group_pause_lock);
+}
+
+/* Published after the exit status/cause, consumed at SPU safe points. */
+static int spu_group_stop_requested(uint32_t id)
+{
+    spu_group_t* g = spu_find_group(id);
+    return g && atomic_load(&g->stop_requested);
+}
+
 static spu_group_t* spu_alloc_group(void)
 {
     for (int i = 0; i < MAX_SPU_GROUPS; i++) {
@@ -379,7 +429,8 @@ static spu_group_t* spu_alloc_group(void)
             memset(&s_spu_groups[i], 0, sizeof(s_spu_groups[i]));
             s_spu_groups[i].in_use = 1;
             s_spu_groups[i].id     = s_spu_next_group_id++;
-            s_spu_groups[i].state  = SPU_GROUP_STATE_INITIALIZED;
+            atomic_init(&s_spu_groups[i].state, SPU_GROUP_STATE_INITIALIZED);
+            atomic_init(&s_spu_groups[i].stop_requested, 0);
             s_spu_groups[i].exit_status = 0;
             s_spu_groups[i].cause  = SPU_GROUP_CAUSE_ALL_THREADS_EXIT;
             return &s_spu_groups[i];
@@ -529,6 +580,7 @@ static int64_t sys_spu_thread_group_create_handler(ppu_context* ctx)
         gtype          = (int32_t)vm_read_be32(attr_ea + 8);
         if (!nsize) name_ea = 0;
     }
+    g->type = (uint32_t)gtype;
     if (name_ea && vm_base) {
         const char* src = (const char*)(vm_base + name_ea);
         size_t i = 0;
@@ -721,12 +773,18 @@ static void* spu_exec_thread_proc(void* arg)
     if (r.group_exit) {
         spu_group_t* g = spu_find_group(t->group_id);
         if (g) {
+            AcquireSRWLockExclusive(&s_spu_group_pause_lock);
+            if (!atomic_load(&g->stop_requested)) {
             g->exit_status = r.group_status;
             /* Say the group exited on its own request. group_join used to
              * overwrite the cause unconditionally, which made a guest-initiated
              * sys_spu_thread_group_exit indistinguishable from every thread
              * simply running out. */
             g->cause = SPU_GROUP_CAUSE_GROUP_EXIT;
+            atomic_store(&g->stop_requested, 1);
+            }
+            WakeAllConditionVariable(&s_spu_group_pause_cv);
+            ReleaseSRWLockExclusive(&s_spu_group_pause_lock);
         }
     }
 #ifdef _WIN32
@@ -956,18 +1014,104 @@ static int spu_thread_image_id(const spu_thread_t* t)
     return spu_thread_image(t, &src, &fp, &iid, &registered) && registered ? iid : 0;
 }
 
+static int64_t sys_spu_thread_group_suspend_handler(ppu_context* ctx)
+{
+    const uint32_t id = (uint32_t)ctx->gpr[3];
+    spu_group_t* g = spu_find_group(id);
+    int32_t rc = CELL_OK;
+
+    if (!g) {
+        rc = CELL_ESRCH;
+    } else if ((g->type & 0xF00u) ||
+               (g->type & SYS_SPU_THREAD_GROUP_TYPE_COOPERATE_WITH_SYSTEM)) {
+        rc = CELL_EINVAL;
+    } else {
+        AcquireSRWLockExclusive(&s_spu_group_pause_lock);
+        const int state = atomic_load_explicit(&g->state, memory_order_acquire);
+        if (state == SPU_GROUP_STATE_RUNNING) {
+            atomic_store_explicit(&g->state, SPU_GROUP_STATE_SUSPENDED, memory_order_release);
+            atomic_fetch_add_explicit(&s_spu_suspended_groups, 1, memory_order_release);
+        } else if (state != SPU_GROUP_STATE_SUSPENDED) {
+            rc = state == SPU_GROUP_STATE_DESTROYED ? CELL_ESRCH : CELL_ESTAT;
+        }
+        ReleaseSRWLockExclusive(&s_spu_group_pause_lock);
+    }
+
+    ctx->gpr[3] = (uint64_t)(int64_t)rc;
+    return rc;
+}
+
+static int64_t sys_spu_thread_group_resume_handler(ppu_context* ctx)
+{
+    const uint32_t id = (uint32_t)ctx->gpr[3];
+    spu_group_t* g = spu_find_group(id);
+    int32_t rc = CELL_OK;
+
+    if (!g) {
+        rc = CELL_ESRCH;
+    } else if ((g->type & 0xF00u) ||
+               (g->type & SYS_SPU_THREAD_GROUP_TYPE_COOPERATE_WITH_SYSTEM)) {
+        rc = CELL_EINVAL;
+    } else {
+        AcquireSRWLockExclusive(&s_spu_group_pause_lock);
+        const int state = atomic_load_explicit(&g->state, memory_order_acquire);
+        if (state == SPU_GROUP_STATE_SUSPENDED) {
+            atomic_store_explicit(&g->state, SPU_GROUP_STATE_RUNNING, memory_order_release);
+            atomic_fetch_sub_explicit(&s_spu_suspended_groups, 1, memory_order_release);
+            WakeAllConditionVariable(&s_spu_group_pause_cv);
+        } else {
+            rc = state == SPU_GROUP_STATE_DESTROYED ? CELL_ESRCH : CELL_ESTAT;
+        }
+        ReleaseSRWLockExclusive(&s_spu_group_pause_lock);
+    }
+
+    ctx->gpr[3] = (uint64_t)(int64_t)rc;
+    return rc;
+}
+
+static int64_t sys_spu_thread_group_yield_handler(ppu_context* ctx)
+{
+    const uint32_t id = (uint32_t)ctx->gpr[3];
+    spu_group_t* g = spu_find_group(id);
+    int32_t rc = CELL_OK;
+
+    if (!g) {
+        rc = CELL_ESRCH;
+    } else if (!(g->type & 0xF00u) &&
+               atomic_load_explicit(&g->state, memory_order_acquire) != SPU_GROUP_STATE_RUNNING) {
+        rc = atomic_load_explicit(&g->state, memory_order_relaxed) == SPU_GROUP_STATE_DESTROYED
+            ? CELL_ESRCH : CELL_ESTAT;
+    }
+
+    ctx->gpr[3] = (uint64_t)(int64_t)rc;
+    return rc;
+}
+
 /* sys_spu_thread_group_start(id) */
 static int64_t sys_spu_thread_group_start_handler(ppu_context* ctx)
 {
     uint32_t id = (uint32_t)ctx->gpr[3];
     spu_group_t* g = spu_find_group(id);
     if (!g) { ctx->gpr[3] = (uint64_t)(int64_t)-1; return -1; }
+    extern int (*g_spu_group_stop_hook)(uint32_t);
+    g_spu_group_stop_hook = spu_group_stop_requested;
+    atomic_store(&g->stop_requested, 0);
     g->state = SPU_GROUP_STATE_RUNNING;
     /* This run has produced no cause yet. group_join now preserves a cause a
      * thread reported, so a group id started a second time has to begin with a
      * clean one or it would report the previous run's exit forever. */
     g->cause       = 0;
     g->exit_status = 0;
+
+    /* Deliver the typed RUN event before the SPU threads start, matching the
+     * LV2 group-start contract consumed by SPURS' PPU handler. */
+    if (g->event_queue_id) {
+        extern int sys_event_queue_push_by_id(uint32_t, uint64_t, uint64_t,
+                                             uint64_t, uint64_t);
+        (void)sys_event_queue_push_by_id(g->event_queue_id,
+                                         SYS_SPU_THREAD_GROUP_EVENT_RUN_KEY,
+                                         id, 0, 0);
+    }
 
     /* DIAG (YDKJ_INSTDUMP): dump the CellSpurs instance at group_start time, to
      * see whether libsre has populated it BEFORE the SPU kernel threads spawn.
@@ -1032,7 +1176,7 @@ static int64_t sys_spu_thread_group_start_handler(ppu_context* ctx)
          * as a real SPU would, with group_join waiting on it exactly as it
          * waits on a fallback thread. Images with no lifted code fall through
          * to the fallback and interpreter paths below, unchanged. */
-        if (spu_lifted_thread_available(t->entry_point)) {
+        if (spu_lifted_thread_available_for_image(t->entry_point, t->img_ea)) {
             if (!t->sctx) t->sctx = (spu_context*)calloc(1, sizeof(spu_context));
             if (t->sctx) {
                 spu_lifted_thread_desc d;
@@ -1254,14 +1398,15 @@ static int64_t sys_spu_thread_group_join_handler(ppu_context* ctx)
      * worst exit status. Real SPU group_join is a blocking syscall —
      * games rely on it to know all SPU work is done before reading
      * back results. */
-    if (g->state == SPU_GROUP_STATE_RUNNING) {
+    if (g->state == SPU_GROUP_STATE_RUNNING ||
+        g->state == SPU_GROUP_STATE_SUSPENDED) {
         int32_t worst = 0;
         for (int i = 0; i < 8 && i < (int)g->num_threads; i++) {
             uint32_t idx = g->thread_indices[i];
             if (idx >= MAX_SPU_THREADS) continue;
             spu_thread_t* t = &s_spu_threads[idx];
             if (!t->in_use) continue;
-            if (t->running) {
+            if (t->running || t->host_thread) {
 #ifdef _WIN32
                 if (t->finish_event)
                     WaitForSingleObject(t->finish_event, INFINITE);
@@ -1275,6 +1420,7 @@ static int64_t sys_spu_thread_group_join_handler(ppu_context* ctx)
                     pthread_cond_wait(&t->finish_event.cv, &t->finish_event.mu);
                 pthread_mutex_unlock(&t->finish_event.mu);
                 pthread_join(t->host_thread, NULL);
+                t->host_thread = 0;
                 pthread_mutex_destroy(&t->finish_event.mu);
                 pthread_cond_destroy(&t->finish_event.cv);
 #endif
@@ -1295,23 +1441,11 @@ static int64_t sys_spu_thread_group_join_handler(ppu_context* ctx)
         g->state       = SPU_GROUP_STATE_STOPPED;
     }
 
-    /* Notify any connected event queue. Real PS3 sends a SYS_SPU_THREAD_GROUP
-     * event with type-specific data; we collapse to a "group stopped" tag
-     * (data1 = group_id, data2 = exit_status, data3 = cause). PPU code
-     * blocked in sys_event_queue_receive on this queue wakes up here. */
-    if (g->event_queue_id) {
-        sys_event_queue_push_by_id(g->event_queue_id,
-                                   (uint64_t)g->id,
-                                   (uint64_t)(int64_t)g->exit_status,
-                                   (uint64_t)g->cause,
-                                   0);
-    }
-
     vm_write_be32(cause_ea,  g->cause);
     vm_write_be32(status_ea, (uint32_t)g->exit_status);
 
-    fprintf(stderr, "[SPU] group_join id=0x%X cause=%u status=%d (event_queue=0x%X)\n",
-            id, g->cause, g->exit_status, g->event_queue_id);
+    fprintf(stderr, "[SPU] group_join id=0x%X cause=%u status=%d\n",
+            id, g->cause, g->exit_status);
     fflush(stderr);
     ctx->gpr[3] = 0;
     return 0;
@@ -1335,6 +1469,11 @@ static int64_t sys_spu_thread_group_destroy_handler(ppu_context* ctx)
     }
     spu_group_t* g = spu_find_group(id);
     if (g) {
+        AcquireSRWLockExclusive(&s_spu_group_pause_lock);
+        if (atomic_exchange_explicit(&g->state, SPU_GROUP_STATE_DESTROYED,
+                                     memory_order_acq_rel) == SPU_GROUP_STATE_SUSPENDED)
+            atomic_fetch_sub_explicit(&s_spu_suspended_groups, 1, memory_order_release);
+        WakeAllConditionVariable(&s_spu_group_pause_cv);
         for (int i = 0; i < 8 && i < (int)g->num_threads; i++) {
             uint32_t idx = g->thread_indices[i];
             if (idx < MAX_SPU_THREADS) {
@@ -1351,6 +1490,7 @@ static int64_t sys_spu_thread_group_destroy_handler(ppu_context* ctx)
             }
         }
         g->in_use = 0;
+        ReleaseSRWLockExclusive(&s_spu_group_pause_lock);
     }
     fprintf(stderr, "[SPU] group_destroy id=0x%X  caller_lr=0x%08X cia=0x%08X r3..r6=%08X %08X %08X %08X\n",
             id, (uint32_t)ctx->lr, (uint32_t)ctx->cia,
@@ -1361,21 +1501,67 @@ static int64_t sys_spu_thread_group_destroy_handler(ppu_context* ctx)
     return 0;
 }
 
-/* sys_spu_thread_group_terminate(id, exit_status) */
+/* RPCS3_REFERENCE_REVIEWED: group termination requests stop on every member,
+ * wakes cooperative waiters, and waits for the group to quiesce before return.
+ * This maps that contract onto ps3recomp's stop hook and finish events. */
 static int64_t sys_spu_thread_group_terminate_handler(ppu_context* ctx)
 {
     uint32_t id     = (uint32_t)ctx->gpr[3];
     int32_t  status = (int32_t)ctx->gpr[4];
     spu_group_t* g = spu_find_group(id);
+    int32_t rc = CELL_ESRCH;
     if (g) {
-        g->state = SPU_GROUP_STATE_STOPPED;
-        g->cause = SPU_GROUP_CAUSE_TERMINATED;
-        g->exit_status = status;
+        int state = atomic_load_explicit(&g->state, memory_order_acquire);
+        if (state == SPU_GROUP_STATE_DESTROYED) {
+            rc = CELL_ESRCH;
+        } else if (state != SPU_GROUP_STATE_RUNNING &&
+                   state != SPU_GROUP_STATE_SUSPENDED) {
+            rc = CELL_ESTAT;
+        } else {
+            /* RPCS3 sets stop+return on every member, wakes blocked SPUs, and
+             * waits until they have actually stopped before returning. Our
+             * interpreter/lifted dispatch observes this group flag at its
+             * cooperative safe points. Keep the state RUNNING until those
+             * workers finish so group_join cannot mistake a pending stop for
+             * a completed group. */
+            AcquireSRWLockExclusive(&s_spu_group_pause_lock);
+            if (atomic_load_explicit(&g->stop_requested, memory_order_acquire)) {
+                rc = CELL_ESTAT;
+            } else {
+                g->exit_status = status;
+                g->cause = SPU_GROUP_CAUSE_TERMINATED;
+                atomic_store_explicit(&g->stop_requested, 1, memory_order_release);
+                WakeAllConditionVariable(&s_spu_group_pause_cv);
+                rc = CELL_OK;
+            }
+            ReleaseSRWLockExclusive(&s_spu_group_pause_lock);
+
+            if (rc == CELL_OK) {
+                for (int i = 0; i < 8 && i < (int)g->num_threads; i++) {
+                    uint32_t idx = g->thread_indices[i];
+                    if (idx >= MAX_SPU_THREADS) continue;
+                    spu_thread_t* t = &s_spu_threads[idx];
+                    if (!t->in_use || (!t->running && !t->host_thread)) continue;
+#ifdef _WIN32
+                    if (t->finish_event)
+                        WaitForSingleObject(t->finish_event, INFINITE);
+#else
+                    pthread_mutex_lock(&t->finish_event.mu);
+                    while (!t->finish_event.done)
+                        pthread_cond_wait(&t->finish_event.cv, &t->finish_event.mu);
+                    pthread_mutex_unlock(&t->finish_event.mu);
+#endif
+                }
+                atomic_store_explicit(&g->state, SPU_GROUP_STATE_STOPPED,
+                                      memory_order_release);
+            }
+        }
     }
-    fprintf(stderr, "[SPU] group_terminate id=0x%X status=%d\n", id, status);
+    fprintf(stderr, "[SPU] group_terminate id=0x%X status=%d -> 0x%08X\n",
+            id, status, (uint32_t)rc);
     fflush(stderr);
-    ctx->gpr[3] = 0;
-    return 0;
+    ctx->gpr[3] = (uint64_t)(int64_t)rc;
+    return rc;
 }
 
 /* sys_spu_thread_get_exit_status(tid, *status)
@@ -1574,24 +1760,51 @@ static int64_t sys_spu_thread_write_spu_mb_handler(ppu_context* ctx)
 }
 
 /* sys_spu_thread_group_connect_event(group_id, queue_id, event_type)
- *
- * Bind a lifecycle SYS_EVENT queue to the group; we record queue_id so
- * group_join can push a completion event. Sony's docs distinguish event
- * types (group state changes vs SPU-emitted user events) but we collapse
- * them into "the queue gets notified when the group transitions to
- * STOPPED" — sufficient for the common SPURS pattern. */
+ * Connect the event type's dedicated LV2 event port to a queue. */
 static int64_t sys_spu_thread_group_connect_event_handler(ppu_context* ctx)
 {
     uint32_t group_id = (uint32_t)ctx->gpr[3];
     uint32_t queue_id = (uint32_t)ctx->gpr[4];
+    uint32_t event_type = (uint32_t)ctx->gpr[5];
     spu_group_t* g = spu_find_group(group_id);
     if (!g) {
         ctx->gpr[3] = (uint64_t)(int64_t)(int32_t)0x80010005; /* CELL_ESRCH */
         return -1;
     }
-    g->event_queue_id = queue_id;
-    fprintf(stderr, "[SPU] group_connect_event group=0x%X queue=0x%X\n",
-            group_id, queue_id);
+    uint32_t* slot = NULL;
+    if (event_type == SYS_SPU_THREAD_GROUP_EVENT_RUN)
+        slot = &g->event_queue_id;
+    else if (event_type == SYS_SPU_THREAD_GROUP_EVENT_EXCEPTION)
+        slot = &g->exception_event_queue_id;
+    else if (event_type == SYS_SPU_THREAD_GROUP_EVENT_SYSTEM_MODULE)
+        slot = &g->sysmodule_event_queue_id;
+    if (!slot) {
+        int32_t rc = CELL_EINVAL;
+        ctx->gpr[3] = (uint64_t)(int64_t)rc;
+        return rc;
+    }
+    if (!queue_id) {
+        int32_t rc = CELL_ESRCH;
+        ctx->gpr[3] = (uint64_t)(int64_t)rc;
+        return rc;
+    }
+    if (event_type == SYS_SPU_THREAD_GROUP_EVENT_SYSTEM_MODULE &&
+        !(g->type & SYS_SPU_THREAD_GROUP_TYPE_COOPERATE_WITH_SYSTEM)) {
+        ctx->gpr[3] = (uint64_t)(int64_t)(int32_t)CELL_EINVAL;
+        return CELL_EINVAL;
+    }
+    if (*slot) {
+        ctx->gpr[3] = (uint64_t)(int64_t)(int32_t)CELL_EBUSY;
+        return (int64_t)(int32_t)CELL_EBUSY;
+    }
+    extern int sys_event_queue_is_active(uint32_t);
+    if (!sys_event_queue_is_active(queue_id)) {
+        ctx->gpr[3] = (uint64_t)(int64_t)(int32_t)CELL_ESRCH;
+        return (int64_t)(int32_t)CELL_ESRCH;
+    }
+    *slot = queue_id;
+    fprintf(stderr, "[SPU] group_connect_event group=0x%X queue=0x%X type=%u\n",
+            group_id, queue_id, event_type);
     fflush(stderr);
     ctx->gpr[3] = 0;
     return 0;
@@ -1712,9 +1925,16 @@ static int spu_deliver_user_event(spu_context* spu, uint32_t value)
 static int64_t sys_spu_thread_group_disconnect_event_handler(ppu_context* ctx)
 {
     uint32_t group_id = (uint32_t)ctx->gpr[3];
+    uint32_t event_type = (uint32_t)ctx->gpr[4];
     spu_group_t* g = spu_find_group(group_id);
-    if (g) g->event_queue_id = 0;
-    fprintf(stderr, "[SPU] group_disconnect_event group=0x%X\n", group_id);
+    if (g && event_type == SYS_SPU_THREAD_GROUP_EVENT_RUN)
+        g->event_queue_id = 0;
+    else if (g && event_type == SYS_SPU_THREAD_GROUP_EVENT_EXCEPTION)
+        g->exception_event_queue_id = 0;
+    else if (g && event_type == SYS_SPU_THREAD_GROUP_EVENT_SYSTEM_MODULE)
+        g->sysmodule_event_queue_id = 0;
+    fprintf(stderr, "[SPU] group_disconnect_event group=0x%X type=%u\n",
+            group_id, event_type);
     fflush(stderr);
     ctx->gpr[3] = 0;
     return 0;
@@ -1732,23 +1952,142 @@ static int64_t sys_spu_thread_connect_event_handler(ppu_context* ctx)
     uint32_t et  = (uint32_t)ctx->gpr[5];
     spu_thread_t* t = spu_find_thread(tid);
     uint32_t spup = (uint32_t)ctx->gpr[6];
-    if (t) {
-        /* First binding stays the default for anything we cannot port-route. */
-        if (!t->connected_queue) { t->connected_queue = eq; t->connect_spup = spup; }
+    int32_t rc = CELL_OK;
+    if (!t || !sys_event_queue_is_active(eq)) {
+        rc = CELL_ESRCH;
+    } else if (et != 1u || spup > 63u) {
+        rc = CELL_EINVAL;
+    } else {
         AcquireSRWLockExclusive(&s_spu_port_lock);
         int slot = -1;
-        for (int i = 0; i < t->evt_bind_n; i++)
-            if (t->evt_bind[i].spup == spup) { slot = i; break; }
-        if (slot < 0 && t->evt_bind_n < 8) slot = t->evt_bind_n++;
-        if (slot >= 0) { t->evt_bind[slot].spup = spup; t->evt_bind[slot].queue = eq; }
-        WakeAllConditionVariable(&s_spu_port_bound);
+        for (int i = 0; i < 64; i++) {
+            if (t->evt_bind[i].spup == spup && t->evt_bind[i].queue) {
+                rc = CELL_EISCONN;
+                break;
+            }
+            if (slot < 0 && !t->evt_bind[i].queue)
+                slot = i;
+        }
+        if (rc == CELL_OK && slot < 0) {
+            rc = CELL_EAGAIN;
+        } else if (rc == CELL_OK) {
+            t->evt_bind[slot].spup = spup;
+            t->evt_bind[slot].queue = eq;
+            if (t->evt_bind_n < 64) t->evt_bind_n++;
+            /* Preserve the default route for values without a matching port. */
+            if (!t->connected_queue) {
+                t->connected_queue = eq;
+                t->connect_spup = spup;
+            }
+            WakeAllConditionVariable(&s_spu_port_bound);
+        }
         ReleaseSRWLockExclusive(&s_spu_port_lock);
     }
-    fprintf(stderr, "[SPU] thread_connect_event tid=0x%X queue=0x%X et=0x%X spup=0x%X%s\n",
-            tid, eq, et, (uint32_t)ctx->gpr[6], t ? "" : " (thread not found)");
+    fprintf(stderr, "[SPU] thread_connect_event tid=0x%X queue=0x%X et=0x%X spup=0x%X -> 0x%08X\n",
+            tid, eq, et, spup, (uint32_t)rc);
     fflush(stderr);
-    ctx->gpr[3] = 0;
-    return 0;
+    ctx->gpr[3] = (uint64_t)(int64_t)rc;
+    return rc;
+}
+
+static int64_t sys_spu_thread_disconnect_event_handler(ppu_context* ctx)
+{
+    const uint32_t tid = (uint32_t)ctx->gpr[3];
+    const uint32_t et = (uint32_t)ctx->gpr[4];
+    const uint32_t spup = (uint32_t)ctx->gpr[5];
+    spu_thread_t* t = spu_find_thread(tid);
+    int32_t rc = CELL_OK;
+
+    if (!t) {
+        rc = CELL_ESRCH;
+    } else if (et != 1u || spup > 63u) {
+        rc = CELL_EINVAL;
+    } else {
+        int found = 0;
+        for (int i = 0; i < 64; i++) {
+            if (t->evt_bind[i].queue && t->evt_bind[i].spup == spup) {
+                t->evt_bind[i].queue = 0;
+                found = 1;
+                break;
+            }
+        }
+        if (!found) {
+            rc = CELL_ENOTCONN;
+        } else if (t->connect_spup == spup) {
+            t->connected_queue = 0;
+            for (int i = 0; i < 64; i++) {
+                if (t->evt_bind[i].queue) {
+                    t->connected_queue = t->evt_bind[i].queue;
+                    t->connect_spup = t->evt_bind[i].spup;
+                    break;
+                }
+            }
+        }
+    }
+
+    ctx->gpr[3] = (uint64_t)(int64_t)rc;
+    return rc;
+}
+
+static int64_t sys_spu_thread_bind_queue_handler(ppu_context* ctx)
+{
+    const uint32_t tid = (uint32_t)ctx->gpr[3];
+    const uint32_t queue_id = (uint32_t)ctx->gpr[4];
+    const uint32_t queue_number = (uint32_t)ctx->gpr[5];
+    spu_thread_t* t = spu_find_thread(tid);
+    int32_t rc = CELL_OK;
+
+    if (!t || !sys_event_queue_is_active(queue_id)) {
+        rc = CELL_ESRCH;
+    } else if (queue_id == 0 || queue_id > SYS_EVENT_QUEUE_MAX ||
+               g_sys_event_queues[queue_id - 1].type != SYS_SPU_QUEUE) {
+        rc = CELL_EINVAL;
+    } else {
+        int free_slot = -1;
+        for (int i = 0; i < MAX_SPU_QUEUE_BINDINGS; i++) {
+            const uint32_t existing_queue = t->spuq[i].queue_id;
+            if (!existing_queue) {
+                if (free_slot < 0) free_slot = i;
+                continue;
+            }
+            if (t->spuq[i].number == queue_number || existing_queue == queue_id) {
+                rc = CELL_EBUSY;
+                break;
+            }
+        }
+        if (rc == CELL_OK) {
+            if (free_slot < 0) rc = CELL_EAGAIN;
+            else {
+                t->spuq[free_slot].number = queue_number;
+                t->spuq[free_slot].queue_id = queue_id;
+            }
+        }
+    }
+
+    ctx->gpr[3] = (uint64_t)(int64_t)rc;
+    return rc;
+}
+
+static int64_t sys_spu_thread_unbind_queue_handler(ppu_context* ctx)
+{
+    const uint32_t tid = (uint32_t)ctx->gpr[3];
+    const uint32_t queue_number = (uint32_t)ctx->gpr[4];
+    spu_thread_t* t = spu_find_thread(tid);
+    int32_t rc = CELL_ESRCH;
+
+    if (t) {
+        for (int i = 0; i < MAX_SPU_QUEUE_BINDINGS; i++) {
+            if (t->spuq[i].queue_id && t->spuq[i].number == queue_number) {
+                t->spuq[i].number = 0;
+                t->spuq[i].queue_id = 0;
+                rc = CELL_OK;
+                break;
+            }
+        }
+    }
+
+    ctx->gpr[3] = (uint64_t)(int64_t)rc;
+    return rc;
 }
 
 /* SPU -> PPU outbound mailbox delivery. Installed into spu_channels.c's
@@ -2127,6 +2466,32 @@ static int64_t sys_spu_image_import_handler(ppu_context* ctx)
     return 0;
 }
 
+/* sys_spu_image_close(img) invalidates the local image descriptor. Imported
+ * images use a bump-allocated segment arena here, so the arena is not reclaimed;
+ * this still rejects malformed descriptors instead of reporting false success. */
+static int64_t sys_spu_image_close_handler(ppu_context* ctx)
+{
+    const uint32_t img_ea = (uint32_t)ctx->gpr[3];
+    int32_t rc = CELL_OK;
+    if (!vm_base || !img_ea || img_ea > UINT32_MAX - 16u ||
+        (ppu_vm_size && (uint64_t)img_ea + 16u > ppu_vm_size)) {
+        rc = CELL_EFAULT;
+    } else {
+        const uint32_t type = vm_read_be32(img_ea + 0x00);
+        const uint32_t segs = vm_read_be32(img_ea + 0x08);
+        const uint32_t nsegs = vm_read_be32(img_ea + 0x0C);
+        if (type != 0 || nsegs > 32 || (nsegs && !segs) ||
+            (nsegs && (uint64_t)segs + (uint64_t)nsegs * 0x18u > UINT32_MAX)) {
+            rc = CELL_EINVAL;
+        } else {
+            memset(vm_base + img_ea, 0, 16);
+            vm_write_be32(img_ea, UINT32_MAX);
+        }
+    }
+    ctx->gpr[3] = (uint64_t)(int64_t)rc;
+    return rc;
+}
+
 /* sys_spu_image_open(*img, *path) — load an SPU ELF from the VFS, parse its
  * ELF32 header, and write the entry point + USER image type into the
  * sys_spu_image struct. The actual segment/code data isn't materialised
@@ -2315,12 +2680,11 @@ static int64_t sys_process_get_sdk_version_handler(ppu_context* ctx)
  * r3 = effective address, r4 = access-right flags (SPU_THR 0x2, RAW_SPU 0x1).
  * Asks lv2 whether SPUs may place lock-line reservations -- GETLLAR/PUTLLC --
  * on a range. SPURS calls it while validating its management areas during
- * cellSpursInitialize, and treats a failure as a reason to abort init, so the
- * unimplemented-syscall handler's CELL_ENOSYS takes a title down a path that
- * ends in a null management pointer rather than anywhere that names this.
+ * cellSpursInitialize, and treats a failure as a reason to abort init. The
+ * generic success stub cannot answer this address predicate or set output data.
  *
- * The number has been in lv2_syscall_table.h since it was written and nothing
- * ever registered a handler for it.
+ * This call is implemented below because a success-only generic fallback
+ * cannot answer the address predicate the SPURS initializer needs.
  *
  * Contract from RPCS3's sys_process.cpp
  * (process_is_spu_lock_line_reservation_address), classified by the guest
@@ -2428,11 +2792,82 @@ extern void vm_write64(uint64_t a, uint64_t v);
 
 
 
-static int64_t sys_spu_thread_stub(ppu_context* ctx)
+/* Names used by the compatibility handlers below. */
+static const char* sys_unimplemented_name(uint32_t num)
 {
-    (void)ctx;
-    ctx->gpr[3] = 0;
-    return 0;
+    switch (num) {
+    case SYS_FSW_CONNECT_EVENT: return "sys_fsw_connect_event";
+    case SYS_FSW_DISCONNECT_EVENT: return "sys_fsw_disconnect_event";
+    case SYS_DECI3_OPEN: return "sys_deci3_open";
+    case SYS_DECI3_CREATE_EVENT_PATH: return "sys_deci3_create_event_path";
+    default: return "unknown";
+    }
+}
+
+/* RPCS3 maps these calls to NULL_FUNC: return CELL_OK and leave output memory
+ * untouched. Match that observable compatibility behavior until real service
+ * semantics are needed; no RPCS3 implementation body is copied. */
+static int64_t sys_rpcs3_null_success(ppu_context* ctx)
+{
+    uint32_t num = (uint32_t)ctx->gpr[11];
+    static uint8_t reported[LV2_SYSCALL_MAX];
+    if (num < LV2_SYSCALL_MAX && !reported[num]) {
+        reported[num] = 1;
+        fprintf(stderr, "[LV2] compatibility null syscall %u (%s) -> CELL_OK; outputs untouched\n",
+                num, sys_unimplemented_name(num));
+    }
+    return (int64_t)(int32_t)CELL_OK;
+}
+
+/* sys_time_get_timezone (144) returns minutes east of UTC and the current
+ * daylight adjustment as separate signed values. The Windows path follows
+ * GetTimeZoneInformation; POSIX derives the active offset from local civil
+ * time and splits standard/DST offsets where the C runtime exposes them. */
+static int64_t sys_time_get_timezone_handler(ppu_context* ctx)
+{
+    const uint32_t timezone_ea = (uint32_t)ctx->gpr[3];
+    const uint32_t summer_ea = (uint32_t)ctx->gpr[4];
+    if (!timezone_ea || !summer_ea || !vm_base)
+        return (int64_t)(int32_t)CELL_EFAULT;
+
+    int32_t timezone_minutes = 0;
+    int32_t summertime_minutes = 0;
+#ifdef _WIN32
+    TIME_ZONE_INFORMATION tz;
+    memset(&tz, 0, sizeof(tz));
+    const DWORD state = GetTimeZoneInformation(&tz);
+    if (state == TIME_ZONE_ID_INVALID)
+        return (int64_t)(int32_t)CELL_EFAULT;
+    timezone_minutes = -tz.Bias;
+    if (state == TIME_ZONE_ID_STANDARD)
+        summertime_minutes = -tz.StandardBias;
+    else if (state == TIME_ZONE_ID_DAYLIGHT)
+        summertime_minutes = -tz.DaylightBias;
+#else
+    const time_t now = time(NULL);
+    struct tm utc_tm;
+    struct tm local_tm;
+    if (now == (time_t)-1 || !gmtime_r(&now, &utc_tm) ||
+        !localtime_r(&now, &local_tm))
+        return (int64_t)(int32_t)CELL_EFAULT;
+    utc_tm.tm_isdst = -1;
+    const time_t utc_as_local = mktime(&utc_tm);
+    if (utc_as_local == (time_t)-1)
+        return (int64_t)(int32_t)CELL_EFAULT;
+    const int32_t active_offset = (int32_t)((now - utc_as_local) / 60);
+#if defined(__GLIBC__) || defined(__APPLE__) || defined(__FreeBSD__)
+    tzset();
+    timezone_minutes = (int32_t)(-timezone / 60);
+    summertime_minutes = local_tm.tm_isdst > 0
+        ? active_offset - timezone_minutes : 0;
+#else
+    timezone_minutes = active_offset;
+    summertime_minutes = 0;
+#endif
+#endif
+    vm_write_be32(timezone_ea, (uint32_t)timezone_minutes);
+    vm_write_be32(summer_ea, (uint32_t)summertime_minutes);
+    return CELL_OK;
 }
 
 
@@ -2476,6 +2911,40 @@ void lv2_register_all_syscalls(lv2_syscall_table* tbl)
 {
     /* Initialize the table with unimplemented stubs first */
     lv2_syscall_table_init(tbl);
+
+    /* RPCS3's lv2 table distinguishes these explicitly mapped NULL_FUNC
+     * entries (success, no implementation) from unused slots (ENOSYS). Keep
+     * that distinction instead of treating every unregistered number alike.
+     * Local real handlers registered below take precedence. This is syscall
+     * number metadata only; no RPCS3 function body is copied. */
+    static const uint16_t rpcs3_null_syscalls[] = {
+        21, 28, 31, 77, 80, 149, 167, 215, 216, 244, 245, 246,
+        247, 333, 338, 344, 356, 361, 381, 382, 383, 384, 385, 387,
+        389, 390, 391, 393, 394, 395, 396, 397, 408, 409, 452, 453,
+        455, 456, 457, 458, 460, 470, 471, 492, 493, 501, 504, 505,
+        507, 508, 509, 511, 570, 571, 572, 573, 574, 575, 583, 584,
+        585, 586, 587, 588, 589, 590, 591, 592, 593, 594, 595, 596,
+        597, 633, 634, 640, 641, 642, 643, 644, 645, 646, 647, 839,
+        843, 844, 860, 861, 864, 869, 876, 878, 879, 880, 881, 882,
+        883, 884, 885, 890, 891, 892, 893, 894, 895, 896, 897, 899,
+        900, 901, 902, 903, 906, 907, 908, 909, 910, 911, 912, 913,
+        914, 915, 916, 917, 918, 919, 920, 921, 922, 923, 924, 925,
+        926, 927, 928, 929, 930, 931, 932, 933, 934, 935, 936, 937,
+        938, 939, 940, 941, 942, 943, 944, 945, 946, 947, 948, 949,
+        950, 951, 952, 953, 954, 955, 956, 957, 960, 961, 962, 963,
+        964, 965, 966, 967, 968, 970, 971, 975, 978, 979, 980, 981,
+        982, 983, 985
+    };
+    for (size_t i = 0; i < sizeof(rpcs3_null_syscalls) / sizeof(rpcs3_null_syscalls[0]); ++i)
+        lv2_syscall_register(tbl, rpcs3_null_syscalls[i], sys_rpcs3_null_success);
+
+    /* These debug-only/development syscalls have no local subsystem; route
+     * them to explicit success-only compatibility handlers. */
+    lv2_syscall_register(tbl, SYS_FSW_CONNECT_EVENT,        sys_rpcs3_null_success);
+    lv2_syscall_register(tbl, SYS_FSW_DISCONNECT_EVENT,     sys_rpcs3_null_success);
+    lv2_syscall_register(tbl, SYS_DECI3_OPEN,               sys_rpcs3_null_success);
+    lv2_syscall_register(tbl, SYS_DECI3_CREATE_EVENT_PATH,  sys_rpcs3_null_success);
+    lv2_syscall_register(tbl, SYS_TIME_GET_TIMEZONE,        sys_time_get_timezone_handler);
 
     /* Process control */
     lv2_syscall_register(tbl, SYS_PROCESS_GETPID, sys_process_getpid_handler);
@@ -2546,17 +3015,16 @@ void lv2_register_all_syscalls(lv2_syscall_table* tbl)
     /* SPU syscalls — we don't execute SPU code but the PPU-side wrappers
      * need consistent IDs and out-params. See the stateful group tracker
      * above for contract notes. */
-    lv2_syscall_register(tbl, 169,                            sys_spu_thread_stub); /* deprecated */
     lv2_syscall_register(tbl, SYS_SPU_INITIALIZE,             sys_spu_initialize_handler);
     lv2_syscall_register(tbl, SYS_SPU_IMAGE_OPEN,             sys_spu_image_open_handler);
     lv2_syscall_register(tbl, SYS_SPU_IMAGE_IMPORT,           sys_spu_image_import_handler);
-    lv2_syscall_register(tbl, SYS_SPU_IMAGE_CLOSE,            sys_spu_thread_stub);
+    lv2_syscall_register(tbl, SYS_SPU_IMAGE_CLOSE,            sys_spu_image_close_handler);
     lv2_syscall_register(tbl, SYS_SPU_THREAD_GROUP_CREATE,    sys_spu_thread_group_create_handler);
     lv2_syscall_register(tbl, SYS_SPU_THREAD_GROUP_DESTROY,   sys_spu_thread_group_destroy_handler);
     lv2_syscall_register(tbl, SYS_SPU_THREAD_GROUP_START,     sys_spu_thread_group_start_handler);
-    lv2_syscall_register(tbl, SYS_SPU_THREAD_GROUP_SUSPEND,   sys_spu_thread_stub);
-    lv2_syscall_register(tbl, SYS_SPU_THREAD_GROUP_RESUME,    sys_spu_thread_stub);
-    lv2_syscall_register(tbl, SYS_SPU_THREAD_GROUP_YIELD,     sys_spu_thread_stub);
+    lv2_syscall_register(tbl, SYS_SPU_THREAD_GROUP_SUSPEND,   sys_spu_thread_group_suspend_handler);
+    lv2_syscall_register(tbl, SYS_SPU_THREAD_GROUP_RESUME,    sys_spu_thread_group_resume_handler);
+    lv2_syscall_register(tbl, SYS_SPU_THREAD_GROUP_YIELD,     sys_spu_thread_group_yield_handler);
     lv2_syscall_register(tbl, SYS_SPU_THREAD_GROUP_TERMINATE, sys_spu_thread_group_terminate_handler);
     lv2_syscall_register(tbl, SYS_SPU_THREAD_GROUP_JOIN,      sys_spu_thread_group_join_handler);
     lv2_syscall_register(tbl, SYS_SPU_THREAD_INITIALIZE,      sys_spu_thread_initialize_handler);
@@ -2567,7 +3035,7 @@ void lv2_register_all_syscalls(lv2_syscall_table* tbl)
       g_spu_out_mbox_hook = ydkj_spu_out_mbox_deliver; }
     { extern int (*g_spu_user_event_hook)(spu_context*, uint32_t);
       g_spu_user_event_hook = spu_deliver_user_event; }
-    lv2_syscall_register(tbl, SYS_SPU_THREAD_DISCONNECT_EVENT,sys_spu_thread_stub);
+    lv2_syscall_register(tbl, SYS_SPU_THREAD_DISCONNECT_EVENT,sys_spu_thread_disconnect_event_handler);
     lv2_syscall_register(tbl, SYS_SPU_THREAD_GROUP_CONNECT_EVENT, sys_spu_thread_group_connect_event_handler);
     lv2_syscall_register(tbl, SYS_SPU_THREAD_GROUP_DISCONNECT_EVENT, sys_spu_thread_group_disconnect_event_handler);
     lv2_syscall_register(tbl, SYS_SPU_THREAD_WRITE_LS,        sys_spu_thread_write_ls_handler);
@@ -2576,8 +3044,8 @@ void lv2_register_all_syscalls(lv2_syscall_table* tbl)
     lv2_syscall_register(tbl, SYS_SPU_THREAD_SET_SPU_CFG,    sys_spu_thread_set_spu_cfg_handler);
     lv2_syscall_register(tbl, SYS_SPU_THREAD_GET_SPU_CFG,    sys_spu_thread_get_spu_cfg_handler);
     lv2_syscall_register(tbl, SYS_SPU_THREAD_WRITE_SPU_MB,  sys_spu_thread_write_spu_mb_handler);
-    lv2_syscall_register(tbl, SYS_SPU_THREAD_BIND_QUEUE,      sys_spu_thread_stub);
-    lv2_syscall_register(tbl, SYS_SPU_THREAD_UNBIND_QUEUE,    sys_spu_thread_stub);
+    lv2_syscall_register(tbl, SYS_SPU_THREAD_BIND_QUEUE,      sys_spu_thread_bind_queue_handler);
+    lv2_syscall_register(tbl, SYS_SPU_THREAD_UNBIND_QUEUE,    sys_spu_thread_unbind_queue_handler);
     lv2_syscall_register(tbl, SYS_SPU_THREAD_GROUP_CONNECT_EVENT_ALL_THREADS, sys_spu_thread_group_connect_event_all_threads_handler);
 }
 

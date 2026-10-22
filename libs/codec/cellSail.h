@@ -2,7 +2,8 @@
  * ps3recomp - cellSail HLE
  *
  * High-level media player wrapping PAMF/demux/decode pipeline.
- * Stub — player lifecycle tracked, no actual media playback.
+ * Partial local implementation — player/adapter state is tracked, but no
+ * actual media playback is performed.
  */
 
 #ifndef PS3RECOMP_CELL_SAIL_H
@@ -15,25 +16,31 @@
 extern "C" {
 #endif
 
-/* Error codes */
-#define CELL_SAIL_ERROR_NOT_INITIALIZED       0x80610701
+/* RPCS3's cellSail.h error values. Several local names describe common
+ * conditions rather than distinct SDK errors, so those aliases share the
+ * closest defined CellSail code. */
+#define CELL_SAIL_ERROR_INVALID_ARGUMENT      0x80610701
+#define CELL_SAIL_ERROR_NOT_INITIALIZED       0x80610702
 #define CELL_SAIL_ERROR_ALREADY_INITIALIZED   0x80610702
-#define CELL_SAIL_ERROR_INVALID_ARGUMENT      0x80610703
-#define CELL_SAIL_ERROR_INVALID_STATE         0x80610704
-#define CELL_SAIL_ERROR_NOT_SUPPORTED         0x80610705
-#define CELL_SAIL_ERROR_NOT_FOUND             0x80610706
-#define CELL_SAIL_ERROR_OUT_OF_MEMORY         0x80610707
+#define CELL_SAIL_ERROR_INVALID_STATE         0x80610702
+#define CELL_SAIL_ERROR_NOT_SUPPORTED         0x80610703
+#define CELL_SAIL_ERROR_NOT_FOUND             0x80610708
+#define CELL_SAIL_ERROR_OUT_OF_MEMORY         0x806107F0
 
 /* Constants */
 #define CELL_SAIL_PLAYER_MAX    4
 
 /* Player state */
-#define CELL_SAIL_PLAYER_STATE_CLOSED     0
-#define CELL_SAIL_PLAYER_STATE_INITIALIZED 1
-#define CELL_SAIL_PLAYER_STATE_BOOT_TRANSITION 2
-#define CELL_SAIL_PLAYER_STATE_RUNNING    3
-#define CELL_SAIL_PLAYER_STATE_PAUSE      4
-#define CELL_SAIL_PLAYER_STATE_FINISHED   5
+#define CELL_SAIL_PLAYER_STATE_INITIALIZED     0
+#define CELL_SAIL_PLAYER_STATE_BOOT_TRANSITION 1
+#define CELL_SAIL_PLAYER_STATE_CLOSED          2
+#define CELL_SAIL_PLAYER_STATE_OPEN_TRANSITION 3
+#define CELL_SAIL_PLAYER_STATE_OPENED          4
+#define CELL_SAIL_PLAYER_STATE_START_TRANSITION 5
+#define CELL_SAIL_PLAYER_STATE_RUNNING          6
+#define CELL_SAIL_PLAYER_STATE_STOP_TRANSITION  7
+#define CELL_SAIL_PLAYER_STATE_CLOSE_TRANSITION 8
+#define CELL_SAIL_PLAYER_STATE_LOST             9
 
 /* Stream types */
 #define CELL_SAIL_STREAM_VIDEO   0
@@ -141,7 +148,16 @@ typedef struct CellSailMemAllocatorFuncs {
  * struct pointer needing host-pointer translation, not a raw callback value. */
 s32 cellSailPlayerInitialize2(u32 pSelf, u32 pAllocator, u32 pCallback,
                               u32 pUserParam, u32 pAttribute, u32 pResource);
+s32 cellSailPlayerFinalize(u32 pSelf);
+s32 cellSailPlayerSetPaused(u32 pSelf, u8 paused);
+s32 cellSailPlayerGetDescriptorCount(u32 pSelf);
 s32 cellSailSoundAdapterInitialize(u32 pSelf, u32 pCallbacks, u32 pArg);
+s32 cellSailGraphicsAdapterInitialize(u32 pSelf, u32 pCallbacks, u32 pArg);
+s32 cellSailGraphicsAdapterSetPreferredFormat(u32 pSelf, u32 pFormat);
+s32 cellSailSoundAdapterFinalize(u32 pSelf);
+s32 cellSailSoundAdapterGetFormat(u32 pSelf, u32 pFormat);
+s32 cellSailGraphicsAdapterFinalize(u32 pSelf);
+s32 cellSailGraphicsAdapterGetFormat(u32 pSelf, u32 pFormat);
 s32 cellSailMemAllocatorInitialize(CellSailMemAllocator* allocator,
                                      CellSailMemAllocatorFuncs* pFuncs);
 

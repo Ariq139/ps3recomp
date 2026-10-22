@@ -41,6 +41,9 @@ typedef struct rsx_fp_constant_block {
  * word. The decoder operates on host-order words. */
 u32 rsx_fp_read_word(const u8* p);
 u32 rsx_fp_sanitize_constant_word(u32 w);
+/* Return a bit mask of texture units referenced by supported fetch opcodes;
+ * returns ~0u for a malformed/truncated program or missing END instruction. */
+u32 rsx_fp_texture_units(const u8* ucode, u32 max_bytes);
 extern unsigned long long g_rsx_fp_nonfinite_constants;
 
 /* Decompile an NV40 fragment program into an HLSL pixel shader.
@@ -80,6 +83,11 @@ int rsx_fp_decompile(const u8* ucode, u32 max_bytes, u32 ctrl, char* out, u32 ou
  * patched safely. */
 int rsx_fp_apply_alpha_test(char* hlsl, u32 out_size, u32 func, float ref);
 
+/* Apply texture-coordinate 2D overrides, one-sample stochastic alpha coverage,
+ * and alpha-to-one after alpha test. Sample masking is host PSO state. */
+int rsx_fp_apply_raster_controls(char* hlsl, u32 out_size,
+                                 u32 texcoord_mask, u32 aa_control);
+
 /* Decode NV4097_SET_ALPHA_REF for the active surface color format. Ordinary
  * integer render targets use the low 8 bits as UNORM8; W16Z16Y16X16 uses a
  * half float and X32/W32Z32Y32X32 use a 32-bit float. */
@@ -113,6 +121,14 @@ float rsx_fp_alpha_ref(u32 raw, u32 surface_color_format);
 int rsx_fp_decompile_ex(const u8* ucode, u32 max_bytes, u32 ctrl,
                         u32 tex_cube_mask, char* out, u32 out_size);
 
+/* Shadow-texture variant. `tex_shadow_mask` selects depth-comparison units;
+ * the 4-bit compare function for unit N is stored in bits [4*N, 4*N+3] of
+ * `tex_shadow_compare_key` (raw SET_TEXTURE_ADDRESS ZFUNC nibble). */
+int rsx_fp_decompile_shadow_ex(const u8* ucode, u32 max_bytes, u32 ctrl,
+                               u32 tex_cube_mask, u32 tex_shadow_mask,
+                               u64 tex_shadow_compare_key,
+                               char* out, u32 out_size);
+
 /* Buffered-constant variant of rsx_fp_decompile_ex. Inline CONST payloads are
  * represented as fp_constants[N] in a b1 PSConstants cbuffer rather than
  * printed as HLSL literals. `out_constant_count` receives the exact slot
@@ -121,25 +137,44 @@ int rsx_fp_decompile_buffered_ex(
     const u8* ucode, u32 max_bytes, u32 ctrl, u32 tex_cube_mask,
     char* out, u32 out_size, u32* out_constant_count);
 
-/* Native depth texture comparison metadata. Disabled descriptors preserve the
- * original shader byte-for-byte. enabled=2 marks an active unsupported layout.
- * RSX ADDRESS zfunc0/7 and texture alpha-kill bypass comparison; modes1..6
- * compare the source reference against stored depth. R32 color snapshots are
- * sampled explicitly, so no native depth texture/SampleCmp binding is needed.
- * Supported: decoded D24_D8/D16, 2D TEX/TXP, one level, matching nearest or
- * linear min/mag filters. Float-depth formats, cubes/3D, multiple levels and
- * other texture opcodes reject translation when comparison is active.
- * The shared engine and legacy Metal supply this state; other legacy backend
- * paths retain their existing behavior until they adopt the metadata API. */
+/* Metadata-driven depth comparison. This path samples the depth plane with
+ * the regular texture sampler and compares in shader code, so it does not
+ * consume D3D12's comparison-sampler slots. */
 typedef struct rsx_fp_shadow_desc {
     u8 enabled, func, linear, unnormalized;
 } rsx_fp_shadow_desc;
 void rsx_fp_shadow_desc_from_texture(rsx_fp_shadow_desc* out, u32 format,
     u32 dimension, u32 cube, u32 mips, u32 filter, u32 address, u32 control0);
-u32 rsx_fp_texture_units(const u8* ucode, u32 max_bytes);
-int rsx_fp_decompile_buffered_shadow_ex(
+int rsx_fp_decompile_shadow_desc_ex(
     const u8* ucode, u32 max_bytes, u32 ctrl, u32 tex_cube_mask,
     const rsx_fp_shadow_desc shadow[16],
+    char* out, u32 out_size);
+int rsx_fp_decompile_buffered_shadow_desc_ex(
+    const u8* ucode, u32 max_bytes, u32 ctrl, u32 tex_cube_mask,
+    const rsx_fp_shadow_desc shadow[16],
+    char* out, u32 out_size, u32* out_constant_count);
+int rsx_fp_decompile_buffered_shadow_color_ex(
+    const u8* ucode, u32 max_bytes, u32 ctrl, u32 tex_cube_mask,
+    const rsx_fp_shadow_desc shadow[16], const u8 gamma_masks[16],
+    char* out, u32 out_size, u32* out_constant_count);
+int rsx_fp_decompile_shadow_desc_color_ex(
+    const u8* ucode, u32 max_bytes, u32 ctrl, u32 tex_cube_mask,
+    const rsx_fp_shadow_desc shadow[16], const u8 gamma_masks[16],
+    char* out, u32 out_size);
+int rsx_fp_decompile_shadow_gamma_ex(
+    const u8* ucode, u32 max_bytes, u32 ctrl, u32 tex_cube_mask,
+    u32 tex_shadow_mask, u64 tex_shadow_compare_key,
+    const u8 gamma_masks[16], char* out, u32 out_size);
+int rsx_fp_decompile_buffered_shadow_gamma_ex(
+    const u8* ucode, u32 max_bytes, u32 ctrl, u32 tex_cube_mask,
+    u32 tex_shadow_mask, u64 tex_shadow_compare_key,
+    const u8 gamma_masks[16], char* out, u32 out_size,
+    u32* out_constant_count);
+
+/* Buffered-constant shadow-texture variant; see rsx_fp_decompile_shadow_ex. */
+int rsx_fp_decompile_buffered_shadow_ex(
+    const u8* ucode, u32 max_bytes, u32 ctrl, u32 tex_cube_mask,
+    u32 tex_shadow_mask, u64 tex_shadow_compare_key,
     char* out, u32 out_size, u32* out_constant_count);
 
 /* Extract the exact runtime inline-CONST payload. Returns the slot count on
@@ -189,7 +224,8 @@ int rsx_fp_apply_srgb_output(char* hlsl, u32 capacity);
 
 /* Gamma metadata is a post-filter/post-remap RGBA lane mask, with formats
  * validated by rsx_texture_gamma_mask. EXP_TEX overrides gamma per fetch.
- * Old entry points pass NULL and preserve their source byte for byte. */
+ * Old entry points pass NULL and preserve their source byte for byte. Returns
+ * ~0u for a malformed/truncated program or missing END instruction. */
 u32 rsx_fp_texture_gamma_units(const u8* ucode, u32 max_bytes,
                                 const u8 gamma_masks[16]);
 int rsx_fp_decompile_buffered_color_ex(

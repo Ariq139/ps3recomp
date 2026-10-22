@@ -19,7 +19,8 @@
  *
  * Which lifted image runs: the guest imports its SPU ELF with
  * _sys_spu_image_import before starting the SPU, so spu_raw_note_image()
- * fingerprints that ELF the same way the offline extractor does (FNV-1a-64 over
+ * fingerprints that ELF the same way the offline extractor does (project
+ * FNV-1a-style 64-bit hash over
  * the exact file bytes) and looks it up in the shared workload registry. The port
  * registers its lifted entries there as usual -- see a title's src/spu_images.c.
  * That keeps raw SPUs on exactly the same registration mechanism as SPURS jobs
@@ -184,7 +185,8 @@ static void raw_out_mbox_hook(uint32_t group, uint32_t spu_id, int is_intr, uint
 /* ---------------------------------------------------------------------------
  * The image the guest most recently imported.
  *
- * Called from the _sys_spu_image_import handler. The fingerprint is FNV-1a-64
+ * Called from the _sys_spu_image_import handler. The fingerprint is the
+ * project's FNV-1a-style 64-bit hash
  * over the exact ELF file bytes -- identical to what tools/extract_spu_images.py
  * hashes and what a port's registration passes to spu_workload_register_img -- so
  * a raw SPU resolves through the same registry as everything else. The file
@@ -684,10 +686,34 @@ static void hle_raw_spu_image_load(ppu_context* ctx)
     ctx->gpr[3] = CELL_OK;
 }
 
-/* sys_spu_image_close(sys_spu_image_t*) -- NID 0xE0DA8EFD. The descriptor lives
- * in a runtime bump arena that is never reclaimed, so there is nothing to free;
- * it exists so the guest's own error checking passes. */
-static void hle_spu_image_close(ppu_context* ctx) { ctx->gpr[3] = CELL_OK; }
+/* RPCS3_REFERENCE_REVIEWED: USER/KERNEL image-type values were checked in
+ * the upstream ABI header; this implementation only invalidates local guest
+ * image descriptors and copies no RPCS3 function body.
+ * sys_spu_image_close(sys_spu_image_t*) -- NID 0xE0DA8EFD.
+ * User images own a segment table in the import scratch arena. The arena is
+ * bump-allocated, so close invalidates the guest descriptor rather than
+ * pretending a kernel image-manager object exists. */
+static void hle_spu_image_close(ppu_context* ctx)
+{
+    const uint32_t img_ea = (uint32_t)ctx->gpr[3];
+    if (!vm_base || !img_ea || img_ea > UINT32_MAX - 16u) {
+        ctx->gpr[3] = (uint64_t)(int64_t)CELL_EFAULT;
+        return;
+    }
+
+    const uint32_t type = be32_load(img_ea + 0x00);
+    const uint32_t segs = be32_load(img_ea + 0x08);
+    const uint32_t nsegs = be32_load(img_ea + 0x0C);
+    if (type != 0 || nsegs > 32 || (nsegs && !segs) ||
+        (nsegs && segs > UINT32_MAX - nsegs * 0x18u)) {
+        ctx->gpr[3] = (uint64_t)(int64_t)CELL_EINVAL;
+        return;
+    }
+
+    memset(vm_base + img_ea, 0, 16);
+    be32_store(img_ea, UINT32_MAX); /* closed/invalid image type */
+    ctx->gpr[3] = CELL_OK;
+}
 
 void sys_raw_spu_init(lv2_syscall_table* tbl)
 {

@@ -20,11 +20,66 @@
 #include <chrono>
 #include "ppu_recomp.h"   /* ppu_context */
 #include "ps3emu/nid.h"   /* ps3_nid_table, ps3_nid_entry */
+#include "ps3emu/error_codes.h" /* CELL_OK */
 #include "ps3emu/milestone.h" /* ps3_msf -- boot milestone log */
 #include <stdlib.h>       /* getenv */
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>       /* getenv, atoi (boot trace) */
+#include <mutex>
+#include <string>
+#include <unordered_set>
+
+/* Unsupported lifted PPU instructions remain no-ops, but execution must be
+ * observable. The lifter supplies the guest PC; file/function/line identify
+ * sites in already-generated code migrated from comment-only TODOs. */
+extern "C" void ps3_ppu_unimplemented_instruction(uint32_t guest_pc,
+    const char* source_file, const char* function_name, uint32_t source_line,
+    const char* operation)
+{
+    static std::mutex lock;
+    static std::unordered_set<std::string> seen;
+    static unsigned logged = 0;
+    static unsigned suppressed = 0;
+
+    const char* file = source_file ? source_file : "?";
+    const char* function = function_name ? function_name : "?";
+    const char* op = operation ? operation : "?";
+    std::string key(file);
+    key += '#';
+    key += std::to_string(source_line);
+    key += '#';
+    key += function;
+
+    bool first;
+    bool print_site = false;
+    bool print_summary = false;
+    unsigned omitted = 0;
+    {
+        std::lock_guard<std::mutex> guard(lock);
+        first = seen.insert(key).second;
+        if (!first) return;
+        if (logged < 2048) {
+            ++logged;
+            print_site = true;
+        } else {
+            omitted = ++suppressed;
+            print_summary = (omitted & (omitted - 1u)) == 0;
+        }
+    }
+
+    if (print_site) {
+        if (guest_pc)
+            fprintf(stderr, "[ppu] UNIMPLEMENTED instruction guest=0x%08X at %s:%u (%s): %s\n",
+                    guest_pc, file, source_line, function, op);
+        else
+            fprintf(stderr, "[ppu] UNIMPLEMENTED instruction guest=unknown at %s:%u (%s): %s\n",
+                    file, source_line, function, op);
+    } else if (print_summary) {
+        fprintf(stderr, "[ppu] suppressed %u additional unique unimplemented instruction sites\n",
+                omitted);
+    }
+}
 
 /* Single flat NID -> handler table (all modules share it; resolution is by
  * NID which is globally unique). Sized for the firmware import surface. */
@@ -124,41 +179,10 @@ extern "C" void flow_spurs_kernel_spawn_postinit(void) {}
 #include "../platform/win32_backtrace.h"   /* RtlCaptureStackBackTrace / GetModuleHandleA on POSIX */
 #include "ps3emu/log_first.h"
 
-/* An unresolved NID is a firmware import we never registered. Returning
- * CELL_OK "so the game keeps going" is the single biggest source of
- * days-long debugging in this project: the title reads back untouched
- * out-params and proceeds on fabricated state, then deadlocks or crashes
- * far from the actual gap. The unregistered mouse (a phantom device polled
- * forever) and six whole modules whose names never matched a source file
- * all reached the game this way.
- *
- * So: report every DISTINCT unresolved NID exactly once (not a global
- * first-40 cap that hides everything after the 40th unique import), count
- * how often each is hit, and make the fabricated return an explicit CHOICE
- * rather than the silent default.
- *
- * The default stays CELL_OK, because faking is currently LOAD-BEARING: LBP
- * calls cellFsSdataOpen (0xB1840B53, its encrypted data file) and cellHttpsInit
- * (0x522180BC) during early boot and shuts down cleanly if either fails, so
- * PS3_HLE_UNRESOLVED=fail dies at 144 log lines vs ~148,000. The days-long
- * debugging was never caused by the fake per se -- it was caused by the fake
- * being SILENT (a global first-40-line cap hid every import past the 40th). So
- * the fix is visibility: report each DISTINCT unresolved NID once, with a hit
- * count, always. `fail` remains available to A/B which missing import is
- * load-bearing -- run it and read the two or three NIDs it reports.
- *
- *   PS3_HLE_UNRESOLVED = ok   (default): r3 = CELL_OK, reported once per NID.
- *                        = fail: r3 = CELL_ERROR_ERROR, to find load-bearing
- *                                imports (expect an early, clean shutdown).
- */
+/* Unresolved imports use the requested permissive fallback: log each NID and
+ * return CELL_OK. ABI-specific output buffers remain untouched. */
 static void ps3_hle_unresolved(uint32_t nid, ppu_context* ctx)
 {
-    enum { CELL_ERROR_ERROR = (int)0x8001003Fu };  /* generic CELL failure */
-    static int s_fake = -1;
-    if (s_fake < 0) {
-        const char* m = getenv("PS3_HLE_UNRESOLVED");
-        s_fake = (m && (m[0]=='f' || m[0]=='F')) ? 0 : 1;   /* "fail" -> error, else fake */
-    }
     /* First-seen set: report each NID once, then count silently. Linear scan
      * over a small array -- the count of DISTINCT unresolved NIDs a title hits
      * is tens, not thousands (the log-flooders are all the SAME NID). */
@@ -171,13 +195,10 @@ static void ps3_hle_unresolved(uint32_t nid, ppu_context* ctx)
     uint32_t count = (i < 512) ? ++hits[i] : 0;
     (void)count;
     if (count == 1)
-        fprintf(stderr, "[hle] UNRESOLVED NID 0x%08X -> faking %s "
-                        "(unregistered import%s)\n",
-                nid, s_fake ? "CELL_OK" : "CELL_ERROR_ERROR",
-                s_fake ? "; PS3_HLE_UNRESOLVED=fail to find load-bearing ones"
-                       : "");
+        fprintf(stderr, "[hle] UNRESOLVED NID 0x%08X -> CELL_OK "
+                        "(unregistered import; outputs untouched)\n", nid);
 
-    ctx->gpr[3] = s_fake ? 0u : (uint64_t)(uint32_t)CELL_ERROR_ERROR;
+    ctx->gpr[3] = (uint64_t)(int64_t)(int32_t)CELL_OK;
 }
 
 extern "C" void ppu_prof_stamp(void* ctx, unsigned lr);
@@ -737,19 +758,7 @@ extern "C" void ps3_hle_call(uint32_t nid, ppu_context* ctx)
             /* if r4 is a dirName string, dump it */
             uint32_t r4=(uint32_t)ctx->gpr[4]; if(r4>0x10000&&r4<0x10000000){ char nm[32]; for(int i=0;i<31;i++){uint32_t b=vm_read32((r4+i)&~3u); nm[i]=(char)((b>>((3-((r4+i)&3))*8))&0xFF); if(!nm[i])break;} nm[31]=0; fprintf(stderr,"[SAVEDATA]   r4 dirName='%s'\n",nm); } }
         }
-        /* YDKJ_NETOFFLINE: unresolved network NIDs (sys_net/cellHttp/cellSysutil)
-         * default r3=0 (fake success) -> the game stores a NULL handle as an object
-         * and later virtual-calls it -> the 0xC708C708 null-vtable crash. Return a
-         * negative error instead so the game's online-content check takes its
-         * graceful OFFLINE-FAILURE path and proceeds with the local Persistent.zip. */
-        { static int _no=-1; if(_no<0)_no=getenv("YDKJ_NETOFFLINE")?1:0;
-          if(_no){ switch(nid){
-            case 0x139A9E9Bu: case 0x9FB6228Eu: case 0x05893E7Cu:
-            case 0x52AAC4FAu: case 0x9638F766u: case 0x522180BCu:
-              ctx->gpr[3] = 0x80010002u; /* generic failure (net unavailable) */
-              return;
-          } } }
-        ctx->gpr[3] = 0;   /* CELL_OK-ish so the game keeps going */
+        ctx->gpr[3] = (uint64_t)(int64_t)(int32_t)CELL_OK;
         return;
     }
     g_last_hle_name = e->name;

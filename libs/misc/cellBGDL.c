@@ -1,7 +1,9 @@
 /*
  * ps3recomp - cellBGDL HLE implementation
  *
- * Stub. Init/term work, download list always empty.
+ * Canonical cellBGDLUtility exports match RPCS3's current TODO-success
+ * behavior. A separate lowercase local download-management API is retained
+ * for compatibility and has no RPCS3 counterpart.
  */
 
 #include "cellBGDL.h"
@@ -75,4 +77,36 @@ s32 cellBgdlCancelDownload(CellBgdlId id)
     (void)id;
     if (!s_initialized) return (s32)CELL_BGDL_ERROR_NOT_INITIALIZED;
     return (s32)CELL_BGDL_ERROR_NOT_FOUND;
+}
+
+/* RPCS3_REFERENCE_REVIEWED (RPCS3 commit 2ba2f75bc): these are the four
+ * cellBGDLUtility exports registered by cellBgdl.cpp. Each current RPCS3
+ * handler is a TODO that returns CELL_OK without reading arguments or
+ * modifying output memory, so preserve that observable behavior. */
+s32 cellBGDLGetInfo(const char* contentId, CellBGDLInfo* info, s32 num)
+{
+    (void)contentId;
+    (void)info;
+    (void)num;
+    return CELL_OK;
+}
+
+s32 cellBGDLGetInfo2(const char* serviceId, CellBGDLInfo* info, s32 num)
+{
+    (void)serviceId;
+    (void)info;
+    (void)num;
+    return CELL_OK;
+}
+
+s32 cellBGDLSetMode(CellBGDLMode mode)
+{
+    (void)mode;
+    return CELL_OK;
+}
+
+s32 cellBGDLGetMode(CellBGDLMode* mode)
+{
+    (void)mode;
+    return CELL_OK;
 }

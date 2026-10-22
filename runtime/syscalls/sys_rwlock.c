@@ -287,5 +287,7 @@ void sys_rwlock_init(lv2_syscall_table* tbl)
     lv2_syscall_register(tbl, SYS_RWLOCK_RUNLOCK,  sys_rwlock_runlock);
     lv2_syscall_register(tbl, SYS_RWLOCK_WLOCK,    sys_rwlock_wlock);
     lv2_syscall_register(tbl, SYS_RWLOCK_TRYWLOCK, sys_rwlock_trywlock);
+    /* RPCS3 also exposes the legacy _sys_rwlock_trywlock alias at 148. */
+    lv2_syscall_register(tbl, SYS_RWLOCK_TRYWLOCK_ALIAS, sys_rwlock_trywlock);
     lv2_syscall_register(tbl, SYS_RWLOCK_WUNLOCK,  sys_rwlock_wunlock);
 }

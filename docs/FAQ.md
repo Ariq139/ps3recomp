@@ -14,23 +14,25 @@ ps3recomp is a toolkit for **statically recompiling** PlayStation 3 games into n
 |---|---|---|
 | **Approach** | Dynamic emulation | Static recompilation |
 | **Translation** | At runtime (JIT) | Ahead of time (to C/C++) |
-| **Performance** | Good, but CPU-intensive | Native speed — no translation overhead |
-| **Compatibility** | ~70% of library (one binary, many games) | Per-game project (deep but narrow) |
-| **Moddability** | Limited | Full — it's just C/C++ you can edit |
-| **Hardware requirements** | High-end PC recommended | Mid-range PC is fine |
+| **Performance** | Depends on title, renderer, and settings | Depends on generated code and runtime; no general benchmark claim |
+| **Compatibility** | Broad, tracked per game | Per-game project; a successful build does not imply compatibility |
+| **Moddability** | Emulator configuration and patches | Generated code and runtime can be changed per project |
+| **Hardware requirements** | Depends on title and settings | Depends on title and renderer |
 
 Both approaches have value. RPCS3 is better for broad compatibility; ps3recomp is better for native ports and preservation.
 
-### Is this legal?
+### What about licensing?
 
-Yes, under the same principles as all clean-room recompilation projects:
-- No Sony code is included — the runtime is written from scratch
-- Users must supply their own legally obtained game binaries
-- Function behavior is reimplemented based on public documentation and RPCS3's open-source reference
+The repository's `LICENSE` says MIT, but the provenance audit identified
+RPCS3-derived material and areas that still need review. Do not read the MIT
+file alone as a finding that every file is MIT-only. See
+[RPCS3_LICENSE_AUDIT.md](RPCS3_LICENSE_AUDIT.md); this is not legal advice.
 
 ### What games work?
 
-**flOw** by thatgamecompany is the first active port — see the [case study](GAME_PORTING_GUIDE.md#case-study-flow). The framework is ready for other games; contributions welcome.
+The repository contains per-game projects, but there is no broad compatibility
+claim here. Check the target project's current notes and saved runtime evidence
+before assuming a title boots or renders.
 
 ### What platforms are supported?
 
@@ -54,10 +56,12 @@ Windows gets the most testing. Linux and macOS should work but may need minor fi
 
 ### What about the SPUs?
 
-The Cell processor has 6 SPU cores with their own ISA and 256KB local store each. ps3recomp handles SPUs via:
-- **HLE** (preferred) — many SPU tasks (audio mixing, decompression) can be replaced with native equivalents
-- **SPU lifter** — for complex SPU programs, `tools/spu_lifter.py` translates SPU assembly to C
-- **SPURS management** — the cellSpurs module handles task scheduling without actual SPU execution
+The Cell processor has six game-available SPU cores, each with a 256 KB local
+store. ps3recomp has an SPU interpreter and a lifter that emits native C for
+known images. The runtime can execute registered SPU workloads and job binaries
+through its local-store, channel, and DMA glue. This is not general coverage:
+unlifted binaries, unsupported instructions, and unmodeled SPURS behavior can
+still fail or hang. HLE fallbacks remain available for known tasks.
 
 ### Why C instead of C++?
 
@@ -80,9 +84,13 @@ See [NID_SYSTEM.md](NID_SYSTEM.md) for the deep dive.
 
 ### What about graphics (RSX)?
 
-The RSX (Reality Synthesizer) is an NV47-class GPU. Games write GPU commands to a command buffer via cellGcmSys. Currently:
-- **cellGcmSys is fully implemented** — display buffers, memory mapping, tile/zcull config, flip control
-- **Command buffer parsing is not** — translating NV47 methods to Vulkan/D3D12 draw calls is the largest remaining task
+The RSX (Reality Synthesizer) is an NV47-class GPU. The runtime implements
+`cellGcmSys` services and parses a subset of NV47xx FIFO methods into tracked
+state and draw calls. D3D12 and Metal have render paths; Vulkan is an optional
+Linux backend. Guest programs can be translated when the required shader tools
+are present. Coverage is incomplete, and the existence of a backend does not
+establish that a particular game renders correctly. See [RSX_GRAPHICS.md](RSX_GRAPHICS.md)
+and [BUILDING.md](BUILDING.md#graphics-backends) for current feature limits.
 
 ### How accurate does recompilation need to be?
 
@@ -123,7 +131,9 @@ Some headers (e.g., `cellSync.h`) use C11 atomics incompatible with C++. Only in
 The game called a function your HLE modules don't handle. Either:
 1. Add the function to your module registration
 2. Check if ps3recomp already has a real implementation in `libs/`
-3. Add a stub that returns `CELL_OK` if the function isn't critical
+3. Establish the ABI and caller-visible effects, then implement them. Use a
+   documented placeholder only when evidence supports it; returning `CELL_OK`
+   with required outputs or synchronization missing can leave the game stuck.
 
 **`vm_init failed`**
 The runtime couldn't allocate the 4GB virtual address space. Check:
@@ -149,18 +159,12 @@ The lifter references a function that wasn't in the function list. Add it manual
 ```
 
 **`TODO: unimplemented instruction`**
-The lifter doesn't support this instruction yet. Common remaining gaps:
-- VMX/AltiVec SIMD (`vaddfp`, `vmaddfp`, `vsel`, `vsldoi`, etc.) — the largest category
-- Some `rld*` rotate variants with uncommon operand patterns
-- Extended opcode 31 forms (`op31_x202`, `op31_x231`)
-
-Recently added (may still show as TODO in older lifter output):
-- `mulld`/`divd` (64-bit arithmetic), `adde`/`subfe` (carry ops)
-- `cror`/`crand`/`crnand`/`crxor`/`crnor` (CR logical)
-- `lwarx`/`stwcx.` (atomic reservation), `stdux`/`ldux` (update indexed)
-- `tw`/`td` (trap — no-oped)
-
-Fix in `tools/ppu_lifter.py` to benefit all game ports.
+Check the actual instruction and generated line against the current
+`tools/ppu_lifter.py`. This FAQ's former list of VMX and opcode gaps was a stale
+snapshot and should not be used to decide what is unsupported. If the lifter
+still emits a no-op for a decoded instruction, implement its architectural
+semantics and compare them with a behavior reference before regenerating the
+target project. Also determine whether the address is reachable code or data.
 
 **Split-function crash (prologue returns without executing body)**
 The lifter may split one PPC function into multiple C functions at boundary points. If the first piece (prologue) returns without calling the second piece (body), the function never executes. Fix: the lifter now emits fallthrough calls when a function doesn't end with `blr`/`b`. If you see this in older output, re-run the lifter or patch with a fallthrough call script.
@@ -171,10 +175,9 @@ The lifter may split one PPC function into multiple C functions at boundary poin
 
 ### How fast is recompiled code?
 
-Within 2-3x of the original PS3 performance on modern hardware, often faster. The overhead comes from:
-- Endian byte-swapping on every memory access
-- Function call overhead for `vm_read`/`vm_write`
-- Unoptimized generated code (the lifter doesn't do advanced optimization)
+There is no repository-wide performance measurement to cite. Measure the
+specific title and build configuration; generated-code size, guest memory
+accesses, HLE calls, and renderer work all affect the result.
 
 ### The generated .cpp file is huge — compilation tips
 

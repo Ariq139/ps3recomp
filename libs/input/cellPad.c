@@ -8,6 +8,13 @@
  *   - Everywhere else / if PS3RECOMP_PAD_USE_SDL2 is defined: SDL2 GameController
  *
  * Define PS3RECOMP_PAD_USE_SDL2 to force SDL2 backend on Windows.
+ *
+ * RPCS3_REFERENCE_REVIEWED (RPCS3 commit 2ba2f75bc, cellPad.cpp and
+ * xinput_pad_handler.cpp): CellPad ABI, XInput DLL fallback order, rumble,
+ * SCP extension polling, and sensor behavior were checked. Host event and
+ * guest-API glue are expressed with ps3recomp interfaces. SCP extension field
+ * layouts are transcribed from RPCS3's xinput_pad_handler.h and are marked in
+ * docs/RPCS3_LICENSE_AUDIT.md for provenance/license review.
  */
 
 #include <time.h>
@@ -54,7 +61,6 @@ static double pad_clock(unsigned long long t0_ms)
   #endif
   #include <windows.h>
   #include <xinput.h>
-  #pragma comment(lib, "xinput.lib")
 #endif
 
 #if PAD_BACKEND_SDL2
@@ -70,6 +76,7 @@ static double pad_clock(unsigned long long t0_ms)
 typedef struct {
     int  connected;
     u16  buttons;           /* CELL_PAD_CTRL_* bitmask */
+    int  ps_button;         /* PS button lives in digital1's high byte */
     u8   analog_lx;         /* 0-255, center=128 */
     u8   analog_ly;
     u8   analog_rx;
@@ -87,14 +94,32 @@ typedef struct {
     u8   press_square;
     u8   press_l1;
     u8   press_r1;
+    u16  sensor_x;
+    u16  sensor_y;
+    u16  sensor_z;
+    u16  sensor_g;
 } PadHostState;
 
 static int           s_pad_initialized = 0;
 static u32           s_max_connect = 0;
 static u32           s_port_setting[CELL_PAD_MAX_PORT_NUM];
 static PadHostState  s_host_state[PAD_MAX_HOST_PORTS];
+static SRWLOCK       s_pad_lock = SRWLOCK_INIT;
 /* Per-port "a report has arrived since your last read" flag; see cellPadGetData. */
 static int s_data_fresh[PAD_MAX_HOST_PORTS];
+
+#define PAD_UNLOCK_RETURN(value) do { ReleaseSRWLockExclusive(&s_pad_lock); return (value); } while (0)
+
+static void pad_reset_host_state(PadHostState* hs)
+{
+    memset(hs, 0, sizeof(*hs));
+    hs->analog_lx = hs->analog_ly = 128;
+    hs->analog_rx = hs->analog_ry = 128;
+    hs->sensor_x = 512;
+    hs->sensor_y = 399;
+    hs->sensor_z = 512;
+    hs->sensor_g = 512;
+}
 
 #if PAD_BACKEND_SDL2
 static SDL_GameController* s_sdl_controllers[PAD_MAX_HOST_PORTS];
@@ -139,9 +164,40 @@ static void pad_rumble_levels(u8 small_on, u8 large, u16* lo, u16* hi)
 
 #if PAD_BACKEND_XINPUT
 
+/* RPCS3_PROVENANCE_REVIEW_REQUIRED: these optional ScpToolkit-compatible
+ * extension layouts were transcribed from RPCS3 xinput_pad_handler.h. They
+ * expose analog DualShock pressure buttons and motion sensors that ordinary
+ * XInput omits; see the license audit before redistribution. */
+typedef struct {
+    float up, right, down, left;
+    float lx, ly;
+    float l1, l2, l3;
+    float rx, ry;
+    float r1, r2, r3;
+    float triangle, circle, cross, square;
+    float select, start, ps;
+} PadScpExtendedState;
+
+typedef struct {
+    WORD x, z, y, gyro;
+} PadScpAccel;
+
+typedef DWORD (WINAPI *PadXInputGetStateFn)(DWORD, XINPUT_STATE*);
+typedef DWORD (WINAPI *PadXInputSetStateFn)(DWORD, XINPUT_VIBRATION*);
+typedef DWORD (WINAPI *PadXInputGetExtendedFn)(DWORD, PadScpExtendedState*);
+typedef DWORD (WINAPI *PadXInputGetCustomDataFn)(DWORD, DWORD, void*);
+
+static HMODULE s_xinput_library;
+static PadXInputGetStateFn s_xinput_get_state;
+static PadXInputSetStateFn s_xinput_set_state;
+static PadXInputGetExtendedFn s_xinput_get_extended;
+static PadXInputGetCustomDataFn s_xinput_get_custom_data;
+
 /* Deadzone for analog sticks (same as XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE) */
-#define PAD_STICK_DEADZONE  7849
+#define PAD_LEFT_STICK_DEADZONE  XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE
+#define PAD_RIGHT_STICK_DEADZONE XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE
 #define PAD_TRIGGER_THRESHOLD 30
+#define PAD_XINPUT_GUIDE_BUTTON 0x0400
 
 static u8 pad_xinput_stick_to_u8(short raw, short deadzone)
 {
@@ -160,6 +216,81 @@ static u8 pad_xinput_stick_to_u8(short raw, short deadzone)
     return (u8)val;
 }
 
+static u8 pad_scp_pressure_to_u8(float value)
+{
+    if (!(value > 0.0f)) return 0; /* also maps NaN to zero */
+    if (value >= 1.0f) return 255;
+    return (u8)(value * 255.0f + 0.5f);
+}
+
+static u8 pad_scp_axis_to_u8(float value, int invert)
+{
+    if (!(value == value)) value = 0.0f; /* NaN -> stick center */
+    if (value < -1.0f) value = -1.0f;
+    if (value > 1.0f) value = 1.0f;
+    if (invert) value = -value;
+    int result = (int)((value + 1.0f) * 127.5f + 0.5f);
+    if (result < 0) result = 0;
+    if (result > 255) result = 255;
+    return (u8)result;
+}
+
+static void pad_poll_scp_extended(PadHostState* hs, const PadScpExtendedState* scp)
+{
+    const u8 up = pad_scp_pressure_to_u8(scp->up);
+    const u8 right = pad_scp_pressure_to_u8(scp->right);
+    const u8 down = pad_scp_pressure_to_u8(scp->down);
+    const u8 left = pad_scp_pressure_to_u8(scp->left);
+    const u8 l1 = pad_scp_pressure_to_u8(scp->l1);
+    const u8 l2 = pad_scp_pressure_to_u8(scp->l2);
+    const u8 l3 = pad_scp_pressure_to_u8(scp->l3);
+    const u8 r1 = pad_scp_pressure_to_u8(scp->r1);
+    const u8 r2 = pad_scp_pressure_to_u8(scp->r2);
+    const u8 r3 = pad_scp_pressure_to_u8(scp->r3);
+    const u8 triangle = pad_scp_pressure_to_u8(scp->triangle);
+    const u8 circle = pad_scp_pressure_to_u8(scp->circle);
+    const u8 cross = pad_scp_pressure_to_u8(scp->cross);
+    const u8 square = pad_scp_pressure_to_u8(scp->square);
+    const u8 select = pad_scp_pressure_to_u8(scp->select);
+    const u8 start = pad_scp_pressure_to_u8(scp->start);
+
+    hs->buttons = 0;
+    if (select > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_SELECT;
+    if (l3 > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_L3;
+    if (r3 > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_R3;
+    if (start > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_START;
+    if (up > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_UP;
+    if (right > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_RIGHT;
+    if (down > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_DOWN;
+    if (left > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_LEFT;
+    if (l2 > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_L2;
+    if (r2 > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_R2;
+    if (l1 > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_L1;
+    if (r1 > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_R1;
+    if (triangle > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_TRIANGLE;
+    if (circle > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_CIRCLE;
+    if (cross > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_CROSS;
+    if (square > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_SQUARE;
+    hs->ps_button = pad_scp_pressure_to_u8(scp->ps) > PAD_TRIGGER_THRESHOLD;
+
+    hs->analog_lx = pad_scp_axis_to_u8(scp->lx, 0);
+    hs->analog_ly = pad_scp_axis_to_u8(scp->ly, 1);
+    hs->analog_rx = pad_scp_axis_to_u8(scp->rx, 0);
+    hs->analog_ry = pad_scp_axis_to_u8(scp->ry, 1);
+    hs->trigger_l2 = l2;
+    hs->trigger_r2 = r2;
+    hs->press_up = up;
+    hs->press_right = right;
+    hs->press_down = down;
+    hs->press_left = left;
+    hs->press_l1 = l1;
+    hs->press_r1 = r1;
+    hs->press_triangle = triangle;
+    hs->press_circle = circle;
+    hs->press_cross = cross;
+    hs->press_square = square;
+}
+
 /* Keyboard fallback for port 0.
  *
  * The only backend here is XInput, so on a machine with no controller plugged
@@ -167,11 +298,10 @@ static u8 pad_xinput_stick_to_u8(short raw, short deadzone)
  * it can be watched but not played. That is what The Simpsons Arcade Game hit:
  * it reached its attract loop and no input existed to start a game.
  *
- * Only fills in for port 0, only when XInput found nothing there, so a real
- * controller always wins and nothing changes for a port that has one. Keys are
- * read only while a window of THIS process is in the foreground, so typing in
- * another application does not drive the game. Set PAD_NO_KEYBOARD=1 to
- * disable it entirely.
+ * Only fills in for port 0 when no host controller is detected in any slot, so
+ * a real controller always wins. Keys are read only while a window of THIS
+ * process is in the foreground, so typing in another application does not
+ * drive the game. Set PAD_NO_KEYBOARD=1 to disable it entirely.
  *
  * Arrows = d-pad, Z/X/A/S = cross/circle/square/triangle, Q/W = L1/R1,
  * 1/2 = L2/R2, Enter = START, Tab = SELECT. The left stick mirrors the d-pad
@@ -196,9 +326,7 @@ static void pad_poll_keyboard(void)
     if (!pad_host_window_focused()) {
         /* Release everything on focus loss, or a key held while alt-tabbing
          * would stay down forever. */
-        hs->buttons = 0;
-        hs->analog_lx = hs->analog_ly = 128;
-        hs->analog_rx = hs->analog_ry = 128;
+        pad_reset_host_state(hs);
         hs->connected = 1;
         return;
     }
@@ -218,6 +346,7 @@ static void pad_poll_keyboard(void)
         if (GetAsyncKeyState(map[i].vk) & 0x8000) btns |= map[i].btn;
 
     hs->buttons   = btns;
+    hs->ps_button = 0;
     hs->connected = 1;
     hs->analog_lx = (u8)((btns & CELL_PAD_CTRL_LEFT) ? 0 :
                          (btns & CELL_PAD_CTRL_RIGHT) ? 255 : 128);
@@ -237,16 +366,38 @@ static void pad_poll_keyboard(void)
 static void pad_poll_xinput(void)
 {
     for (int i = 0; i < PAD_MAX_HOST_PORTS; i++) {
-        XINPUT_STATE state;
-        memset(&state, 0, sizeof(state));
+        PadHostState* hs = &s_host_state[i];
+        pad_reset_host_state(hs);
 
-        DWORD result = XInputGetState((DWORD)i, &state);
-        if (result != ERROR_SUCCESS) {
-            s_host_state[i].connected = 0;
+        PadScpExtendedState scp;
+        memset(&scp, 0, sizeof(scp));
+        if (s_xinput_get_extended &&
+            s_xinput_get_extended((DWORD)i, &scp) == ERROR_SUCCESS) {
+            hs->connected = 1;
+            pad_poll_scp_extended(hs, &scp);
+
+            if (s_xinput_get_custom_data) {
+                PadScpAccel sensors;
+                memset(&sensors, 0, sizeof(sensors));
+                if (s_xinput_get_custom_data((DWORD)i, 0, &sensors) == ERROR_SUCCESS) {
+                    hs->sensor_x = sensors.x;
+                    hs->sensor_y = sensors.y;
+                    hs->sensor_z = sensors.z;
+                    hs->sensor_g = sensors.gyro;
+                }
+            }
             continue;
         }
 
-        s_host_state[i].connected = 1;
+        XINPUT_STATE state;
+        memset(&state, 0, sizeof(state));
+
+        DWORD result = s_xinput_get_state ? s_xinput_get_state((DWORD)i, &state) : ERROR_DEVICE_NOT_CONNECTED;
+        if (result != ERROR_SUCCESS) {
+            continue;
+        }
+
+        hs->connected = 1;
         XINPUT_GAMEPAD* gp = &state.Gamepad;
 
         /* Map XInput buttons to PS3 CELL_PAD_CTRL_* */
@@ -268,43 +419,82 @@ static void pad_poll_xinput(void)
         if (gp->wButtons & XINPUT_GAMEPAD_A)              btns |= CELL_PAD_CTRL_CROSS;
         if (gp->wButtons & XINPUT_GAMEPAD_X)              btns |= CELL_PAD_CTRL_SQUARE;
 
-        s_host_state[i].buttons = btns;
+        hs->buttons = btns;
+        hs->ps_button = (gp->wButtons & PAD_XINPUT_GUIDE_BUTTON) != 0;
 
         /* Analog sticks. PS3 Y axis is inverted vs XInput (up = 0). Reflect about
          * 128 (256 - x), NOT 255 - x: the latter turns a centered stick into 127,
          * whose bits (0x7F) alias SELECT+START and can make the guest self-exit.
          * (via sagemono, PR #42) */
-        s_host_state[i].analog_lx = pad_xinput_stick_to_u8(gp->sThumbLX, PAD_STICK_DEADZONE);
-        s_host_state[i].analog_ly = (u8)(256 - pad_xinput_stick_to_u8(gp->sThumbLY, PAD_STICK_DEADZONE));
-        s_host_state[i].analog_rx = pad_xinput_stick_to_u8(gp->sThumbRX, PAD_STICK_DEADZONE);
-        s_host_state[i].analog_ry = (u8)(256 - pad_xinput_stick_to_u8(gp->sThumbRY, PAD_STICK_DEADZONE));
+        hs->analog_lx = pad_xinput_stick_to_u8(gp->sThumbLX, PAD_LEFT_STICK_DEADZONE);
+        hs->analog_ly = (u8)(256 - pad_xinput_stick_to_u8(gp->sThumbLY, PAD_LEFT_STICK_DEADZONE));
+        hs->analog_rx = pad_xinput_stick_to_u8(gp->sThumbRX, PAD_RIGHT_STICK_DEADZONE);
+        hs->analog_ry = (u8)(256 - pad_xinput_stick_to_u8(gp->sThumbRY, PAD_RIGHT_STICK_DEADZONE));
 
         /* Triggers */
-        s_host_state[i].trigger_l2 = gp->bLeftTrigger;
-        s_host_state[i].trigger_r2 = gp->bRightTrigger;
+        hs->trigger_l2 = gp->bLeftTrigger;
+        hs->trigger_r2 = gp->bRightTrigger;
 
         /* Pressure-sensitive buttons: XInput has digital only, so 0 or 255 */
-        s_host_state[i].press_up       = (btns & CELL_PAD_CTRL_UP)       ? 255 : 0;
-        s_host_state[i].press_down     = (btns & CELL_PAD_CTRL_DOWN)     ? 255 : 0;
-        s_host_state[i].press_left     = (btns & CELL_PAD_CTRL_LEFT)     ? 255 : 0;
-        s_host_state[i].press_right    = (btns & CELL_PAD_CTRL_RIGHT)    ? 255 : 0;
-        s_host_state[i].press_triangle = (btns & CELL_PAD_CTRL_TRIANGLE) ? 255 : 0;
-        s_host_state[i].press_circle   = (btns & CELL_PAD_CTRL_CIRCLE)   ? 255 : 0;
-        s_host_state[i].press_cross    = (btns & CELL_PAD_CTRL_CROSS)    ? 255 : 0;
-        s_host_state[i].press_square   = (btns & CELL_PAD_CTRL_SQUARE)   ? 255 : 0;
-        s_host_state[i].press_l1       = (btns & CELL_PAD_CTRL_L1)       ? 255 : 0;
-        s_host_state[i].press_r1       = (btns & CELL_PAD_CTRL_R1)       ? 255 : 0;
+        hs->press_up       = (btns & CELL_PAD_CTRL_UP)       ? 255 : 0;
+        hs->press_down     = (btns & CELL_PAD_CTRL_DOWN)     ? 255 : 0;
+        hs->press_left     = (btns & CELL_PAD_CTRL_LEFT)     ? 255 : 0;
+        hs->press_right    = (btns & CELL_PAD_CTRL_RIGHT)    ? 255 : 0;
+        hs->press_triangle = (btns & CELL_PAD_CTRL_TRIANGLE) ? 255 : 0;
+        hs->press_circle   = (btns & CELL_PAD_CTRL_CIRCLE)   ? 255 : 0;
+        hs->press_cross    = (btns & CELL_PAD_CTRL_CROSS)    ? 255 : 0;
+        hs->press_square   = (btns & CELL_PAD_CTRL_SQUARE)   ? 255 : 0;
+        hs->press_l1       = (btns & CELL_PAD_CTRL_L1)       ? 255 : 0;
+        hs->press_r1       = (btns & CELL_PAD_CTRL_R1)       ? 255 : 0;
     }
 }
 
 static void pad_init_backend(void)
 {
-    /* XInput needs no explicit init */
+    static const char* dlls[] = {
+        "xinput1_3.dll", /* first choice supports SCP extensions */
+        "xinput1_4.dll",
+        "xinput9_1_0.dll"
+    };
+
+    for (unsigned i = 0; i < sizeof dlls / sizeof dlls[0]; ++i) {
+        HMODULE library = LoadLibraryA(dlls[i]);
+        if (!library) continue;
+
+        PadXInputGetStateFn get_state = (PadXInputGetStateFn)GetProcAddress(library, MAKEINTRESOURCEA(100));
+        if (!get_state)
+            get_state = (PadXInputGetStateFn)GetProcAddress(library, "XInputGetState");
+        if (get_state) {
+            s_xinput_library = library;
+            s_xinput_get_state = get_state;
+            s_xinput_set_state = (PadXInputSetStateFn)GetProcAddress(library, "XInputSetState");
+            s_xinput_get_extended = (PadXInputGetExtendedFn)GetProcAddress(library, "XInputGetExtended");
+            s_xinput_get_custom_data = (PadXInputGetCustomDataFn)GetProcAddress(library, "XInputGetCustomData");
+            printf("[cellPad] XInput backend: %s%s\n", dlls[i],
+                   s_xinput_get_extended ? " (SCP extensions available)" : "");
+            return;
+        }
+        FreeLibrary(library);
+    }
+    printf("[cellPad] XInput backend unavailable; keyboard fallback remains active\n");
 }
 
 static void pad_shutdown_backend(void)
 {
-    /* XInput needs no explicit shutdown */
+    if (s_xinput_library) {
+        if (s_xinput_set_state) {
+            XINPUT_VIBRATION stop = {0, 0};
+            for (DWORD i = 0; i < PAD_MAX_HOST_PORTS; ++i)
+                if (s_host_state[i].connected)
+                    s_xinput_set_state(i, &stop);
+        }
+        FreeLibrary(s_xinput_library);
+    }
+    s_xinput_library = NULL;
+    s_xinput_get_state = NULL;
+    s_xinput_set_state = NULL;
+    s_xinput_get_extended = NULL;
+    s_xinput_get_custom_data = NULL;
 }
 
 #endif /* PAD_BACKEND_XINPUT */
@@ -485,7 +675,7 @@ static unsigned long long pad_now_ms(void)
 #endif
 }
 
-static void pad_poll_backend(void)
+static void pad_poll_backend_locked(void)
 {
     /* Benign race: two threads may poll in the same tick. That costs one extra
      * sweep, never a missed or stale-forever read. */
@@ -504,7 +694,10 @@ static void pad_poll_backend(void)
     pad_poll_sdl2();
 #endif
 #ifdef _WIN32
-    if (!s_host_state[0].connected) pad_poll_keyboard();
+    int any_controller_connected = 0;
+    for (int i = 0; i < PAD_MAX_HOST_PORTS; ++i)
+        any_controller_connected |= s_host_state[i].connected;
+    if (!any_controller_connected) pad_poll_keyboard();
 #endif
 }
 
@@ -515,49 +708,54 @@ static void pad_poll_backend(void)
 s32 cellPadInit(u32 max_connect)
 {
     printf("[cellPad] Init(max_connect=%u)\n", max_connect);
+    AcquireSRWLockExclusive(&s_pad_lock);
 
     if (s_pad_initialized)
-        return CELL_PAD_ERROR_ALREADY_OPENED;
+        PAD_UNLOCK_RETURN(CELL_PAD_ERROR_ALREADY_OPENED);
 
     /* The bound is the 127-slot pad table, not the 7 ports: larger requests
      * are accepted and clamped. Resistance: Fall of Man asks for 8; rejected,
      * the library stayed closed, every GetInfo failed and the title never
      * polled the pad -- stuck on "Press the START button". */
     if (max_connect == 0 || max_connect > 127)
-        return CELL_PAD_ERROR_INVALID_PARAMETER;
+        PAD_UNLOCK_RETURN(CELL_PAD_ERROR_INVALID_PARAMETER);
 
     s_pad_initialized = 1;
     s_max_connect = max_connect > CELL_PAD_MAX_PORT_NUM ? CELL_PAD_MAX_PORT_NUM : max_connect;
     memset(s_port_setting, 0, sizeof(s_port_setting));
-    memset(s_host_state, 0, sizeof(s_host_state));
+    for (u32 i = 0; i < PAD_MAX_HOST_PORTS; ++i)
+        pad_reset_host_state(&s_host_state[i]);
 
     pad_init_backend();
 
     /* Do an initial poll to detect connected controllers */
-    pad_poll_backend();
+    pad_poll_backend_locked();
 
-    return CELL_OK;
+    PAD_UNLOCK_RETURN(CELL_OK);
 }
 
 s32 cellPadEnd(void)
 {
     printf("[cellPad] End()\n");
+    AcquireSRWLockExclusive(&s_pad_lock);
 
     if (!s_pad_initialized)
-        return CELL_PAD_ERROR_NOT_OPENED;
+        PAD_UNLOCK_RETURN(CELL_PAD_ERROR_NOT_OPENED);
 
     pad_shutdown_backend();
 
     s_pad_initialized = 0;
     s_max_connect = 0;
-    return CELL_OK;
+    PAD_UNLOCK_RETURN(CELL_OK);
 }
 
 void cellPad_poll(void)
 {
+    AcquireSRWLockExclusive(&s_pad_lock);
     if (s_pad_initialized) {
-        pad_poll_backend();
+        pad_poll_backend_locked();
     }
+    ReleaseSRWLockExclusive(&s_pad_lock);
 }
 
 /* HLE args are GUEST effective addresses; guest structs are BIG-ENDIAN. The
@@ -570,18 +768,19 @@ s32 cellPadGetData(u32 port_no, CellPadData* data_guest)
 {
     { static int _once = 0;
       if (!_once++) printf("[cellPad] GetData polling begins (port %u)\n", port_no); }
+    AcquireSRWLockExclusive(&s_pad_lock);
     if (!s_pad_initialized)
-        return CELL_PAD_ERROR_NOT_OPENED;
+        PAD_UNLOCK_RETURN(CELL_PAD_ERROR_NOT_OPENED);
 
     if (port_no >= s_max_connect || !data_guest)
-        return CELL_PAD_ERROR_INVALID_PARAMETER;
+        PAD_UNLOCK_RETURN(CELL_PAD_ERROR_INVALID_PARAMETER);
 
     /* Build in a local host struct, then copy to guest memory big-endian. */
     CellPadData _d; CellPadData* data = &_d;
     memset(data, 0, sizeof(CellPadData));
 
     /* Poll fresh state */
-    pad_poll_backend();
+    pad_poll_backend_locked();
 
     /* YDKJ_INJECT_PAD: the game's wait loop polls the pad (cellPadSetActDirect /
      * GetData) -- if it's parked on a "press button" prompt after loading, no
@@ -657,7 +856,8 @@ skip_inject: ;
      * Split correctly — writing the whole value into DIGITAL1 with DIGITAL2=0
      * left every face button (cross/circle/triangle/square, L1/L2/R1/R2) dead.
      * (via sagemono, PR #42) */
-    data->button[CELL_PAD_BTN_OFFSET_DIGITAL1] = (u16)(hs->buttons & 0xFF);
+    data->button[CELL_PAD_BTN_OFFSET_DIGITAL1] = (u16)((hs->buttons & 0xFF) |
+        (hs->ps_button ? CELL_PAD_CTRL_PS : 0));
     data->button[CELL_PAD_BTN_OFFSET_DIGITAL2] = (u16)((hs->buttons >> 8) & 0xFF);
 
     /* PAD_AUTOPRESS: headless bring-up input -- pulse CROSS then START every few
@@ -854,10 +1054,10 @@ skip_inject: ;
     /* Sensor data (only meaningful if SENSOR_ON) */
     if (setting & CELL_PAD_SETTING_SENSOR_ON) {
         /* Default sensor values: accelerometer at rest (512 = 1g center) */
-        data->button[CELL_PAD_BTN_OFFSET_SENSOR_X] = 512;
-        data->button[CELL_PAD_BTN_OFFSET_SENSOR_Y] = 399; /* gravity */
-        data->button[CELL_PAD_BTN_OFFSET_SENSOR_Z] = 512;
-        data->button[CELL_PAD_BTN_OFFSET_SENSOR_G] = 512;
+        data->button[CELL_PAD_BTN_OFFSET_SENSOR_X] = hs->sensor_x;
+        data->button[CELL_PAD_BTN_OFFSET_SENSOR_Y] = hs->sensor_y;
+        data->button[CELL_PAD_BTN_OFFSET_SENSOR_Z] = hs->sensor_z;
+        data->button[CELL_PAD_BTN_OFFSET_SENSOR_G] = hs->sensor_g;
     }
     }  /* end connected block */
 
@@ -900,7 +1100,7 @@ emit:
         for (int _i = 0; _i < CELL_PAD_MAX_CODES; _i++)                    /* button[] u16 */
             vm_write16((unsigned long long)ea + 4 + (unsigned int)_i * 2, data->button[_i]);
     }
-    return CELL_OK;
+    PAD_UNLOCK_RETURN(CELL_OK);
 }
 
 /* cellPadGetInfo (v1 API, NID 0x3AAAD464) — used by PSL1GHT's ioPadGetInfo.
@@ -913,12 +1113,13 @@ emit:
 s32 cellPadGetInfo(CellPadInfo2* info)
 {
     uint32_t gaddr = (uint32_t)(uintptr_t)info;
+    AcquireSRWLockExclusive(&s_pad_lock);
     if (!s_pad_initialized)
-        return CELL_PAD_ERROR_NOT_OPENED;
+        PAD_UNLOCK_RETURN(CELL_PAD_ERROR_NOT_OPENED);
     if (!gaddr)
-        return CELL_PAD_ERROR_INVALID_PARAMETER;
+        PAD_UNLOCK_RETURN(CELL_PAD_ERROR_INVALID_PARAMETER);
 
-    pad_poll_backend();
+    pad_poll_backend_locked();
 
     /* Present a virtual pad on port 0 when nothing physical is attached, the
      * same as cellPadGetInfo2 does.
@@ -948,19 +1149,20 @@ s32 cellPadGetInfo(CellPadInfo2* info)
         vm_write16(gaddr + 0x10A + i * 2, on ? 0x0268 : 0);   /* product: DS3  */
         vm_write8(gaddr + 0x208 + i, on ? CELL_PAD_STATUS_CONNECTED : 0);
     }
-    return CELL_OK;
+    PAD_UNLOCK_RETURN(CELL_OK);
 }
 
 s32 cellPadGetInfo2(CellPadInfo2* info_guest)
 {
+    AcquireSRWLockExclusive(&s_pad_lock);
     if (!s_pad_initialized)
-        return CELL_PAD_ERROR_NOT_OPENED;
+        PAD_UNLOCK_RETURN(CELL_PAD_ERROR_NOT_OPENED);
 
     if (!info_guest)
-        return CELL_PAD_ERROR_INVALID_PARAMETER;
+        PAD_UNLOCK_RETURN(CELL_PAD_ERROR_INVALID_PARAMETER);
 
     /* Poll to get latest connection state */
-    pad_poll_backend();
+    pad_poll_backend_locked();
 
     /* Build in a local host struct, then copy to guest memory big-endian. */
     CellPadInfo2 _in; CellPadInfo2* info = &_in;
@@ -994,7 +1196,7 @@ s32 cellPadGetInfo2(CellPadInfo2* info_guest)
         for (unsigned int _o = 0; _o < sizeof(CellPadInfo2); _o += 4)
             vm_write32((unsigned long long)ea + _o, *(u32*)((char*)info + _o));
     }
-    return CELL_OK;
+    PAD_UNLOCK_RETURN(CELL_OK);
 }
 
 /* cellPadPeriphGetInfo -- the peripheral-class view of the pad ports (NID
@@ -1011,12 +1213,13 @@ s32 cellPadGetInfo2(CellPadInfo2* info_guest)
  * profile bits) mirroring the ports cellPadGetInfo2 already reports. */
 s32 cellPadPeriphGetInfo(CellPadPeriphInfo* info_guest)
 {
+    AcquireSRWLockExclusive(&s_pad_lock);
     if (!s_pad_initialized)
-        return CELL_PAD_ERROR_NOT_OPENED;
+        PAD_UNLOCK_RETURN(CELL_PAD_ERROR_NOT_OPENED);
     if (!info_guest)
-        return CELL_PAD_ERROR_INVALID_PARAMETER;
+        PAD_UNLOCK_RETURN(CELL_PAD_ERROR_INVALID_PARAMETER);
 
-    pad_poll_backend();
+    pad_poll_backend_locked();
 
     CellPadPeriphInfo _in; CellPadPeriphInfo* info = &_in;
     memset(info, 0, sizeof(CellPadPeriphInfo));
@@ -1053,7 +1256,7 @@ s32 cellPadPeriphGetInfo(CellPadPeriphInfo* info_guest)
       if (PS3_LOG_FIRST(_n, 2))
           printf("[cellPad] PeriphGetInfo(max=%u now=%u) -> STANDARD class\n",
                  info->max_connect, connected); }
-    return CELL_OK;
+    PAD_UNLOCK_RETURN(CELL_OK);
 }
 
 s32 cellPadSetPortSetting(u32 port_no, u32 port_setting)
@@ -1061,14 +1264,15 @@ s32 cellPadSetPortSetting(u32 port_no, u32 port_setting)
     printf("[cellPad] SetPortSetting(port=%u, setting=0x%X)\n",
            port_no, port_setting);
 
+    AcquireSRWLockExclusive(&s_pad_lock);
     if (!s_pad_initialized)
-        return CELL_PAD_ERROR_NOT_OPENED;
+        PAD_UNLOCK_RETURN(CELL_PAD_ERROR_NOT_OPENED);
 
     if (port_no >= CELL_PAD_MAX_PORT_NUM)
-        return CELL_PAD_ERROR_INVALID_PARAMETER;
+        PAD_UNLOCK_RETURN(CELL_PAD_ERROR_INVALID_PARAMETER);
 
     s_port_setting[port_no] = port_setting;
-    return CELL_OK;
+    PAD_UNLOCK_RETURN(CELL_OK);
 }
 
 /* cellPadInfoPressMode (NID 0x0E2DFAAD) / cellPadSetPressMode (NID 0xF83F8182)
@@ -1084,33 +1288,36 @@ s32 cellPadSetPortSetting(u32 port_no, u32 port_setting)
  * the setting back sees what it asked for. */
 s32 cellPadInfoPressMode(u32 port_no)
 {
+    AcquireSRWLockExclusive(&s_pad_lock);
     if (!s_pad_initialized)
-        return CELL_PAD_ERROR_NOT_OPENED;
+        PAD_UNLOCK_RETURN(CELL_PAD_ERROR_NOT_OPENED);
     if (port_no >= CELL_PAD_MAX_PORT_NUM)
-        return CELL_PAD_ERROR_INVALID_PARAMETER;
-    return 1;                                  /* supported */
+        PAD_UNLOCK_RETURN(CELL_PAD_ERROR_INVALID_PARAMETER);
+    PAD_UNLOCK_RETURN(1);                      /* supported */
 }
 
 s32 cellPadSetPressMode(u32 port_no, u32 mode)
 {
+    AcquireSRWLockExclusive(&s_pad_lock);
     if (!s_pad_initialized)
-        return CELL_PAD_ERROR_NOT_OPENED;
+        PAD_UNLOCK_RETURN(CELL_PAD_ERROR_NOT_OPENED);
     if (port_no >= CELL_PAD_MAX_PORT_NUM)
-        return CELL_PAD_ERROR_INVALID_PARAMETER;
+        PAD_UNLOCK_RETURN(CELL_PAD_ERROR_INVALID_PARAMETER);
     if (mode)
         s_port_setting[port_no] |= CELL_PAD_SETTING_PRESS_ON;
     else
         s_port_setting[port_no] &= ~(u32)CELL_PAD_SETTING_PRESS_ON;
-    return CELL_OK;
+    PAD_UNLOCK_RETURN(CELL_OK);
 }
 
 s32 cellPadGetCapabilityInfo(u32 port_no, CellPadCapabilityInfo* info)
 {
+    AcquireSRWLockExclusive(&s_pad_lock);
     if (!s_pad_initialized)
-        return CELL_PAD_ERROR_NOT_OPENED;
+        PAD_UNLOCK_RETURN(CELL_PAD_ERROR_NOT_OPENED);
 
     if (port_no >= CELL_PAD_MAX_PORT_NUM || !info)
-        return CELL_PAD_ERROR_INVALID_PARAMETER;
+        PAD_UNLOCK_RETURN(CELL_PAD_ERROR_INVALID_PARAMETER);
 
     u32 info_ea = (u32)(uintptr_t)info;
     for (u32 i = 0; i < CELL_PAD_MAX_CODES; i++)
@@ -1123,16 +1330,17 @@ s32 cellPadGetCapabilityInfo(u32 port_no, CellPadCapabilityInfo* info)
                         | CELL_PAD_CAPABILITY_HP_ANALOG_STICK
                         | CELL_PAD_CAPABILITY_ACTUATOR);
 
-    return CELL_OK;
+    PAD_UNLOCK_RETURN(CELL_OK);
 }
 
 s32 cellPadSetActDirect(u32 port_no, CellPadActParam* param)
 {
+    AcquireSRWLockExclusive(&s_pad_lock);
     if (!s_pad_initialized)
-        return CELL_PAD_ERROR_NOT_OPENED;
+        PAD_UNLOCK_RETURN(CELL_PAD_ERROR_NOT_OPENED);
 
     if (port_no >= CELL_PAD_MAX_PORT_NUM || !param)
-        return CELL_PAD_ERROR_INVALID_PARAMETER;
+        PAD_UNLOCK_RETURN(CELL_PAD_ERROR_INVALID_PARAMETER);
 
     param = GUEST_PTR(param, CellPadActParam*);
 
@@ -1146,12 +1354,12 @@ s32 cellPadSetActDirect(u32 port_no, CellPadActParam* param)
     s_rumble[port_no].hi = hi;
 
 #if PAD_BACKEND_XINPUT
-    /* XInput keeps the motors at what they were last set to: no renewal. */
-    if (s_host_state[port_no].connected) {
+    /* XInput retains vibration until the next update; no renewal is needed. */
+    if (s_xinput_set_state && s_host_state[port_no].connected) {
         XINPUT_VIBRATION vib;
-        vib.wLeftMotorSpeed  = (WORD)lo;
-        vib.wRightMotorSpeed = (WORD)hi;
-        XInputSetState((DWORD)port_no, &vib);
+        vib.wLeftMotorSpeed  = (WORD)hi;
+        vib.wRightMotorSpeed = (WORD)lo;
+        s_xinput_set_state((DWORD)port_no, &vib);
     }
 #endif
 
@@ -1159,17 +1367,20 @@ s32 cellPadSetActDirect(u32 port_no, CellPadActParam* param)
     pad_sdl_rumble_send((int)port_no);
 #endif
 
-    return CELL_OK;
+    PAD_UNLOCK_RETURN(CELL_OK);
 }
 
 s32 cellPadClearBuf(u32 port_no)
 {
+    AcquireSRWLockExclusive(&s_pad_lock);
     if (!s_pad_initialized)
-        return CELL_PAD_ERROR_NOT_OPENED;
+        PAD_UNLOCK_RETURN(CELL_PAD_ERROR_NOT_OPENED);
 
     if (port_no >= CELL_PAD_MAX_PORT_NUM)
-        return CELL_PAD_ERROR_INVALID_PARAMETER;
+        PAD_UNLOCK_RETURN(CELL_PAD_ERROR_INVALID_PARAMETER);
 
     /* Nothing to clear in our implementation -- state is polled fresh */
-    return CELL_OK;
+    PAD_UNLOCK_RETURN(CELL_OK);
 }
+
+#undef PAD_UNLOCK_RETURN

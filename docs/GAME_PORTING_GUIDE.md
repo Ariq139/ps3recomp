@@ -1,5 +1,9 @@
 # Game Porting Guide
 
+> **Historical notes:** Some project examples and the flOw case study below
+> describe an earlier prototype. Treat their counts, versions, and milestone
+> claims as snapshots; verify current behavior in the target project and logs.
+
 A comprehensive, step-by-step guide to porting a PS3 game to native PC using ps3recomp.
 
 ---
@@ -85,7 +89,9 @@ Cross-reference the game's imports against [MODULE_STATUS.md](MODULE_STATUS.md):
 python tools/prx_analyzer.py game/EBOOT.ELF --stubs
 ```
 
-If coverage is 95%+, the game is a good candidate.
+Import-name coverage is only a triage signal. It does not measure ABI accuracy,
+runtime side effects, reachable PPU/SPU instructions, or rendering support; do
+not use a fixed percentage as a compatibility threshold.
 
 ---
 
@@ -422,11 +428,13 @@ extern "C" int32_t cellBarGetInfo(uint32_t* out_info)
 
 ### Priority Order
 
-1. **Functions that crash if missing** — stub immediately
-2. **Functions that produce wrong behavior** — implement properly
-3. **Functions called during init** — must at least return CELL_OK
-4. **Functions called during gameplay** — implement for correctness
-5. **Rarely-called functions** — stub last
+1. **Calls on the observed path** — determine the ABI, caller expectations, and
+   required side effects, then implement those semantics.
+2. **Missing behavior with incomplete evidence** — collect traces or inspect
+   the relevant guest code before selecting semantics.
+3. **Calls proven irrelevant to the target path** — a placeholder may be used
+   temporarily, with its limitations recorded. Do not return `CELL_OK` when
+   that would leave required output state or synchronization missing.
 
 ---
 
@@ -614,7 +622,8 @@ The first game port actively in progress using ps3recomp. This section tracks re
 
 - Small PSN title (~10 MB ELF, ~50 MB total)
 - Simple gameplay (2D physics-based, no complex 3D)
-- Works perfectly in RPCS3 (behavior reference available)
+- Boots in RPCS3 in the documented test environment (a useful reference, not a
+  guarantee that the recompiled project will behave the same)
 - Limited SPU usage (audio only, no physics/compute)
 - 140 imports across 12 modules — excellent ps3recomp coverage
 

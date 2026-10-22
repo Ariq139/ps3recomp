@@ -41,28 +41,31 @@ NID:            0x718BF5F8  (first 4 bytes of SHA-1("cellFsOpen" + suffix))
 ### Algorithm
 
 ```
-NID = first 4 bytes of SHA-1(function_name + suffix), interpreted as big-endian uint32
+NID = little-endian uint32 formed from the first 4 bytes of
+      SHA-1(UTF-8(function_name) + 16-byte suffix)
 ```
 
 ### Default Suffix
 
-The standard NID suffix is a 4-byte sequence:
+The default NID suffix in this repository is 16 bytes:
 
 ```c
-#define PS3_NID_SUFFIX      "\x67\x59\x65\x99"
-#define PS3_NID_SUFFIX_LEN  4
+#define PS3_NID_SUFFIX      "\x67\x59\x65\x99\x04\x25\x04\x90\x56\x64\x27\x49\x94\x89\x74\x1A"
+#define PS3_NID_SUFFIX_LEN  16
 ```
 
-This suffix is used by most firmware libraries. Its origin: these are simply the first 4 bytes of a specific hash — Sony chose them as the "salt" for NID computation.
+The suffix is defined in `include/ps3emu/nid.h` and mirrored by
+`tools/nid_database.py`. The checked source does not establish its historical
+origin. Some libraries may use a custom suffix.
 
 ### Step-by-Step Example
 
 Computing the NID for `cellSysutilGetSystemParamInt`:
 
-1. **Concatenate**: `"cellSysutilGetSystemParamInt" + "\x67\x59\x65\x99"`
-2. **SHA-1 hash** the concatenated bytes (32 bytes total)
+1. **Concatenate** the UTF-8 function name and all 16 suffix bytes.
+2. **SHA-1 hash** the concatenated bytes.
 3. **Extract** the first 4 bytes of the 20-byte digest
-4. **Interpret** as a big-endian 32-bit unsigned integer
+4. **Interpret** those bytes as a little-endian 32-bit unsigned integer
 
 ### Implementation
 
@@ -77,10 +80,10 @@ static inline uint32_t ps3_compute_nid(const char* name)
     ps3_sha1_update(&ctx, PS3_NID_SUFFIX, PS3_NID_SUFFIX_LEN);
     ps3_sha1_final(&ctx, digest);
 
-    return ((uint32_t)digest[0] << 24) |
-           ((uint32_t)digest[1] << 16) |
-           ((uint32_t)digest[2] << 8)  |
-           ((uint32_t)digest[3]);
+    return ((uint32_t)digest[0])       |
+           ((uint32_t)digest[1] << 8)  |
+           ((uint32_t)digest[2] << 16) |
+           ((uint32_t)digest[3] << 24);
 }
 ```
 
@@ -121,7 +124,8 @@ Since we're compiling everything ahead of time, the NID resolution happens durin
 1. **Parse** the ELF to extract all `(module, NID)` import pairs
 2. **Look up** each NID in the precomputed database to get the function name
 3. **Replace** the import call site with a direct call to the HLE implementation
-4. **Unresolved NIDs** become calls to a fallback that logs a warning and returns `CELL_ENOSYS`
+4. Unresolved imports reach the runtime fallback. The current default handler
+   logs the NID and returns `CELL_OK`; a port can add title-specific behavior.
 
 ---
 

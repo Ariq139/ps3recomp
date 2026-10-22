@@ -15,6 +15,7 @@
  */
 #include "ppu_recomp.h"      /* ppu_context */
 #include "../../libs/filesystem/edat.h"
+#include "../../include/ps3emu/error_codes.h"
 #include "ps3emu/nid.h"      /* ps3_compute_nid */
 #include "ps3emu/guest_call.h" /* ps3_invoke_guest: AIO completion is a guest OPD */
 #include "sdata_decrypt.h"   /* SDATA/EDAT (NPD) decryption for cellFsSdataOpen */
@@ -24,6 +25,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <atomic>
+#include <mutex>
 #include <sys/stat.h>
 #include "../platform/win32_dirent.h"   /* <dirent.h>, or a Win32 stand-in */
 
@@ -33,6 +35,7 @@ extern "C" void ydkj_host_bt(const char* tag);
 #include <fcntl.h>
 #ifdef _WIN32
 #include <io.h>          /* open/close on MinGW */
+#include <direct.h>      /* _rmdir */
 #else
 #include <unistd.h>
 #endif
@@ -78,8 +81,31 @@ extern "C" void     vm_write64(uint64_t a, uint64_t v);
 #include "../platform/win32_backtrace.h"   /* RtlCaptureStackBackTrace / GetModuleHandleA on POSIX */
 #include "ps3emu/log_first.h"
 
+/* PS3 file offsets and sizes are 64-bit. Windows long/fseek/ftell are only
+ * 32-bit, which breaks archive reads once a CPK crosses 2 GB. */
+static int fs_seek64(FILE* f, int64_t offset, int whence)
+{
+#ifdef _WIN32
+    return _fseeki64(f, (__int64)offset, whence);
+#else
+    return fseeko(f, (off_t)offset, whence);
+#endif
+}
+
+static int64_t fs_tell64(FILE* f)
+{
+#ifdef _WIN32
+    return (int64_t)_ftelli64(f);
+#else
+    return (int64_t)ftello(f);
+#endif
+}
+
 /* Host root that the PS3 mount points map into (dir containing PS3_GAME). */
 extern "C" const char* ppu_vfs_root = ".";
+/* Set by the game runner when its disc root is nested under RPCS3's
+ * dev_hdd0/game/<title> directory. */
+extern "C" const char* ppu_hdd0_root = nullptr;
 
 /* CELL_FS return / mode / flag constants. */
 #define CELL_OK              0
@@ -136,8 +162,8 @@ static void host_path(char* out, size_t cap, const char* guest)
      * /dev_hdd0/game/<title>/), mirroring the PS3/RPCS3 layout: base data on
      * /dev_bdvd (disc), update data on /dev_hdd0. Set PS3_HDD0_ROOT to the host
      * dir that /dev_hdd0 maps into (the one containing game/<title>/). */
-    static const char* hdd0_root = nullptr; static int hdd0_init = 0;
-    if (!hdd0_init) { hdd0_root = getenv("PS3_HDD0_ROOT"); hdd0_init = 1; }
+    const char* hdd0_root = getenv("PS3_HDD0_ROOT");
+    if (!hdd0_root || !*hdd0_root) hdd0_root = ppu_hdd0_root;
     if (hdd0_root && strncmp(guest, "/dev_hdd0/", 10) == 0) {
         snprintf(out, cap, "%s/%s", hdd0_root, guest + 10);
         for (char* p = out; *p; p++) if (*p == '\\') *p = '/';
@@ -209,6 +235,7 @@ static uint8_t g_fd_usm[FS_MAX];
 static char    g_fd_path[FS_MAX][192];   /* guest path per fd (diagnostics) */   /* 1 if this fd is an open .usm movie (read tracker) */
 static DIR*  g_dirs[FS_MAX];
 static char  g_dir_path[FS_MAX][1024];   /* host path per open dir (for readdir stat) */
+static std::mutex g_fs_mutex; /* descriptor table and FILE/DIR stream operations */
 
 static int fd_alloc_file(FILE* f)
 {
@@ -276,15 +303,22 @@ static void cellFsOpen(ppu_context* ctx)
         close(hfd);
         ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_EIO; return;
     }
-    int fd = fd_alloc_file(f);
+    int fd;
+    {
+        std::lock_guard<std::mutex> fs_lock(g_fs_mutex);
+        fd = fd_alloc_file(f);
+        if (fd >= 0) {
+            g_fd_usm[fd] = (strstr(gpath, ".usm") != nullptr) ? 1 : 0;
+            strncpy(g_fd_path[fd], gpath, sizeof g_fd_path[fd]-1);
+            g_fd_path[fd][sizeof g_fd_path[fd]-1] = 0;
+        }
+    }
     if (fd < 0) { fclose(f); ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_EIO; return; }
     if (fd_ptr) vm_write32(fd_ptr, (uint32_t)fd);
-    g_fd_usm[fd] = (strstr(gpath, ".usm") != nullptr) ? 1 : 0;
     /* FS_CALLER=1: name the guest function that opened each file. A title whose
      * streaming layer opens a file and never reads it (You Don't Know Jack's
      * movies) is diagnosed from the opener: its sibling read path is the one
      * that is not running. */
-    if (fd >= 0 && fd < FS_MAX) { strncpy(g_fd_path[fd], gpath, sizeof g_fd_path[fd]-1); g_fd_path[fd][sizeof g_fd_path[fd]-1]=0; }
     { char who[64] = "?";
       if (getenv("FS_CALLER")) { ppu_guest_caller(who, sizeof who);
           fprintf(stderr, "[fs] open '%s' -> fd %d  (opened by %s)\n", gpath, fd, who);
@@ -349,11 +383,11 @@ static void cellFsSdataOpen(ppu_context* ctx)
      * exe's compiler). */
     unsigned char magic[4] = {0};
     size_t got = fread(magic, 1, 4, f);
-    fseek(f, 0, SEEK_SET);
+    fs_seek64(f, 0, SEEK_SET);
     if (got == 4 && magic[0]=='N' && magic[1]=='P' && magic[2]=='D') {
         /* NPD-encrypted SDATA: decrypt it in full and serve the plaintext from
          * an anonymous tmpfile so the title's reads see the real container. */
-        fseek(f, 0, SEEK_END); long enc_sz = ftell(f); fseek(f, 0, SEEK_SET);
+        fs_seek64(f, 0, SEEK_END); int64_t enc_sz = fs_tell64(f); fs_seek64(f, 0, SEEK_SET);
         uint8_t* enc = (enc_sz > 0) ? (uint8_t*)malloc((size_t)enc_sz) : nullptr;
         size_t rd = enc ? fread(enc, 1, (size_t)enc_sz, f) : 0;
         fclose(f);
@@ -362,8 +396,9 @@ static void cellFsSdataOpen(ppu_context* ctx)
         free(enc);
         if (!dec) {
             fprintf(stderr, "[fs] SdataOpen '%s' NPD decrypt FAILED (unsupported "
-                    "EDAT/needs license); returning success without a handle\n", gpath);
-            ctx->gpr[3] = CELL_OK; return;   /* don't feed the title ciphertext */
+                    "EDAT/needs license); returning CELL_EACCES\n", gpath);
+            ctx->gpr[3] = (uint64_t)(int64_t)CELL_EACCES;
+            return;   /* never report a successful open with no fd */
         }
         char dmagic[4] = {0};
         if (dec_sz >= 4) memcpy(dmagic, dec, 4);
@@ -374,7 +409,8 @@ static void cellFsSdataOpen(ppu_context* ctx)
         }
         free(dec);
         rewind(tf);
-        int fd = fd_alloc_file(tf);
+        int fd;
+        { std::lock_guard<std::mutex> fs_lock(g_fs_mutex); fd = fd_alloc_file(tf); }
         if (fd < 0) { fclose(tf); ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_EIO; return; }
         if (fd_ptr) vm_write32(fd_ptr, (uint32_t)fd);
         fprintf(stderr, "[fs] SdataOpen '%s' -> fd %d (NPD decrypted, 0x%zX bytes, magic '%c%c%c%c')\n",
@@ -384,7 +420,8 @@ static void cellFsSdataOpen(ppu_context* ctx)
         ctx->gpr[3] = CELL_OK;
         return;
     }
-    int fd = fd_alloc_file(f);
+    int fd;
+    { std::lock_guard<std::mutex> fs_lock(g_fs_mutex); fd = fd_alloc_file(f); }
     if (fd < 0) { fclose(f); ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_EIO; return; }
     if (fd_ptr) vm_write32(fd_ptr, (uint32_t)fd);
     fprintf(stderr, "[fs] SdataOpen '%s' -> fd %d (magic %c%c%c%c)\n", gpath, fd,
@@ -394,6 +431,7 @@ static void cellFsSdataOpen(ppu_context* ctx)
 
 static void cellFsClose(ppu_context* ctx)
 {
+    std::lock_guard<std::mutex> fs_lock(g_fs_mutex);
     int fd = (int)(uint32_t)ctx->gpr[3];
     if (getenv("FS_CALLER")) { char w[64]="?"; ppu_guest_caller(w,sizeof w);
         fprintf(stderr, "[fs] close fd=%d  (by %s)\n", fd, w); }
@@ -428,13 +466,14 @@ static inline void fs_prefault(uint32_t buf, uint64_t len)
 
 static void cellFsRead(ppu_context* ctx)
 {
+    std::lock_guard<std::mutex> fs_lock(g_fs_mutex);
     int fd          = (int)(uint32_t)ctx->gpr[3];
     uint32_t buf    = (uint32_t)ctx->gpr[4];
     uint64_t nbytes = ctx->gpr[5];
     uint32_t nread_ptr = (uint32_t)ctx->gpr[6];
     if (fd < 0 || fd >= FS_MAX || !g_files[fd]) { ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_EIO; return; }
     uint64_t raw_nbytes = ctx->gpr[5];
-    long fpos_before = ftell(g_files[fd]);
+    int64_t fpos_before = fs_tell64(g_files[fd]);
     if (ppu_vm_size && (uint64_t)buf + nbytes > ppu_vm_size) nbytes = ppu_vm_size - buf;
     fs_prefault(buf, nbytes);
     size_t n = fread(vm_base + buf, 1, (size_t)nbytes, g_files[fd]);   /* raw bytes, no swap */
@@ -443,16 +482,16 @@ static void cellFsRead(ppu_context* ctx)
      * a second, so it cannot be watched to its end -- truncating the stream makes
      * the demuxer see EOF and the movie finish, which is what advances the title
      * to whatever follows the intro. Deliberately a testing knob, not a fix. */
-    { static int efd = -2; static long elim = 0;
+    { static int efd = -2; static int64_t elim = 0;
       if (efd == -2) { const char* e = getenv("PS3_FSLOG_EOF");
-          if (e) { efd = atoi(e); const char* c = strchr(e, 44); elim = c ? atol(c + 1) : 0; }
+          if (e) { efd = atoi(e); const char* c = strchr(e, 44); elim = c ? strtoll(c + 1, nullptr, 10) : 0; }
           else efd = -1; }
       if (efd >= 0 && fd == efd && elim > 0 && fpos_before >= elim) {
           static int once = 0;
-          if (!once++) fprintf(stderr, "[fs] PS3_FSLOG_EOF: fd=%d truncated at %ld bytes\n", fd, elim);
+          if (!once++) fprintf(stderr, "[fs] PS3_FSLOG_EOF: fd=%d truncated at %lld bytes\n", fd, (long long)elim);
           n = 0;
       } }
-    if (g_fd_usm[fd] && getenv("PS3_FSLOG_READS")) fprintf(stderr, "[USMRD] READ usm fd=%d nbytes=%llu -> %zu magic=%02X%02X%02X%02X pos=%ld lr=0x%08X\n", fd, (unsigned long long)nbytes, n, vm_base[buf], vm_base[buf+1], vm_base[buf+2], vm_base[buf+3], fpos_before, (uint32_t)ctx->lr);
+    if (g_fd_usm[fd] && getenv("PS3_FSLOG_READS")) fprintf(stderr, "[USMRD] READ usm fd=%d nbytes=%llu -> %zu magic=%02X%02X%02X%02X pos=%lld lr=0x%08X\n", fd, (unsigned long long)nbytes, n, vm_base[buf], vm_base[buf+1], vm_base[buf+2], vm_base[buf+3], (long long)fpos_before, (uint32_t)ctx->lr);
     /* PS3_FSLOG_READS=<fd>: log every read on one descriptor. PS3_FSLOG caps at 20
      * lines and they are all spent before a movie ever opens, so it cannot
      * answer "is the streamer reading the .avi". */
@@ -498,6 +537,7 @@ static void cellFsRead(ppu_context* ctx)
 
 static void cellFsWrite(ppu_context* ctx)
 {
+    std::lock_guard<std::mutex> fs_lock(g_fs_mutex);
     int fd          = (int)(uint32_t)ctx->gpr[3];
     uint32_t buf    = (uint32_t)ctx->gpr[4];
     uint64_t nbytes = ctx->gpr[5];
@@ -561,6 +601,7 @@ static void fs_report_block_size(ppu_context* ctx, uint32_t sec_ptr, uint32_t bl
 
 static void cellFsFGetBlockSize(ppu_context* ctx)
 {
+    std::lock_guard<std::mutex> fs_lock(g_fs_mutex);
     int fd = (int)(uint32_t)ctx->gpr[3];
     if (fd < 0 || fd >= FS_MAX || !g_files[fd]) {
         ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_EIO;
@@ -578,6 +619,7 @@ static void cellFsGetBlockSize(ppu_context* ctx)
 
 static void cellFsLseek(ppu_context* ctx)
 {
+    std::lock_guard<std::mutex> fs_lock(g_fs_mutex);
     int fd        = (int)(uint32_t)ctx->gpr[3];
     int64_t off   = (int64_t)ctx->gpr[4];
     uint32_t wh   = (uint32_t)ctx->gpr[5];
@@ -586,8 +628,11 @@ static void cellFsLseek(ppu_context* ctx)
     if (getenv("FS_CALLER")) { char w[64]="?"; ppu_guest_caller(w,sizeof w);
         fprintf(stderr, "[fs] lseek fd=%d off=%lld whence=%u  (by %s)\n", fd, (long long)off, wh, w); }
     int worigin = (wh == CELL_FS_SEEK_END) ? SEEK_END : (wh == CELL_FS_SEEK_CUR) ? SEEK_CUR : SEEK_SET;
-    FS_SEEK64(g_files[fd], off, worigin);
-    int64_t p = FS_TELL64(g_files[fd]);
+    if (fs_seek64(g_files[fd], off, worigin) != 0) {
+        ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_EIO; return;
+    }
+    int64_t p = fs_tell64(g_files[fd]);
+    if (p < 0) { ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_EIO; return; }
     if (pos_ptr) vm_write64(pos_ptr, (uint64_t)p);
     ctx->gpr[3] = CELL_OK;
 }
@@ -633,15 +678,20 @@ static void cellFsStat(ppu_context* ctx)
 
 static void cellFsFstat(ppu_context* ctx)
 {
+    std::lock_guard<std::mutex> fs_lock(g_fs_mutex);
     int fd      = (int)(uint32_t)ctx->gpr[3];
     uint32_t sb = (uint32_t)ctx->gpr[4];
     if (fd < 0 || fd >= FS_MAX || !g_files[fd]) { ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_EIO; return; }
     if (getenv("FS_CALLER")) { char w[64]="?"; ppu_guest_caller(w,sizeof w);
         fprintf(stderr, "[fs] fstat fd=%d  (by %s)\n", fd, w); }
-    int64_t cur = FS_TELL64(g_files[fd]);
-    FS_SEEK64(g_files[fd], 0, SEEK_END);
-    int64_t sz = FS_TELL64(g_files[fd]);
-    FS_SEEK64(g_files[fd], cur, SEEK_SET);
+    int64_t cur = fs_tell64(g_files[fd]);
+    if (cur < 0 || fs_seek64(g_files[fd], 0, SEEK_END) != 0) {
+        ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_EIO; return;
+    }
+    int64_t sz = fs_tell64(g_files[fd]);
+    if (sz < 0 || fs_seek64(g_files[fd], cur, SEEK_SET) != 0) {
+        ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_EIO; return;
+    }
     /* FS_FSTAT_CAP=<bytes>: DIAGNOSTIC. Report a smaller size than the file
      * has. You Don't Know Jack reads a 100 KB archive whole but only probes
      * (open/fstat/close) its 500 KB and 2.4 MB ones; if that branch is driven
@@ -650,9 +700,9 @@ static void cellFsFstat(ppu_context* ctx)
     { const char* cap = getenv("FS_FSTAT_CAP");
       const char* only = getenv("FS_FSTAT_CAP_PATH");
       if (cap && only && *only && !(g_fd_path[fd][0] && strstr(g_fd_path[fd], only))) cap = 0;
-      if (cap) { long long c = strtoll(cap, 0, 0);
+      if (cap) { int64_t c = strtoll(cap, 0, 0);
           if (c > 0 && sz > c) {
-              fprintf(stderr, "[fs] fstat fd=%d size %lld -> capped %lld (FS_FSTAT_CAP)\n", fd, (long long)sz, c);
+              fprintf(stderr, "[fs] fstat fd=%d size %lld -> capped %lld (FS_FSTAT_CAP)\n", fd, (long long)sz, (long long)c);
               sz = c; } } }
     if (sb) write_stat(sb, CELL_FS_S_IFREG | 0x1B6, (uint64_t)sz);
     if (getenv("PS3_FSLOG")) { static int _n=0; if(PS3_LOG_FIRST(_n, 12)) fprintf(stderr,"[FSDBG] cellFsFstat(fd=%d) -> size=0x%llX\n",fd,(unsigned long long)sz); }
@@ -668,9 +718,13 @@ static void cellFsOpendir(ppu_context* ctx)
     DIR* d = opendir(hpath);
     if (getenv("PS3_FSLOG")) fprintf(stderr, "[fs] opendir '%s' -> %s\n", gpath, d ? "OK" : "ENOENT");
     if (!d) { ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_ENOENT; return; }
-    int fd = fd_alloc_dir(d);
+    int fd;
+    {
+        std::lock_guard<std::mutex> fs_lock(g_fs_mutex);
+        fd = fd_alloc_dir(d);
+        if (fd >= 0) strncpy(g_dir_path[fd], hpath, sizeof g_dir_path[fd] - 1);
+    }
     if (fd < 0) { closedir(d); ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_EIO; return; }
-    strncpy(g_dir_path[fd], hpath, sizeof g_dir_path[fd] - 1);
     if (fd_ptr) vm_write32(fd_ptr, (uint32_t)fd);
     ctx->gpr[3] = CELL_OK;
 }
@@ -678,6 +732,7 @@ static void cellFsOpendir(ppu_context* ctx)
 /* CellFsDirent: d_type(1) d_namlen(1) d_name[256]; total 0x102. */
 static void cellFsReaddir(ppu_context* ctx)
 {
+    std::lock_guard<std::mutex> fs_lock(g_fs_mutex);
     int fd          = (int)(uint32_t)ctx->gpr[3];
     uint32_t dirent = (uint32_t)ctx->gpr[4];
     uint32_t nread_ptr = (uint32_t)ctx->gpr[5];
@@ -697,61 +752,67 @@ static void cellFsReaddir(ppu_context* ctx)
     ctx->gpr[3] = CELL_OK;
 }
 
-/* CellFsDirectoryEntry is a 52-byte stat followed by a 258-byte dirent,
- * rounded to four-byte alignment: 312 bytes. entries_size is bytes, while
- * data_count is a big-endian u32 count of complete entries. The stream is
- * shared with cellFsReaddir and cellFsClosedir. */
 static void cellFsGetDirectoryEntries(ppu_context* ctx)
 {
-    const uint32_t fd = (uint32_t)ctx->gpr[3];
-    const uint32_t entries = (uint32_t)ctx->gpr[4];
-    const uint32_t bytes = (uint32_t)ctx->gpr[5];
-    const uint32_t count_ptr = (uint32_t)ctx->gpr[6];
-    const uint64_t limit = ppu_vm_size ? ppu_vm_size : 0x100000000ull;
-    if (!entries || !count_ptr || uint64_t(entries) + bytes > limit ||
-        uint64_t(count_ptr) + 4 > limit) {
-        ctx->gpr[3] = 0x8001000Du; // CELL_EFAULT
+    std::lock_guard<std::mutex> fs_lock(g_fs_mutex);
+    int fd = (int)(uint32_t)ctx->gpr[3];
+    uint32_t entries = (uint32_t)ctx->gpr[4];
+    uint32_t entries_size = (uint32_t)ctx->gpr[5];
+    uint32_t count_ptr = (uint32_t)ctx->gpr[6];
+    const uint32_t record_size = 52u + 256u;
+    if (!entries || !count_ptr) {
+        ctx->gpr[3] = (uint64_t)(int64_t)CELL_EFAULT;
         return;
     }
-    if (fd < 3 || fd >= FS_MAX || !g_dirs[fd]) {
-        ctx->gpr[3] = 0x8001002Au; // CELL_EBADF
+    if (fd < 0 || fd >= FS_MAX || !g_dirs[fd]) {
+        vm_write32(count_ptr, 0);
+        ctx->gpr[3] = (uint64_t)(int64_t)CELL_EBADF;
         return;
     }
+    if (entries_size > UINT32_MAX - entries ||
+        (ppu_vm_size && (uint64_t)entries + entries_size > ppu_vm_size)) {
+        vm_write32(count_ptr, 0);
+        ctx->gpr[3] = (uint64_t)(int64_t)CELL_EFAULT;
+        return;
+    }
+
+    uint32_t capacity = entries_size / record_size;
     uint32_t count = 0;
-    ctx->gpr[3] = CELL_OK;
-    for (; count < bytes / 312; ++count) {
-        errno = 0;
-        struct dirent* entry = readdir(g_dirs[fd]);
-        if (!entry) {
-            if (errno) ctx->gpr[3] = 0x8001002Bu; // CELL_EIO
-            break;
-        }
-        char path[1300];
-        snprintf(path, sizeof path, "%s/%s", g_dir_path[fd], entry->d_name);
+    while (count < capacity) {
+        struct dirent* e = readdir(g_dirs[fd]);
+        if (!e) break;
+        uint32_t item = entries + count * record_size;
+        char full[1300];
         struct stat st;
-        if (stat(path, &st) != 0) {
-            ctx->gpr[3] = 0x8001002Bu; // entry disappeared or cannot be inspected
-            break;
-        }
-        uint32_t out = entries + count * 312;
-        memset(vm_base + out, 0, 312);
-        bool directory = (st.st_mode & S_IFDIR) != 0;
-        write_stat(out, (directory ? CELL_FS_S_IFDIR : CELL_FS_S_IFREG) |
-                        (uint32_t(st.st_mode) & 0777), uint64_t(st.st_size));
-        vm_write64(out + 0x0C, uint64_t(st.st_atime));
-        vm_write64(out + 0x14, uint64_t(st.st_mtime));
-        vm_write64(out + 0x1C, uint64_t(st.st_ctime));
-        size_t length = strlen(entry->d_name);
-        if (length > 255) length = 255;
-        vm_base[out + 52] = directory ? CELL_FS_TYPE_DIR : CELL_FS_TYPE_REG;
-        vm_base[out + 53] = uint8_t(length);
-        memcpy(vm_base + out + 54, entry->d_name, length);
+        snprintf(full, sizeof full, "%s/%s", g_dir_path[fd], e->d_name);
+        memset(&st, 0, sizeof(st));
+        (void)stat(full, &st);
+        uint32_t mode = (st.st_mode & S_IFDIR) ? (CELL_FS_S_IFDIR | 0x1FFu)
+                                                : (CELL_FS_S_IFREG | 0x1B6u);
+        vm_write32(item + 0x00, mode);
+        vm_write32(item + 0x04, 0);
+        vm_write32(item + 0x08, 0);
+        vm_write64(item + 0x0C, (uint64_t)st.st_atime);
+        vm_write64(item + 0x14, (uint64_t)st.st_mtime);
+        vm_write64(item + 0x1C, (uint64_t)st.st_ctime);
+        vm_write64(item + 0x24, (uint64_t)st.st_size);
+        vm_write64(item + 0x2C, 4096u);
+        size_t name_len = strlen(e->d_name);
+        if (name_len >= 256u) name_len = 255u;
+        memcpy(vm_base + item + 52, e->d_name, name_len);
+        vm_base[item + 52 + name_len] = 0;
+        if (name_len + 1 < 256u)
+            memset(vm_base + item + 52 + name_len + 1, 0,
+                   256u - name_len - 1);
+        count++;
     }
     vm_write32(count_ptr, count);
+    ctx->gpr[3] = CELL_OK;
 }
 
 static void cellFsClosedir(ppu_context* ctx)
 {
+    std::lock_guard<std::mutex> fs_lock(g_fs_mutex);
     int fd = (int)(uint32_t)ctx->gpr[3];
     if (fd >= 0 && fd < FS_MAX && g_dirs[fd]) { closedir(g_dirs[fd]); g_dirs[fd] = nullptr; }
     ctx->gpr[3] = CELL_OK;
@@ -792,13 +853,184 @@ static void cellFsMkdir(ppu_context* ctx)
     if (getenv("PS3_FSLOG")) fprintf(stderr, "[fs] mkdir '%s' -> '%s' (%s)\n", gpath, hpath, r == 0 ? "OK" : "FAIL");
     ctx->gpr[3] = CELL_OK;   /* existing dir is benign for boot */
 }
-static void cellFsRmdir(ppu_context* ctx)  { ctx->gpr[3] = CELL_OK; }
-static void cellFsUnlink(ppu_context* ctx) { ctx->gpr[3] = CELL_OK; }
+static int32_t cell_fs_errno(int e)
+{
+    switch (e) {
+    case ENOENT: return CELL_FS_ENOENT;
+    case EACCES: return CELL_EACCES;
+    case EPERM: return CELL_EPERM;
+    case EBADF: return CELL_EBADF;
+    case EEXIST: return CELL_EEXIST;
+    case ENOTDIR: return CELL_ENOTDIR;
+    case ENOTEMPTY: return CELL_ENOTEMPTY;
+    case EFAULT: return CELL_EFAULT;
+    case EINVAL: return CELL_EINVAL;
+    case EIO: return CELL_EIO;
+    case ENAMETOOLONG: return CELL_ENAMETOOLONG;
+    default: return CELL_EIO;
+    }
+}
+
+/* Validate host-I/O ranges before passing guest memory to stdio. vm_write64
+ * safely ignores out-of-range stores, but HLE calls must still report EFAULT
+ * instead of claiming the transfer succeeded when an output pointer is bad. */
+static int fs_guest_range_valid(uint32_t addr, uint64_t size)
+{
+    if (!vm_base) return 0;
+    if (!size) return 1;
+    if (!ppu_vm_size) return 1;
+    return (uint64_t)addr <= ppu_vm_size && size <= (uint64_t)ppu_vm_size - addr;
+}
+
+/* cellFs*WithOffset performs positional I/O without changing the descriptor's
+ * current position. Keep the save/seek/transfer/restore sequence together so
+ * callers that use the normal descriptor position see the same contract. */
+static int32_t fs_transfer_with_offset(FILE* file, uint64_t offset,
+                                       uint32_t buf, uint64_t size,
+                                       int write, size_t* transferred)
+{
+    *transferred = 0;
+    if (offset > INT64_MAX || size > SIZE_MAX) return CELL_EFBIG;
+
+    fpos_t saved_pos;
+    if (fgetpos(file, &saved_pos) != 0) return cell_fs_errno(errno);
+
+    int32_t result = CELL_OK;
+    if (fs_seek64(file, (int64_t)offset, SEEK_SET) != 0) {
+        result = cell_fs_errno(errno);
+    } else {
+        if (write) {
+            fs_prefault(buf, size);
+            *transferred = fwrite(vm_base + buf, 1, (size_t)size, file);
+            if (*transferred != (size_t)size && ferror(file))
+                result = cell_fs_errno(errno);
+        } else {
+            fs_prefault(buf, size);
+            *transferred = fread(vm_base + buf, 1, (size_t)size, file);
+            if (ferror(file)) result = cell_fs_errno(errno);
+        }
+    }
+
+    /* fsetpos restores the descriptor offset and clears EOF. Clear any stream
+     * error from the positional operation first so it cannot poison later I/O. */
+    clearerr(file);
+    if (fsetpos(file, &saved_pos) != 0 && result == CELL_OK)
+        result = cell_fs_errno(errno);
+    return result;
+}
+
+/* Signatures follow the RPCS3 cellFs ABI: fd, offset, buffer, byte count,
+ * optional u64 transferred-count output. The local implementation operates on
+ * ps3recomp's FILE-backed VFS descriptors rather than RPCS3's sys_fs_fcntl. */
+static void cellFsReadWithOffset(ppu_context* ctx)
+{
+    std::lock_guard<std::mutex> fs_lock(g_fs_mutex);
+    const int fd = (int)(uint32_t)ctx->gpr[3];
+    const uint64_t offset = ctx->gpr[4];
+    const uint32_t buf = (uint32_t)ctx->gpr[5];
+    const uint64_t size = ctx->gpr[6];
+    const uint32_t nread_ptr = (uint32_t)ctx->gpr[7];
+
+    if (nread_ptr && !fs_guest_range_valid(nread_ptr, 8)) {
+        ctx->gpr[3] = (uint64_t)(int64_t)CELL_EFAULT;
+        return;
+    }
+    if ((!buf && size) || size > SIZE_MAX || !fs_guest_range_valid(buf, size)) {
+        if (nread_ptr) vm_write64(nread_ptr, 0);
+        ctx->gpr[3] = (uint64_t)(int64_t)(size > SIZE_MAX ? CELL_EFBIG : CELL_EFAULT);
+        return;
+    }
+    if (fd < 3 || fd >= FS_MAX || !g_files[fd]) {
+        if (nread_ptr) vm_write64(nread_ptr, 0);
+        ctx->gpr[3] = (uint64_t)(int64_t)CELL_EBADF;
+        return;
+    }
+
+    size_t transferred = 0;
+    const int32_t result = fs_transfer_with_offset(g_files[fd], offset, buf,
+                                                    size, 0, &transferred);
+    if (nread_ptr) vm_write64(nread_ptr, (uint64_t)transferred);
+    ctx->gpr[3] = (uint64_t)(int64_t)result;
+}
+
+static void cellFsWriteWithOffset(ppu_context* ctx)
+{
+    std::lock_guard<std::mutex> fs_lock(g_fs_mutex);
+    const int fd = (int)(uint32_t)ctx->gpr[3];
+    const uint64_t offset = ctx->gpr[4];
+    const uint32_t buf = (uint32_t)ctx->gpr[5];
+    const uint64_t size = ctx->gpr[6];
+    const uint32_t nwrite_ptr = (uint32_t)ctx->gpr[7];
+
+    /* RPCS3 checks the const input pointer before validating the descriptor. */
+    if (!buf || size > SIZE_MAX || !fs_guest_range_valid(buf, size)) {
+        if (nwrite_ptr && fs_guest_range_valid(nwrite_ptr, 8)) vm_write64(nwrite_ptr, 0);
+        ctx->gpr[3] = (uint64_t)(int64_t)(size > SIZE_MAX ? CELL_EFBIG : CELL_EFAULT);
+        return;
+    }
+    if (nwrite_ptr && !fs_guest_range_valid(nwrite_ptr, 8)) {
+        ctx->gpr[3] = (uint64_t)(int64_t)CELL_EFAULT;
+        return;
+    }
+    if (fd < 3 || fd >= FS_MAX || !g_files[fd]) {
+        if (nwrite_ptr) vm_write64(nwrite_ptr, 0);
+        ctx->gpr[3] = (uint64_t)(int64_t)CELL_EBADF;
+        return;
+    }
+
+    size_t transferred = 0;
+    const int32_t result = fs_transfer_with_offset(g_files[fd], offset, buf,
+                                                    size, 1, &transferred);
+    if (nwrite_ptr) vm_write64(nwrite_ptr, (uint64_t)transferred);
+    ctx->gpr[3] = (uint64_t)(int64_t)result;
+}
+
+static void cellFsRmdir(ppu_context* ctx)
+{
+    char gpath[1024], hpath[1100];
+    guest_strcpy(gpath, (uint32_t)ctx->gpr[3], sizeof gpath);
+    if (!gpath[0]) { ctx->gpr[3] = (uint64_t)(int64_t)CELL_EFAULT; return; }
+    host_path(hpath, sizeof hpath, gpath);
+#ifdef _WIN32
+    const int rc = _rmdir(hpath);
+#else
+    const int rc = rmdir(hpath);
+#endif
+    ctx->gpr[3] = rc == 0 ? CELL_OK : (uint64_t)(int64_t)cell_fs_errno(errno);
+}
+
+static void cellFsUnlink(ppu_context* ctx)
+{
+    char gpath[1024], hpath[1100];
+    guest_strcpy(gpath, (uint32_t)ctx->gpr[3], sizeof gpath);
+    if (!gpath[0]) { ctx->gpr[3] = (uint64_t)(int64_t)CELL_EFAULT; return; }
+    host_path(hpath, sizeof hpath, gpath);
+#ifdef _WIN32
+    const int rc = _unlink(hpath);
+#else
+    const int rc = unlink(hpath);
+#endif
+    ctx->gpr[3] = rc == 0 ? CELL_OK : (uint64_t)(int64_t)cell_fs_errno(errno);
+}
+
 static void cellFsFsync(ppu_context* ctx)
 {
+    std::lock_guard<std::mutex> fs_lock(g_fs_mutex);
     int fd = (int)(uint32_t)ctx->gpr[3];
-    if (fd >= 0 && fd < FS_MAX && g_files[fd]) fflush(g_files[fd]);
-    ctx->gpr[3] = CELL_OK;
+    if (fd < 0 || fd >= FS_MAX || !g_files[fd]) {
+        ctx->gpr[3] = (uint64_t)(int64_t)CELL_EBADF;
+        return;
+    }
+    if (fflush(g_files[fd]) != 0) {
+        ctx->gpr[3] = (uint64_t)(int64_t)cell_fs_errno(errno);
+        return;
+    }
+#ifdef _WIN32
+    const int rc = _commit(_fileno(g_files[fd]));
+#else
+    const int rc = fsync(fileno(g_files[fd]));
+#endif
+    ctx->gpr[3] = rc == 0 ? CELL_OK : (uint64_t)(int64_t)cell_fs_errno(errno);
 }
 /* File-area preallocation (LBP cache warm-up spams this): host filesystems
  * grow files on write, so accepting is correct -- no preallocation needed. */
@@ -866,18 +1098,41 @@ static uint64_t guest_be64(uint32_t a)
     return ((uint64_t)guest_be32(a) << 32) | guest_be32(a + 4);
 }
 
-static void cellFsAioInit(ppu_context* ctx)   { ctx->gpr[3] = CELL_OK; }
-static void cellFsAioFinish(ppu_context* ctx) { ctx->gpr[3] = CELL_OK; }
-/* Nothing is ever outstanding, so a cancel has nothing to find. Real cellFs
- * answers CELL_FS_ENOENT for an unknown id and callers treat that as "already
- * done", which is exactly true here. */
-static void cellFsAioCancel(ppu_context* ctx) { ctx->gpr[3] = CELL_OK; }
+static int s_aio_initialized;
+
+static void cellFsAioInit(ppu_context* ctx)
+{
+    char mount[256];
+    const uint32_t mount_ea = (uint32_t)ctx->gpr[3];
+    if (!mount_ea) { ctx->gpr[3] = (uint64_t)(int64_t)CELL_EFAULT; return; }
+    guest_strcpy(mount, mount_ea, sizeof mount);
+    if (!mount[0]) { ctx->gpr[3] = (uint64_t)(int64_t)CELL_EINVAL; return; }
+    s_aio_initialized = 1;
+    ctx->gpr[3] = CELL_OK;
+}
+
+static void cellFsAioFinish(ppu_context* ctx)
+{
+    s_aio_initialized = 0;
+    ctx->gpr[3] = CELL_OK;
+}
+
+/* This runtime completes each read inline, so no request remains pending.
+ * RPCS3 currently reports EINVAL for cancellation in its unimplemented path. */
+static void cellFsAioCancel(ppu_context* ctx)
+{
+    (void)ctx->gpr[3]; /* request id */
+    ctx->gpr[3] = (uint64_t)(int64_t)CELL_EINVAL;
+}
 
 static void cellFsAioRead(ppu_context* ctx)
 {
     uint32_t aio    = (uint32_t)ctx->gpr[3];
     uint32_t id_ptr = (uint32_t)ctx->gpr[4];
     uint32_t cb_opd = (uint32_t)ctx->gpr[5];
+
+    if (!s_aio_initialized) { ctx->gpr[3] = (uint64_t)(int64_t)CELL_ENXIO; return; }
+    if (!aio || !vm_base) { ctx->gpr[3] = (uint64_t)(int64_t)CELL_EFAULT; return; }
 
     int      fd     = (int)guest_be32(aio + 0x00);
     uint64_t offset = guest_be64(aio + 0x08);
@@ -889,25 +1144,33 @@ static void cellFsAioRead(ppu_context* ctx)
     if (id_ptr) vm_write32(id_ptr, (uint32_t)id);
 
     size_t n = 0;
-    int32_t err = CELL_FS_ENOENT;
-    if (fd >= 0 && fd < FS_MAX && g_files[fd]) {
-        if (ppu_vm_size && (uint64_t)buf + size > ppu_vm_size) size = ppu_vm_size - buf;
-        fs_prefault(buf, size);
-        /* AIO reads are absolute: they must not move the fd's own position,
-         * and the guest issues them from several threads at once (FIOS media
-         * threads, audio streamers) on the same fd as its plain reads. A bare
-         * seek + read on the shared FILE* did both: another thread's seek
-         * could land between the two, and the next cellFsRead continued from
-         * wherever the AIO stopped. Hold the stream lock across seek, read
-         * and the seek back (stdio's own calls take the same lock). */
-        FILE* f = g_files[fd];
-        HOST_LOCKFILE(f);
-        const int64_t pos = (int64_t)HOST_FTELL64(f);
-        if (HOST_FSEEK64(f, offset) == 0)
-            n = fread(vm_base + buf, 1, (size_t)size, f);
-        if (pos >= 0) HOST_FSEEK64(f, pos);
-        HOST_UNLOCKFILE(f);
-        err = CELL_OK;
+    int32_t err = CELL_EBADF;
+    {
+        std::lock_guard<std::mutex> fs_lock(g_fs_mutex);
+        if (fd >= 0 && fd < FS_MAX && g_files[fd]) {
+            if (size > SIZE_MAX || (ppu_vm_size &&
+                ((uint64_t)buf > ppu_vm_size || size > ppu_vm_size - (uint64_t)buf))) {
+                err = CELL_EFAULT;
+            } else {
+                fs_prefault(buf, size);
+                FILE* f = g_files[fd];
+                /* AIO offsets are absolute and must leave the shared FILE*
+                 * position untouched. Serialize against both file-table
+                 * changes and concurrent stdio operations on this stream. */
+                HOST_LOCKFILE(f);
+                const int64_t pos = (int64_t)HOST_FTELL64(f);
+                if (HOST_FSEEK64(f, offset) != 0) {
+                    err = cell_fs_errno(errno);
+                } else {
+                    n = fread(vm_base + buf, 1, (size_t)size, f);
+                    err = ferror(f) ? cell_fs_errno(errno) : CELL_OK;
+                }
+                clearerr(f);
+                if (pos >= 0 && HOST_FSEEK64(f, pos) != 0 && err == CELL_OK)
+                    err = cell_fs_errno(errno);
+                HOST_UNLOCKFILE(f);
+            }
+        }
     }
     if (getenv("PS3_FSLOG"))
         fprintf(stderr, "[fs] aio read id=%d fd=%d off=%llu size=%llu -> %zu\n",
@@ -928,6 +1191,8 @@ extern "C" void ppu_fs_register(void)
     ps3_hle_register_ctx(ps3_compute_nid("cellFsClose"),    "cellFsClose",    cellFsClose);
     ps3_hle_register_ctx(ps3_compute_nid("cellFsRead"),     "cellFsRead",     cellFsRead);
     ps3_hle_register_ctx(ps3_compute_nid("cellFsWrite"),    "cellFsWrite",    cellFsWrite);
+    ps3_hle_register_ctx(ps3_compute_nid("cellFsReadWithOffset"),  "cellFsReadWithOffset",  cellFsReadWithOffset);
+    ps3_hle_register_ctx(ps3_compute_nid("cellFsWriteWithOffset"), "cellFsWriteWithOffset", cellFsWriteWithOffset);
     ps3_hle_register_ctx(ps3_compute_nid("cellFsLseek"),    "cellFsLseek",    cellFsLseek);
     ps3_hle_register_ctx(ps3_compute_nid("cellFsFGetBlockSize"), "cellFsFGetBlockSize", cellFsFGetBlockSize);
     ps3_hle_register_ctx(ps3_compute_nid("cellFsGetBlockSize"),  "cellFsGetBlockSize",  cellFsGetBlockSize);
@@ -936,6 +1201,7 @@ extern "C" void ppu_fs_register(void)
     ps3_hle_register_ctx(ps3_compute_nid("cellFsOpendir"),  "cellFsOpendir",  cellFsOpendir);
     ps3_hle_register_ctx(ps3_compute_nid("cellFsGetDirectoryEntries"), "cellFsGetDirectoryEntries", cellFsGetDirectoryEntries);
     ps3_hle_register_ctx(ps3_compute_nid("cellFsReaddir"),  "cellFsReaddir",  cellFsReaddir);
+    ps3_hle_register_ctx(0x9B882495u, "cellFsGetDirectoryEntries", cellFsGetDirectoryEntries);
     ps3_hle_register_ctx(ps3_compute_nid("cellFsClosedir"), "cellFsClosedir", cellFsClosedir);
     ps3_hle_register_ctx(ps3_compute_nid("cellFsMkdir"),    "cellFsMkdir",    cellFsMkdir);
     ps3_hle_register_ctx(ps3_compute_nid("cellFsRmdir"),    "cellFsRmdir",    cellFsRmdir);

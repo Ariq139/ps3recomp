@@ -71,16 +71,8 @@ extern "C" {
 #define CELL_GCM_LOCATION_LOCAL         0  /* video memory */
 #define CELL_GCM_LOCATION_MAIN          1  /* main memory */
 
-/* IO mapping limits. libgcm has no small fixed slot count:
- * cellGcmMapMainMemory fails when the IO address space is full. Killzone 3
- * maps up to 38 separate 1 MB chunks at level load and keeps vertex buffers in
- * them; with 16 slots the later calls failed and those draws read unmapped
- * offsets. 512 slots (16 bytes each) is an assumed bound well above that;
- * build with -DCELL_GCM_MAX_IO_MAPPINGS=N to change it. */
-#ifndef CELL_GCM_MAX_IO_MAPPINGS
-#define CELL_GCM_MAX_IO_MAPPINGS        512
-#endif
-#define CELL_GCM_IOMAP_FLAG_STRICT_ORDERING 2u
+/* IO mapping limits */
+#define CELL_GCM_MAX_IO_MAPPINGS        512 /* 512 MiB IO space at 1 MiB/page */
 
 /* Debug output levels */
 #define CELL_GCM_DEBUG_LEVEL0           0
@@ -193,6 +185,8 @@ typedef void (*CellGcmQueueHandler)(u32 head);
 
 /* Initialization */
 
+s32 cellGcmInitSystemMode(u64 mode);
+
 /* NID: 0xB2E761D4 */
 s32 cellGcmInit(u32 cmdSize, u32 ioSize, u32 ioAddress);
 
@@ -264,6 +258,10 @@ void cellGcm_replay_display_buffers_to_engine(void);
 s32 cellGcmSetDisplayBuffer(u32 bufferId, u32 offset, u32 pitch,
                             u32 width, u32 height);
 
+/* Backend query: registered scanout buffer matching a raw RSX surface offset,
+ * or -1 when the offset is not a display buffer. */
+s32 cellGcmDisplayBufferIdFromOffset(u32 offset);
+
 /* NID: 0xEAA52F23 */
 s32 cellGcmSetFlipCommand(u32 bufferId);
 
@@ -315,6 +313,8 @@ s32 cellGcmMapMainMemory(u32 ea, u32 size, u32* offset);
 /* NID: 0x5A41C10F */
 s32 cellGcmMapEaIoAddress(u32 ea, u32 io, u32 size);
 
+/* cellGcmSys RPCS3 ABI: strict ordering is the only accepted map flag. */
+#define CELL_GCM_IOMAP_FLAG_STRICT_ORDERING 0x2u
 /* NID: 0x626E8518 */
 s32 cellGcmMapEaIoAddressWithFlags(u32 ea, u32 io, u32 size, u32 flags);
 
@@ -334,6 +334,9 @@ u32* cellGcmGetLabelAddress(u8 index);
 
 /* NID: 0x8572ADE4 */
 CellGcmReportData* cellGcmGetReportDataAddress(u32 index);
+/* Internal RSX helper: resolve an NV4097 report byte offset into the local
+ * report array. Returns 0 when the offset is outside the emulated report RAM. */
+int cellGcmGetReportValueAtOffset(u32 offset, u32* value);
 
 /* NID: 0x97FC4B73 */
 u64 cellGcmGetTimeStamp(u32 index);
@@ -378,6 +381,9 @@ s32 cellGcmSetTileInfo(u8 index, u8 location, u32 offset, u32 size,
 
 /* Notify data area (similar to report data) */
 void* cellGcmGetNotifyDataAddress(u32 index);
+/* Internal RSX method helper: writes the guest-visible notify record.
+ * Returns nonzero if the index maps to guest main memory. */
+int cellGcmWriteNotifyData(u32 index);
 
 /* Timestamp location query */
 /* location is CELL_GCM_LOCATION_LOCAL/_MAIN, as in the Report variants. */
@@ -417,13 +423,16 @@ CellGcmZcullInfo* cellGcmGetZcullInfo(u8 index);
 CellGcmDisplayInfo* cellGcmGetDisplayInfo(u32 index);
 
 /* Default FIFO mode / command buffer */
-void cellGcmInitDefaultFifoMode(s32 mode);
+s32 cellGcmInitDefaultFifoMode(s32 mode);
 void cellGcmSetDefaultCommandBuffer(void);
 
 /* Debug dump (no-op) */
 void cellGcmDumpGraphicsError(void);
 
 /* Default word sizes */
+/* NID: 0x172C3197 */
+s32 cellGcmSetDefaultCommandBufferAndSegmentWordSize(u32 bufferSize,
+                                                     u32 segmentSize);
 u32 cellGcmGetDefaultCommandWordSize(void);
 u32 cellGcmGetDefaultSegmentWordSize(void);
 

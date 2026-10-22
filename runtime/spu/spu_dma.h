@@ -1627,6 +1627,9 @@ static inline uint32_t mfc_channel_read(mfc_engine* mfc, spu_context* spu,
     case MFC_RdTagMask:
         return spu->mfc_tag_mask;
     case MFC_RdListStallStat: {
+        /* RPCS3_PROVENANCE_REVIEW: accumulated list-stall behavior is
+         * documented against RPCS3. This implementation uses per-tag guest
+         * state; direct source copying is not established. See the audit. */
         /* Accumulated tag-group mask of newly-stalled lists. Reading returns
          * the mask and clears it (RPCS3 ch_stall_stat semantics); the interrupt
          * handler's IhcLoop then drains every set bit, acking each via ch26. */

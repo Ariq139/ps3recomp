@@ -576,8 +576,17 @@ static u32 savedata_file_type(const char* save_path, const char* name)
 }
 
 /* Enumerate files in a save directory. Returns count, fills fileList up to max. */
+static void savedata_accumulate_file_kb(u64* total, u64 bytes)
+{
+    if (!total) return;
+    const u64 kb = bytes / 1024u + (bytes % 1024u != 0);
+    if (UINT64_MAX - *total < kb) *total = UINT64_MAX;
+    else *total += kb;
+}
+
 static u32 enumerate_save_files(const char* save_path,
-                                 CellSaveDataFileStat* fileList, u32 max)
+                                 CellSaveDataFileStat* fileList, u32 max,
+                                 u64* total_kb)
 {
     u32 count = 0;
 
@@ -593,14 +602,15 @@ static u32 enumerate_save_files(const char* save_path,
         do {
             if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || savedata_system_file(fd.cFileName))
                 continue;
+            ULARGE_INTEGER sz;
+            sz.HighPart = fd.nFileSizeHigh;
+            sz.LowPart  = fd.nFileSizeLow;
+            savedata_accumulate_file_kb(total_kb, (u64)sz.QuadPart);
             if (count < max && fileList) {
                 memset(&fileList[count], 0, sizeof(CellSaveDataFileStat));
                 fileList[count].fileType = savedata_file_type(save_path, fd.cFileName);
                 strncpy(fileList[count].fileName, fd.cFileName,
                         CELL_SAVEDATA_FILENAME_SIZE - 1);
-                ULARGE_INTEGER sz;
-                sz.HighPart = fd.nFileSizeHigh;
-                sz.LowPart  = fd.nFileSizeLow;
                 fileList[count].st_size = (u64)sz.QuadPart;
             }
             count++;
@@ -630,6 +640,7 @@ static u32 enumerate_save_files(const char* save_path,
             if (S_ISDIR(st.st_mode))
                 continue;
 #endif
+            savedata_accumulate_file_kb(total_kb, (u64)st.st_size);
             if (count < max && fileList) {
                 memset(&fileList[count], 0, sizeof(CellSaveDataFileStat));
                 fileList[count].fileType = savedata_file_type(save_path, de->d_name);
@@ -841,6 +852,108 @@ static void read_param_sfo(const char* save_path, CellSaveDataSystemFileParam* p
     }
 }
 
+/* RPCS3_REFERENCE_REVIEWED: follows the save-data field contract and sizing
+ * rules; this is a local implementation using the project's guest-memory and
+ * host-filesystem helpers. No RPCS3 body is copied. */
+static int savedata_copy_dirname(const char* source,
+                                 char out[CELL_SAVEDATA_DIRNAME_SIZE])
+{
+    if (!source || !out) return 0;
+    const uintptr_t raw = (uintptr_t)source;
+    size_t n = 0;
+    if (raw < 0x100000000ull) {
+        if (!vm_base) return 0;
+        const u32 ea = (u32)raw;
+        for (; n < CELL_SAVEDATA_DIRNAME_SIZE; ++n) {
+            out[n] = (char)vm_read8(ea + (u32)n);
+            if (!out[n]) break;
+        }
+    } else {
+        for (; n < CELL_SAVEDATA_DIRNAME_SIZE; ++n) {
+            out[n] = source[n];
+            if (!out[n]) break;
+        }
+    }
+    if (n == 0 || n == CELL_SAVEDATA_DIRNAME_SIZE) return 0;
+    if ((n == 1 && out[0] == '.') || (n == 2 && out[0] == '.' && out[1] == '.'))
+        return 0;
+    for (size_t i = 0; i < n; ++i)
+        if (out[i] == '/' || out[i] == '\\' || out[i] == ':') return 0;
+    return 1;
+}
+
+s32 cellSaveDataGetListItem(const char* dirName,
+                            CellSaveDataDirStat* dir,
+                            CellSaveDataSystemFileParam* sysFileParam,
+                            u32* bind, u32* sizeKB, u32 userId)
+{
+    char name[CELL_SAVEDATA_DIRNAME_SIZE] = {0};
+    if (!savedata_copy_dirname(dirName, name))
+        return CELL_SAVEDATA_ERROR_PARAM;
+
+    /* This runtime models the current PS3 user as 00000001. */
+    if (userId != 0xFFFFFFFFu && userId != 1u)
+        return CELL_SAVEDATA_ERROR_NOUSER;
+
+    char save_path[1024];
+    build_save_path(save_path, sizeof(save_path), name);
+    if (!dir_has_save(save_path))
+        return CELL_SAVEDATA_ERROR_NODATA;
+
+    if ((dir || sysFileParam || bind || sizeKB) && !vm_base)
+        return CELL_SAVEDATA_ERROR_INTERNAL;
+
+    if (sysFileParam) {
+        const u32 ea = (u32)(uintptr_t)sysFileParam;
+        CellSaveDataSystemFileParam param;
+        read_param_sfo(save_path, &param);
+        memset(vm_base + ea, 0, sizeof(param));
+        memcpy(vm_base + ea, param.title,
+               CELL_SAVEDATA_SYSP_TITLE_SIZE + CELL_SAVEDATA_SYSP_SUBTITLE_SIZE +
+               CELL_SAVEDATA_SYSP_DETAIL_SIZE);
+        vm_write32(ea + 1280u, param.attribute);
+        memcpy(vm_base + ea + 1284u, param.reserved2, sizeof(param.reserved2));
+        memcpy(vm_base + ea + 1288u, param.listParam, sizeof(param.listParam));
+        memcpy(vm_base + ea + 1296u, param.reserved, sizeof(param.reserved));
+    }
+
+    if (dir) {
+        HOST_STAT_T st;
+        if (HOST_STAT(save_path, &st) != 0)
+            return CELL_SAVEDATA_ERROR_INTERNAL;
+        const u32 ea = (u32)(uintptr_t)dir;
+#ifdef _WIN32
+        vm_write64(ea + 0u, (u64)st.st_atime);
+        vm_write64(ea + 8u, (u64)st.st_mtime);
+        vm_write64(ea + 16u, (u64)st.st_ctime);
+#elif defined(__APPLE__)
+        vm_write64(ea + 0u, (u64)st.st_atimespec.tv_sec);
+        vm_write64(ea + 8u, (u64)st.st_mtimespec.tv_sec);
+        vm_write64(ea + 16u, (u64)st.st_ctimespec.tv_sec);
+#else
+        vm_write64(ea + 0u, (u64)st.st_atim.tv_sec);
+        vm_write64(ea + 8u, (u64)st.st_mtim.tv_sec);
+        vm_write64(ea + 16u, (u64)st.st_ctim.tv_sec);
+#endif
+        memset(vm_base + ea + 24u, 0, CELL_SAVEDATA_DIRNAME_SIZE);
+        memcpy(vm_base + ea + 24u, name, strlen(name));
+    }
+
+    if (bind)
+        vm_write32((u32)(uintptr_t)bind, 0);
+
+    if (sizeKB) {
+        u64 total_kb = 0;
+        (void)enumerate_save_files(save_path, NULL, 0, &total_kb);
+        total_kb += 35u; /* PARAM.SFO/PFD allocation charged by firmware */
+        if (total_kb > UINT32_MAX)
+            return CELL_SAVEDATA_ERROR_SIZEOVER;
+        vm_write32((u32)(uintptr_t)sizeKB, (u32)total_kb);
+    }
+
+    return CELL_OK;
+}
+
 /* Core save/load implementation shared by List/Fixed/Auto variants */
 static s32 savedata_execute(const char* dirName, int is_save,
                              CellSaveDataSetBuf* setBuf,
@@ -877,7 +990,7 @@ static s32 savedata_execute(const char* dirName, int is_save,
         fileList = (CellSaveDataFileStat*)calloc(file_list_max, sizeof(CellSaveDataFileStat));
         if (!fileList) return CELL_SAVEDATA_ERROR_INTERNAL;
         if (!is_new) {
-            fileNum = enumerate_save_files(save_path, fileList, file_list_max);
+            fileNum = enumerate_save_files(save_path, fileList, file_list_max, NULL);
         }
     }
 
@@ -1312,6 +1425,10 @@ s32 cellSaveDataDelete2(u32 container)
  * Old / non-_2 variants — same wrapper pattern as the _2 versions, with
  * the same guest-callback caveat.
  *
+ * RPCS3_REFERENCE_REVIEWED: these older exports share documented behavior
+ * with RPCS3's v2 entry points; targeted review did not establish a copied
+ * function body.
+ * See docs/RPCS3_LICENSE_AUDIT.md. This is not license clearance.
  * Older PS3 SDK builds (e.g. our flOw NPUA80001 dump) link the original
  * cellSaveDataAutoSave / AutoLoad / Delete instead of the _2 variants
  * RPCS3's flOw build uses. Same semantics, different NID.

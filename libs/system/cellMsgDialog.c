@@ -46,6 +46,8 @@ static int                   s_dialog_open = 0;
 static CellMsgDialogCallback s_callback    = NULL;
 static void*                 s_userdata    = NULL;
 static CellMsgDialogType     s_type        = 0;
+static CellMsgDialogHostCallback s_host_callback = NULL;
+static void*                 s_host_userdata = NULL;
 
 /* Deadline for auto-dismissing a no-button dialog; 0 = not armed.
  *
@@ -109,12 +111,14 @@ static int msg_offers_to_abort(const char* msg)
     return 0;
 }
 
-s32 cellMsgDialogOpen2(CellMsgDialogType type, const char* msgString,
-                        CellMsgDialogCallback callback, void* userdata,
-                        void* extParam)
+static s32 msg_dialog_open_text(CellMsgDialogType type, const char* message,
+                                CellMsgDialogCallback callback, void* userdata,
+                                void* extParam,
+                                CellMsgDialogHostCallback host_callback,
+                                void* host_userdata, int force_nobutton_wait)
 {
     printf("[cellMsgDialog] Open2(type=0x%08X, msg='%s')\n",
-           type, guest_str(msgString));
+           type, message ? message : "<null>");
 
     if (s_dialog_open) {
         printf("[cellMsgDialog] WARNING: dialog already open, closing previous\n");
@@ -124,12 +128,15 @@ s32 cellMsgDialogOpen2(CellMsgDialogType type, const char* msgString,
     s_callback    = callback;
     s_userdata    = userdata;
     s_type        = type;
+    s_host_callback = host_callback;
+    s_host_userdata = host_userdata;
+    s_nobutton_deadline = 0;
     memset(s_progress, 0, sizeof(s_progress));
 
     /* Print the message so developers can see it */
-    if (msgString) {
+    if (message) {
         printf("========================================\n");
-        printf("[DIALOG] %s\n", guest_str(msgString));
+        printf("[DIALOG] %s\n", message);
         printf("========================================\n");
     }
 
@@ -170,6 +177,8 @@ s32 cellMsgDialogOpen2(CellMsgDialogType type, const char* msgString,
     if (nobutton_waits < 0) nobutton_waits = getenv("MSGDIALOG_NOBUTTON_WAITS") ? 1 : 0;
     int stays_open = has_progress ||
                      (nobutton_waits &&
+                      button_type == CELL_MSGDIALOG_TYPE_BUTTON_TYPE_NONE) ||
+                     (force_nobutton_wait &&
                       button_type == CELL_MSGDIALOG_TYPE_BUTTON_TYPE_NONE);
 
     if (!stays_open) {
@@ -219,7 +228,7 @@ s32 cellMsgDialogOpen2(CellMsgDialogType type, const char* msgString,
                 else if (e && (e[0] == 'a' || e[0] == 'A')) forced = 2;   /* heuristic */
                 else                                        forced = 0;   /* always YES (default) */
             }
-            int auto_no = (forced == 2) ? msg_offers_to_abort(guest_str(msgString)) : 0;
+            int auto_no = (forced == 2) ? msg_offers_to_abort(message) : 0;
             int no_ = (forced == 2) ? auto_no : forced;
             result = no_ ? CELL_MSGDIALOG_BUTTON_NO : CELL_MSGDIALOG_BUTTON_YES;
             printf("[cellMsgDialog] Auto-responding: %s%s\n", no_ ? "NO" : "YES",
@@ -237,7 +246,22 @@ s32 cellMsgDialogOpen2(CellMsgDialogType type, const char* msgString,
         if (s_callback) {
             CellMsgDialogCallback cb = s_callback;
             s_callback = NULL;
-            return queue_dialog_callback(cb, result, s_userdata);
+            s32 rc = queue_dialog_callback(cb, result, s_userdata);
+            if (s_host_callback) {
+                CellMsgDialogHostCallback host_cb = s_host_callback;
+                void* host_data = s_host_userdata;
+                s_host_callback = NULL;
+                s_host_userdata = NULL;
+                host_cb(result, host_data);
+            }
+            return rc;
+        }
+        if (s_host_callback) {
+            CellMsgDialogHostCallback host_cb = s_host_callback;
+            void* host_data = s_host_userdata;
+            s_host_callback = NULL;
+            s_host_userdata = NULL;
+            host_cb(result, host_data);
         }
     } else {
         printf("[cellMsgDialog] %s dialog opened (waits for Close/Abort)\n",
@@ -249,7 +273,42 @@ s32 cellMsgDialogOpen2(CellMsgDialogType type, const char* msgString,
     return CELL_OK;
 }
 
-/* cellMsgDialogOpen -- the pre-3.40 entry point, identical arguments and
+s32 cellMsgDialogOpen2(CellMsgDialogType type, const char* msgString,
+                        CellMsgDialogCallback callback, void* userdata,
+                        void* extParam)
+{
+    return msg_dialog_open_text(type, msgString ? guest_str(msgString) : NULL,
+                                callback, userdata, extParam, NULL, NULL, 0);
+}
+
+/* This export reports a system error in the same headless dialog/callback
+ * path as Open2. The local frontend has no PS3 language resource tables, so
+ * preserve the full error code in the message instead of silently returning
+ * success or claiming a fabricated localized string. */
+s32 cellMsgDialogOpenErrorCode(u32 errorCode, CellMsgDialogCallback callback,
+                               void* userdata, void* extParam)
+{
+    char message[48];
+    snprintf(message, sizeof message, "System error 0x%08X", errorCode);
+    printf("[cellMsgDialog] OpenErrorCode(0x%08X)\n", errorCode);
+    return msg_dialog_open_text(CELL_MSGDIALOG_TYPE_SE_TYPE_ERROR |
+                                CELL_MSGDIALOG_TYPE_BUTTON_TYPE_OK,
+                                message, callback, userdata, extParam,
+                                NULL, NULL, 0);
+}
+
+s32 ps3_cell_msg_dialog_open_host(CellMsgDialogType type, const char* message,
+                                  CellMsgDialogHostCallback callback,
+                                  void* userdata, int forceNoButtonWait)
+{
+    return msg_dialog_open_text(type, message, NULL, NULL, NULL,
+                                callback, userdata, forceNoButtonWait != 0);
+}
+
+/* RPCS3_REFERENCE_REVIEWED: the pre-3.40 wrapper follows RPCS3's forwarding
+ * behavior; targeted review did not establish a copied function body. See
+ * docs/RPCS3_LICENSE_AUDIT.md.
+ * cellMsgDialogOpen -- the pre-3.40 entry point, identical arguments and
  * behaviour to Open2 (RPCS3 forwards it the same way). Registering only Open2
  * meant a title on the older API got the unresolved-NID default and then waited
  * forever for a callback that could never fire. Virtua Fighter 5 opens one
@@ -275,7 +334,22 @@ s32 cellMsgDialogClose(float delayMs)
     if (s_callback) {
         CellMsgDialogCallback cb = s_callback;
         s_callback = NULL;
-        return queue_dialog_callback(cb, CELL_MSGDIALOG_BUTTON_NONE, s_userdata);
+        s32 rc = queue_dialog_callback(cb, CELL_MSGDIALOG_BUTTON_NONE, s_userdata);
+        if (s_host_callback) {
+            CellMsgDialogHostCallback host_cb = s_host_callback;
+            void* host_data = s_host_userdata;
+            s_host_callback = NULL;
+            s_host_userdata = NULL;
+            host_cb(CELL_MSGDIALOG_BUTTON_NONE, host_data);
+        }
+        return rc;
+    }
+    if (s_host_callback) {
+        CellMsgDialogHostCallback host_cb = s_host_callback;
+        void* host_data = s_host_userdata;
+        s_host_callback = NULL;
+        s_host_userdata = NULL;
+        host_cb(CELL_MSGDIALOG_BUTTON_NONE, host_data);
     }
 
     return CELL_OK;
@@ -362,5 +436,12 @@ void cellMsgDialog_tick(void)
         CellMsgDialogCallback cb = s_callback;
         s_callback = NULL;
         queue_dialog_callback(cb, CELL_MSGDIALOG_BUTTON_NONE, s_userdata);
+    }
+    if (s_host_callback) {
+        CellMsgDialogHostCallback host_cb = s_host_callback;
+        void* host_data = s_host_userdata;
+        s_host_callback = NULL;
+        s_host_userdata = NULL;
+        host_cb(CELL_MSGDIALOG_BUTTON_NONE, host_data);
     }
 }

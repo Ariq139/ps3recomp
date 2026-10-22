@@ -49,6 +49,8 @@
 #include "rsx_vp_decompiler.h"
 #include "rsx_fp_decompiler.h"
 #include "rsx_shader_spirv.h"
+#include "../input/cellKb.h"
+#include "../input/cellMouse.h"
 #include "rsx_draw_engine.h"
 #include "vulkan/rsx_vk_fallback_vert.spv.h"
 #include "vulkan/rsx_vk_fallback_frag.spv.h"
@@ -1114,7 +1116,7 @@ static int vk_ensure_vertex_buffer(VkDeviceSize bytes)
 #define VK_FP_MAX_BYTES  4096u              /* bound on a fragment program, as Metal/D3D12 */
 #define VK_HLSL_BYTES    (256u * 1024u)
 #define VK_SPV_WORDS     (256u * 1024u)
-#define VK_VPCONST_BYTES ((RSX_MAX_VERTEX_CONSTANTS + 2u) * 16u)
+#define VK_VPCONST_BYTES ((RSX_MAX_VERTEX_CONSTANTS + 3u) * 16u)
 #define VK_GUEST_ATTRS   16u
 #define VK_GUEST_FLOATS  (VK_GUEST_ATTRS * 4u)   /* per vertex */
 
@@ -1511,6 +1513,8 @@ static int vk_guest_draw(const rsx_state* st, u32 prim, u32 first, u32 count)
     vpx[4] = vpx[5] = vpx[7] = 0.0f;
     if (st->viewport_scale[2] != 0.0f) { vpx[2] = st->viewport_scale[2]; vpx[6] = st->viewport_offset[2]; }
     else                                { vpx[2] = 1.0f;                  vpx[6] = 0.0f; }
+    memcpy(vpc + (RSX_MAX_VERTEX_CONSTANTS + 2u) * 16u,
+           &st->transform_branch_bits, sizeof(st->transform_branch_bits));
     /* PSConstants: inline constants as host-order bit patterns, then fp_alpha. */
     u8* fpc = (u8*)s_g.ubo.ptr + s_g.ps_off;
     memset(fpc, 0, fp_len);
@@ -3705,9 +3709,46 @@ int rsx_vulkan_backend_pump_messages(void)
     if (!s_vk.windowed) return 0;
     int quit = 0;
     SDL_Event e;
+    const Uint32 window_id = s_vk.window ? SDL_GetWindowID(s_vk.window) : 0;
     while (SDL_PollEvent(&e)) {
-        if (e.type == SDL_QUIT) quit = 1;
-        else if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE) quit = 1;
+        if (e.type == SDL_QUIT) {
+            quit = 1;
+        } else if (e.type == SDL_WINDOWEVENT &&
+                   e.window.windowID == window_id &&
+                   e.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
+            for (u16 key = 0; key < 256; ++key)
+                cellKb_keyEvent(0, key, 0);
+            for (u8 button = CELL_MOUSE_BUTTON_1; button <= CELL_MOUSE_BUTTON_5; button <<= 1)
+                cellMouse_buttonEvent(0, button, 0);
+        } else if ((e.type == SDL_KEYDOWN || e.type == SDL_KEYUP) &&
+                   (!window_id || e.key.windowID == window_id)) {
+            const SDL_Scancode scan = e.key.keysym.scancode;
+            if (scan > SDL_SCANCODE_UNKNOWN && scan <= 0xE7)
+                cellKb_keyEvent(0, (u16)scan, e.type == SDL_KEYDOWN);
+            if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE)
+                quit = 1;
+        } else if (e.type == SDL_MOUSEMOTION &&
+                   (!window_id || e.motion.windowID == window_id)) {
+            cellMouse_moveEvent(0, e.motion.xrel, e.motion.yrel);
+        } else if ((e.type == SDL_MOUSEBUTTONDOWN || e.type == SDL_MOUSEBUTTONUP) &&
+                   (!window_id || e.button.windowID == window_id)) {
+            u8 button = 0;
+            switch (e.button.button) {
+            case SDL_BUTTON_LEFT: button = CELL_MOUSE_BUTTON_1; break;
+            case SDL_BUTTON_RIGHT: button = CELL_MOUSE_BUTTON_2; break;
+            case SDL_BUTTON_MIDDLE: button = CELL_MOUSE_BUTTON_3; break;
+            case SDL_BUTTON_X1: button = CELL_MOUSE_BUTTON_4; break;
+            case SDL_BUTTON_X2: button = CELL_MOUSE_BUTTON_5; break;
+            default: break;
+            }
+            if (button)
+                cellMouse_buttonEvent(0, button, e.type == SDL_MOUSEBUTTONDOWN);
+        } else if (e.type == SDL_MOUSEWHEEL &&
+                   (!window_id || e.wheel.windowID == window_id)) {
+            const int direction = e.wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -1 : 1;
+            cellMouse_wheelEvent(0, direction * e.wheel.y);
+            cellMouse_tiltEvent(0, direction * e.wheel.x);
+        }
     }
     return quit ? -1 : 0;
 }

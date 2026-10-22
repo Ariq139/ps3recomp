@@ -1,9 +1,9 @@
 # SPU → C Lifter — Status & TODO
 
-Brief for `tools/spu_lifter.py` (added to close the "no SPU lifting" gap noted
-in the README's critical gaps). The PPU side had `ppu_lifter.py`; the SPU side
-only had `spu_disasm.py`. This document tracks what the lifter does today and
-what still needs doing to actually execute SPU code.
+Reference for `tools/spu_lifter.py`. Some sections below preserve the original
+phase-by-phase development notes and are historical snapshots; they are not a
+current TODO list. The actual current instruction coverage is the implementation
+in `tools/spu_lifter.py`, and runtime integration is in `runtime/spu/`.
 
 ## What exists now
 
@@ -21,27 +21,14 @@ Targets the ABI in `runtime/spu/spu_context.h` (`u128 gpr[128]`, 256 KB
 local store, channels, MFC staging) and the `u128` union in
 `include/ps3emu/ps3types.h`.
 
-## Relationship to the PPU fallback approach (read `SPU_FALLBACK.md` first)
+## Execution and fallback relationship
 
-The project's **current** SPU strategy is *not* execution — it is the
-PPU-side fallback registry (`SPU_FALLBACK.md`): per game, you hand-write a C
-function that reproduces each SPU job's output, keyed on the SPU image entry
-point. That is pragmatic and gets specific games running fast, but it is
-**manual and per-job** — every game re-pays the cost, and jobs whose logic is
-non-trivial (decompressors, mixers, physics) are hard to reimplement by hand.
-
-This lifter is the **general, automated** path: translate the SPU ISA once and
-run the real job. The two are complementary, and they can coexist:
-
-- Use a **fallback** when the job is simple to reproduce or when the lifted
-  output isn't trusted yet.
-- Use the **lifted SPU function** when the job is complex or unknown.
-
-A clean integration: have `spu_indirect_branch` / the group-start dispatcher
-first consult `spu_lookup_ppu_fallback(entry_point)`, and only fall through to
-the lifted `spu_func_*` (via `spu_function_table[]`) when no fallback is
-registered. That makes lifting an opt-in upgrade over the existing shim
-mechanism rather than a replacement.
+The runtime can execute lifted SPU images and raw job binaries when their
+fingerprints are registered. A port must extract or capture the binary, lift it,
+compile its generated C, and register the matching entry point. Unsupported
+instructions and missing registrations remain real gaps. `SPU_FALLBACK.md`
+describes an older manual per-job fallback path; it can still help specific
+workloads but is not the only execution strategy.
 
 ### Implemented instructions (Phase 1)
 
@@ -61,7 +48,12 @@ mechanism rather than a replacement.
   bi, bisl, biz/binz/bihz/bihnz (→ `spu_indirect_branch`)
 - **stop, nop, lnop, sync, dsync, hbr/hbra/hbrr** (hints dropped)
 
-## TODO — to actually run SPU code
+## Historical phase notes
+
+The measurements and checklists in this section describe earlier tool revisions
+and specific sample images. Coverage depends on decoder/function-boundary
+quality and the selected binary; a zero-gap result for one sample does not mean
+every title's SPU code is covered.
 
 ### 1. Runtime glue — **done** (`runtime/spu/spu_channels.c`)
 
@@ -145,17 +137,9 @@ Result on the Uncharted SPU image after Phase 3:
   linker). Eliminating them is §4 work — split text from data using the
   ELF section table and function-boundary detection.
 
-Future — not yet hit by any image we've measured:
-- Register-variable shifts/rotates: shl, shlh, rot, roth, shlqbi(i),
-  rotqbi(i), shlqby(bi), rotqby(bi), rotqbybi
-- Float: fi (interpolate), frest/frsqest (+ the Newton-Raphson step pairs),
-  fcmeq/fcmgt, fscrrd/fscrwr, double-precision (dfa/dfs/dfm/dfma…)
-- Integer extras: addx/sfx/cg/bg (extended add/sub with carry/borrow),
-  mpyh/mpys/mpyhh*, mpyhha, cntb edge cases, gb/gbh/gbb (gather bits), fsmb/fsm
-- Conversions: cuflt/csflt/cflts/cfltu (int↔float), fesd/frds (sp↔dp)
-- form-select/extend: fsmbi, cbd/chd/cwd/cdd (generate insertion masks for
-  scalar stores — needed for the standard "load-quad / insert / store-quad"
-  unaligned scalar access idiom)
+The instruction list originally titled “Future — not yet hit” is superseded by
+the later phase notes and the current lifter. Use the implementation and its
+emitted unsupported-instruction report for an image-specific gap list.
 
 ### 2b. Disassembler — **rewritten against the RPCS3 authoritative table**
 The original `spu_disasm.py` had systemic errors: `IL`/`ILH`/`ILHU` listed as
@@ -209,11 +193,9 @@ appearances in the Uncharted SPU image). Fix: invert the sub-lane index on
 LE host (`_s16[2i]` etc.). Documented in `spu_helpers.h` with comments
 explaining the host-endianness assumption.
 
-Still open:
-- `shlqby` direction and the preferred-halfword choice for `brhz`/`brhnz`
-  (which `_u16[]` lane is the "halfword preferred slot" in BE semantics
-  reinterpreted on LE storage). Both are exercisable by adding test
-  vectors; the suite framework now makes it cheap.
+This “Still open” list is also a dated development note. Check the current
+helper implementation and targeted regression coverage before treating its
+items as unresolved.
 
 ### 4. Pipeline integration
 - **SPU program discovery — done** (`tools/extract_spu_images.py`). Scans a
@@ -258,7 +240,8 @@ Still open:
   same bad indirect (timeout loop). The harness now `setjmp`s in `main`
   and `longjmp`s from inside the halt path, so a HALT really stops the
   SPU instead of unwinding a stack frame at a time.
-- Wire `spu_lifter.py` into the build alongside `ppu_lifter.py` (CMake).
+- SPU lifts are generated per port and compiled by that port's CMake target;
+  the repository does not automatically extract and lift every game's SPU code.
 
 ## Tracing (for §3 diff vs RPCS3)
 
@@ -288,6 +271,11 @@ The two traces line up by PC; a tiny converter (still to be written) can
 normalise RPCS3's `SPU.log` lines into the same `<PC>` / `  r<rt> ...` shape
 this runtime emits, so plain `diff` finds divergences.
 
+## Recorded validation snapshots
+
+The validation claims below record prior runs, not a verification of the current
+working tree. Re-run the relevant checks after changing the lifter or runtime.
+
 ## How to validate
 
 Status: **compile- and run-verified** with GCC 16.1.0 (MinGW-w64, UCRT).
@@ -309,6 +297,9 @@ Still to do:
    job from the target game) once SPU images are extracted from the EBOOT.
 
 ### Integration tests (runtime/spu/tests/)
+
+The results below are the last recorded test snapshot in this document; they
+have not been rerun as part of the current source comparison.
 End-to-end tests that exercise the **whole pipeline** (encoder → wrap_spu_elf
 → find_spu_functions → spu_lifter --auto-functions → gcc → harness) on
 hand-written SPU programs with known input/output. Per-test layout:

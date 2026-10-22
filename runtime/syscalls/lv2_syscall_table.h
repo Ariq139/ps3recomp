@@ -46,8 +46,7 @@ extern "C" {
 extern uint32_t g_ps3_sdk_version;
 
 
-#define SYS_PPU_THREAD_CREATE           41
-#define SYS_PPU_THREAD_EXIT             42
+#define SYS_PPU_THREAD_EXIT             41
 #define SYS_PPU_THREAD_YIELD            43
 #define SYS_PPU_THREAD_JOIN             44
 #define SYS_PPU_THREAD_DETACH           45
@@ -55,6 +54,8 @@ extern uint32_t g_ps3_sdk_version;
 #define SYS_PPU_THREAD_SET_PRIORITY     47
 #define SYS_PPU_THREAD_GET_PRIORITY     48
 #define SYS_PPU_THREAD_GET_STACK_INFORMATION 49
+#define SYS_PPU_THREAD_CREATE           52
+#define SYS_PPU_THREAD_START            53
 #define SYS_PPU_THREAD_RENAME           56
 
 /* Synchronization */
@@ -84,7 +85,8 @@ extern uint32_t g_ps3_sdk_version;
 #define SYS_RWLOCK_TRYRLOCK            123
 #define SYS_RWLOCK_RUNLOCK             124
 #define SYS_RWLOCK_WLOCK               125
-#define SYS_RWLOCK_TRYWLOCK            148
+#define SYS_RWLOCK_TRYWLOCK            126
+#define SYS_RWLOCK_TRYWLOCK_ALIAS       148 /* _sys_rwlock_trywlock */
 #define SYS_RWLOCK_WUNLOCK             127
 
 #define SYS_EVENT_QUEUE_CREATE          128
@@ -240,6 +242,11 @@ extern uint32_t g_ps3_sdk_version;
 #define SYS_TTY_READ                    402
 #define SYS_TTY_WRITE                   403
 #define SYS_DBG_GET_THREAD_LIST         610
+#define SYS_TIME_GET_TIMEZONE            144
+#define SYS_FSW_CONNECT_EVENT            633
+#define SYS_FSW_DISCONNECT_EVENT         634
+#define SYS_DECI3_OPEN                   880
+#define SYS_DECI3_CREATE_EVENT_PATH      881
 
 /* Upper limit for the dispatch table */
 #define LV2_SYSCALL_MAX                 1024
@@ -261,7 +268,8 @@ typedef struct lv2_syscall_table {
 
 extern lv2_syscall_table g_lv2_syscalls;
 
-/* Default handler for unimplemented syscalls — logs the call for debugging */
+/* Unknown or unused LV2 slots return CELL_ENOSYS, matching RPCS3's uns_func.
+ * Explicit RPCS3 NULL_FUNC entries are registered separately as CELL_OK. */
 static inline int64_t lv2_syscall_unimplemented(ppu_context* ctx)
 {
     uint32_t num = (uint32_t)ctx->gpr[11];

@@ -234,6 +234,9 @@ s32 cellSpursCreateTasksetWithAttribute(CellSpurs* spurs,
 s32 cellSpursDestroyTaskset(CellSpursTaskset* taskset);
 s32 cellSpursShutdownTaskset(CellSpursTaskset* taskset);
 s32 cellSpursJoinTaskset(CellSpursTaskset* taskset);
+s32 cellSpursGetTasksetId(CellSpursTaskset* taskset, u32* workloadId);
+s32 cellSpursTasksetGetSpursAddress(const CellSpursTaskset* taskset,
+                                    u32* spursEa);
 
 s32 cellSpursTasksetAttributeInitialize(CellSpursTasksetAttribute* attr);
 s32 cellSpursTasksetAttributeSetName(CellSpursTasksetAttribute* attr,

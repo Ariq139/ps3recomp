@@ -14,6 +14,7 @@
  */
 #include "lv2_lock_line.h"
 #include "sys_vm.h"
+#include "sys_memory.h"
 #include "ps3emu/error_codes.h"
 
 #include <stdio.h>
@@ -50,6 +51,17 @@ int main(void)
     expect("user 64K top",  0x2FFFFFFFu, 0x2, OK);
     expect("rsx local",     0xC0000000u, 0x2, OK);
     expect("rawspu mmio",   0xE0000000u, 0x2, OK);
+
+    /* Ports may relocate sys_memory; its reservation rights follow the
+     * configured arenas. The relocated build covers P5's actual failing EA. */
+    expect("sys_memory start", SYS_MEM_ALLOC_BASE, 0x2, OK);
+    expect("sys_memory interior", SYS_MEM_ALLOC_BASE + 0x4D380u, 0x2, OK);
+    expect("sys_memory end", SYS_MEM_ALLOC_END - 1u, 0x2, OK);
+    expect("sys_memory rawspu", SYS_MEM_ALLOC_BASE, 0x1, OK);
+    expect("sys_memory both", SYS_MEM_ALLOC_BASE, 0x3, OK);
+    expect("sys_memory bad flags", SYS_MEM_ALLOC_BASE, 0x4, want_inval);
+    expect("sys_memory spill start", SYS_MEM_ALLOC_SPILL_BASE, 0x2, OK);
+    expect("sys_memory spill end", SYS_MEM_ALLOC_SPILL_END - 1u, 0x2, OK);
 
     /* The same addresses with the RawSPU flag. */
     expect("segment 1 rawspu", 0x11000000u, 0x1, OK);

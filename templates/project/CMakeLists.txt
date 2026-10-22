@@ -90,14 +90,11 @@ if(EXISTS "${RECOMP_DIR}/ppu_hle_nids.cpp")
 else()
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
     set(HLE_NID_TABLE "${CMAKE_CURRENT_BINARY_DIR}/ppu_hle_nids.cpp")
-    # The generator discovers handlers from library definitions. Rebuild when
-    # an existing module changes, and reconfigure when a new module is added.
-    file(GLOB_RECURSE HLE_NID_SOURCES CONFIGURE_DEPENDS
+    # The generator scans library sources to discover exports and compute
+    # their NIDs. Rebuild its output when an HLE source changes so adding a
+    # handler cannot silently leave an older registration table in the game.
+    file(GLOB_RECURSE PS3RECOMP_HLE_SOURCES CONFIGURE_DEPENDS
         "${PS3RECOMP_DIR}/libs/*.c")
-    # A removed input cannot make the output older than a remaining dependency.
-    # Track the list itself so deletions also remove stale handler references.
-    set(HLE_NID_SOURCE_LIST "${CMAKE_CURRENT_BINARY_DIR}/hle_nid_sources.txt")
-    file(GENERATE OUTPUT "${HLE_NID_SOURCE_LIST}" CONTENT "${HLE_NID_SOURCES}\n")
     add_custom_command(
         OUTPUT "${HLE_NID_TABLE}"
         COMMAND "${Python3_EXECUTABLE}"
@@ -105,7 +102,8 @@ else()
                 --out "${HLE_NID_TABLE}" --all
         DEPENDS "${PS3RECOMP_DIR}/tools/gen_hle_nids.py"
                 "${PS3RECOMP_DIR}/tools/nid_database.py"
-                ${HLE_NID_SOURCES} "${HLE_NID_SOURCE_LIST}"
+                "${PS3RECOMP_DIR}/tools/hle_special_exports.json"
+                ${PS3RECOMP_HLE_SOURCES}
         COMMENT "Generating the HLE NID -> handler table")
     message(STATUS "HLE NID table:   generated (every module)")
 endif()
@@ -180,6 +178,12 @@ add_executable(${PROJECT_NAME}
     ${RECOMP_SOURCES}
     ${SPU_SOURCES}
 )
+
+include("${PS3RECOMP_DIR}/cmake/PS3RecompBootImage.cmake")
+ps3recomp_configure_boot_image(${PROJECT_NAME} "${CMAKE_CURRENT_SOURCE_DIR}"
+    CANDIDATES
+        "${CMAKE_CURRENT_SOURCE_DIR}/game/EBOOT.ELF"
+        "${CMAKE_CURRENT_SOURCE_DIR}/EBOOT.ELF")
 
 # The lifted SPU sources use bare #include "spu_context.h". Scope that include
 # directory (and their flags) to those TUs alone: adding it to the whole target

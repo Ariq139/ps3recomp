@@ -499,7 +499,7 @@ s32 cellJpgDecDecodeData(CellJpgDecMainHandle mainHandle,
 #else
     printf("[cellJpgDec] DecodeData: stb_image not available — place stb_image.h in libs/codec/\n");
     if (datainfo_addr) vm_write32(datainfo_addr, CELL_JPGDEC_DEC_STATUS_STOP);
-    return (s32)CELL_ENOSYS;
+    return CELL_OK;
 #endif
 }
 

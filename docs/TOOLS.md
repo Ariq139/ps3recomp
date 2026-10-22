@@ -1,6 +1,8 @@
 # Recompiler Tools Reference
 
-Complete documentation for the Python-based recompilation pipeline tools in `tools/`.
+Reference for the main Python-based recompilation tools. The final section
+indexes supporting SPU, PRX, audit, and format tools that have their own CLI
+help or narrower documentation.
 
 ---
 
@@ -17,7 +19,8 @@ Complete documentation for the Python-based recompilation pipeline tools in `too
 9. [prx_analyzer.py — Module Dependency Analysis](#prx_analyzerpy)
 10. [generate_stubs.py — HLE Stub Generator](#generate_stubspy)
 11. [gen_imports.py / gen_hle_nids.py — firmware imports](#gen_importspy--gen_hle_nidspy)
-12. [Dependencies](#dependencies)
+12. [Additional tools](#additional-tools)
+13. [Dependencies](#dependencies)
 
 ---
 
@@ -105,7 +108,8 @@ library — which is the first check on whether the input is what you think.
 
 ### What It Does
 
-1. **SELF decryption** — handles the Sony SELF container format (if keys are provided)
+1. **SELF inspection** — identifies SELF containers and reports the advertised
+   embedded ELF offset; this parser does not decrypt retail SELF files.
 2. **ELF header parsing** — reads the ELF64 header, program headers, and section headers
 3. **Segment extraction** — identifies `.text` (code), `.data`, `.rodata`, `.bss` segments
 4. **Import/export table parsing** — extracts NID tables from PRX-style import/export stubs
@@ -150,9 +154,9 @@ conventional files to redirect each report into.
 - `e_shnum`: Number of section headers
 
 **PS3-specific extensions:**
-- PRX-style import/export stubs use a custom ELF note format
-- SELF containers add encryption and signature layers around the ELF
-- SCE header contains metadata about required firmware version, flags, etc.
+- PRX-style import/export stubs use PS3-specific structures
+- SELF containers are detected and summarized; retail decryption is not provided
+- SCE headers carry container metadata such as version and flags
 
 ---
 
@@ -555,75 +559,32 @@ Module: EBOOT.ELF
 
 ## generate_stubs.py
 
-**Purpose:** Auto-generate HLE stub implementations from RPCS3's module source code
+**Purpose:** Auto-generate placeholder HLE stubs from the project's NID database
 
 ### What It Does
 
-1. Reads RPCS3's C++ HLE module files (e.g., `rpcs3/Emu/Cell/Modules/cellFs.cpp`)
-2. Extracts function signatures, NID registrations, and error code patterns
-3. Generates standalone C stubs compatible with ps3recomp's module framework
-4. Produces a header file with all function declarations
-5. Generates a registration block (`DECLARE_PS3_MODULE` + `REGISTER_FUNC`)
+1. Reads NID/name entries from the project's database or an optional analysis report
+2. Generates placeholder C functions that log `UNIMPLEMENTED` and return `CELL_OK`
+3. Produces declarations and an NID table for the generated stubs
+
+This tool does not parse RPCS3 source or port implementations. Do not copy
+RPCS3 function bodies into generated or handwritten HLE code; use public ABI
+facts and observed behavior, consistent with `CONTRIBUTING.md`.
 
 ### Usage
 
 ```bash
-# Generate stubs from an RPCS3 module file
-python tools/generate_stubs.py \
-    --input rpcs3/Emu/Cell/Modules/cellFs.cpp \
-    --output libs/filesystem/cellFs.c
-
-# Generate stubs for all modules in a directory
-python tools/generate_stubs.py \
-    --input-dir rpcs3/Emu/Cell/Modules/ \
-    --output-dir libs/
-
-# Generate only the header
-python tools/generate_stubs.py \
-    --input rpcs3/Emu/Cell/Modules/cellPad.cpp \
-    --header-only \
-    --output libs/input/cellPad.h
+# Generate stubs from the local NID database
+python tools/generate_stubs.py --output stubs/ --modules cellGcmSys cellFs
 ```
 
 ### Output Structure
 
-For each module, the generator produces:
-
-**Header (`.h`):**
-```c
-#ifndef CELLFS_H
-#define CELLFS_H
-
-#include "ps3emu/ps3types.h"
-#include "ps3emu/error_codes.h"
-
-int32_t cellFsOpen(/* params */);
-int32_t cellFsRead(/* params */);
-// ...
-
-#endif
-```
-
-**Implementation (`.c`):**
-```c
-#include "cellFs.h"
-#include "ps3emu/module.h"
-
-int32_t cellFsOpen(/* params */)
-{
-    // TODO: implement
-    return CELL_OK;
-}
-
-// ...
-
-DECLARE_PS3_MODULE(cellFs, "cellFs")
-{
-    REGISTER_FUNC(cellFsOpen);
-    REGISTER_FUNC(cellFsRead);
-    // ...
-}
-```
+For each module, it writes `<module>_stubs.h` and `<module>_stubs.c`. The
+generated signatures take a `ppu_context*`; every body logs
+`UNIMPLEMENTED: <module>::<function>` and returns `CELL_OK`. The source also
+contains a NID-to-stub table. These are placeholders, not functional HLE
+implementations or RPCS3 ports.
 
 ---
 
@@ -663,6 +624,23 @@ the table names handlers from the revision it was generated against.
 ---
 
 
+## Additional tools
+
+| Area | Tools | Purpose |
+|---|---|---|
+| SELF / packages | `unfself.py`, `pkg_extract.py` | Rebuild eligible unencrypted debug/fake SELF files; inspect/extract PKG content. `unfself.py` does not decrypt retail SELF files. |
+| SPU images and jobs | `extract_spu_images.py`, `find_spu_functions.py`, `build_spu_workloads.py`, `extract_jobmods.py`, `lift_jobmods.py`, `wrap_spu_elf.py`, `gen_spu_interp.py` | Extract, identify, lift, and register SPU programs and job modules. See [SPU_LIFTER.md](SPU_LIFTER.md). |
+| PRX | `lift_prx.py`, `prx_exports.py`, `prx_relocate.py`, `rebase_spu_elf.py` | Inspect PRX exports/relocations, lift selected PRX code, and repair embedded SPU ELF addresses. |
+| Audits | `hle_abi_audit.py`, `hle_dispatch_classify.py`, `lift_audit.py`, `audit_guest_ptrs.py`, `audit_entry_calls.py`, `endian_audit.py`, `disasm_audit.py`, `spu_disasm_audit.py` | Compare ABI/signature coverage and find translation, dispatch, pointer, and endian gaps. These checks do not prove runtime correctness. |
+| Reports / helpers | `callgraph.py`, `triage_elf.py`, `spu_ident.py`, `gen_diagnostics_index.py` | Build call graphs, summarize binaries and SPU images, and index runtime diagnostic controls. |
+
+The `tools/` directory also contains focused test and development scripts; use
+`python tools/<script>.py --help` where available. Generated `CELL_OK` stubs
+are placeholders and should not replace implementations when callers depend on
+state changes, callbacks, output buffers, or data processing.
+
+---
+
 ## Dependencies
 
 ### Python Requirements
@@ -673,7 +651,7 @@ Listed in `tools/requirements.txt`:
 |---------|---------|
 | `pyelftools` | ELF binary parsing |
 | `capstone` | Disassembly engine (used alongside custom decoders) |
-| `pycryptodome` | AES/SHA for SELF decryption |
+| `pycryptodome` | Optional fast AES path in `pkg_extract.py`; `unfself.py` does not decrypt retail SELF files |
 | `toml` | TOML configuration file parsing |
 | `networkx` | Dependency graph construction (optional) |
 

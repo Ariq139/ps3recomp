@@ -302,7 +302,7 @@ static id<MTLLibrary> s_shader_lib;    /* built-in fixed-function shaders */
  * one buffer, exactly like the vertices.
  * --------------------------------------------------------------------------*/
 
-#define MTL_VP_CB_BYTES  ((RSX_MAX_VERTEX_CONSTANTS + 2) * 16)
+#define MTL_VP_CB_BYTES  ((RSX_MAX_VERTEX_CONSTANTS + 3) * 16)
 #define MTL_CB_ALIGN     256u
 #define MTL_CB_MAX       (256u << 20)
 static u8* s_cb;
@@ -914,7 +914,7 @@ static int fp_slot_for(const rsx_state* st, const u8** uc, u32 cube_mask)
     char name[64];
     id<MTLFunction> fn = nil;
     u32 nconst = 0;
-    int ni = rsx_fp_decompile_buffered_shadow_ex(*uc, MTL_FP_MAX_BYTES, ctrl, cube_mask,
+    int ni = rsx_fp_decompile_buffered_shadow_desc_ex(*uc, MTL_FP_MAX_BYTES, ctrl, cube_mask,
         shadow_mask ? shadow : NULL, s_hlsl, sizeof s_hlsl, &nconst);
     if (ni > 0 && alpha_en &&
         rsx_fp_apply_alpha_test_buffered(s_hlsl, sizeof s_hlsl, st->alpha_func) < 0)
@@ -1008,6 +1008,8 @@ static int guest_programs_for(const rsx_state* st, MtlDraw* d)
     vpx[4] = vpx[5] = vpx[7] = 0.0f;
     if (st->viewport_scale[2] != 0.0f) { vpx[2] = st->viewport_scale[2]; vpx[6] = st->viewport_offset[2]; }
     else                                { vpx[2] = 1.0f;                  vpx[6] = 0.0f; }
+    memcpy(vp + (RSX_MAX_VERTEX_CONSTANTS + 2u) * 16u,
+           &st->transform_branch_bits, sizeof(st->transform_branch_bits));
 
     u8* fp = s_cb + fp_off;
     memset(fp, 0, fp_len);
@@ -1640,10 +1642,12 @@ static MTLStencilOperation gcm_stencil_op_to_metal(u32 op)
 #define MTL_DS_CACHE 256
 
 typedef struct {
-    u8  depth_test, depth_mask, stencil_test;
+    u8  depth_test, depth_mask, stencil_test, stencil_two_sided;
     u32 depth_func;
-    u32 stencil_func, stencil_mask;
+    u32 stencil_func, stencil_read_mask, stencil_write_mask;
     u32 op_fail, op_zfail, op_zpass;
+    u32 back_stencil_func, back_stencil_read_mask, back_stencil_write_mask;
+    u32 back_op_fail, back_op_zfail, back_op_zpass;
 } MtlDsKey;
 typedef struct { MtlDsKey key; id<MTLDepthStencilState> state; } MtlDsEntry;
 
@@ -1657,12 +1661,20 @@ static int ds_slot_for(const rsx_state* st)
     key.depth_test   = (u8)(st->depth_test_enable ? 1 : 0);
     key.depth_mask   = (u8)(st->depth_mask ? 1 : 0);
     key.stencil_test = (u8)(st->stencil_test_enable ? 1 : 0);
+    key.stencil_two_sided = (u8)(st->stencil_two_sided_enable ? 1 : 0);
     key.depth_func   = st->depth_func;
     key.stencil_func = st->stencil_func;
-    key.stencil_mask = st->stencil_mask;
+    key.stencil_read_mask = st->stencil_func_mask;
+    key.stencil_write_mask = st->stencil_write_mask;
     key.op_fail      = st->stencil_op_fail;
     key.op_zfail     = st->stencil_op_zfail;
     key.op_zpass     = st->stencil_op_zpass;
+    key.back_stencil_func = st->back_stencil_func;
+    key.back_stencil_read_mask = st->back_stencil_func_mask;
+    key.back_stencil_write_mask = st->back_stencil_write_mask;
+    key.back_op_fail = st->back_stencil_op_fail;
+    key.back_op_zfail = st->back_stencil_op_zfail;
+    key.back_op_zpass = st->back_stencil_op_zpass;
 
     for (u32 i = 0; i < s_ds_count; i++)
         if (memcmp(&s_ds_cache[i].key, &key, sizeof key) == 0) return (int)i;
@@ -1681,18 +1693,21 @@ static int ds_slot_for(const rsx_state* st)
         sd.stencilFailureOperation   = gcm_stencil_op_to_metal(key.op_fail);
         sd.depthFailureOperation     = gcm_stencil_op_to_metal(key.op_zfail);
         sd.depthStencilPassOperation = gcm_stencil_op_to_metal(key.op_zpass);
-        sd.readMask                  = key.stencil_mask & 0xFFu;
-        /* SET_STENCIL_FUNC_MASK is the read mask. The write mask lives in
-         * NV4097_SET_STENCIL_MASK (0x032C), which rsx_commands.c does not
-         * decode and rsx_state has no field for, so every plane is writable
-         * here. It reads back wrong for a title that masks stencil planes;
-         * fixing it means adding the register upstream, not guessing here. */
-        sd.writeMask                 = 0xFFu;
-        /* Two-sided stencil (SET_BACK_STENCIL_*) is not decoded upstream
-         * either; nv40 applies the front state to both faces when it is off,
-         * which is what this does. */
+        sd.readMask                  = key.stencil_read_mask & 0xFFu;
+        sd.writeMask                 = key.stencil_write_mask & 0xFFu;
         dd.frontFaceStencil = sd;
-        dd.backFaceStencil  = sd;
+        if (key.stencil_two_sided) {
+            MTLStencilDescriptor* back = [MTLStencilDescriptor new];
+            back.stencilCompareFunction = gcm_compare_to_metal(key.back_stencil_func);
+            back.stencilFailureOperation = gcm_stencil_op_to_metal(key.back_op_fail);
+            back.depthFailureOperation = gcm_stencil_op_to_metal(key.back_op_zfail);
+            back.depthStencilPassOperation = gcm_stencil_op_to_metal(key.back_op_zpass);
+            back.readMask = key.back_stencil_read_mask & 0xFFu;
+            back.writeMask = key.back_stencil_write_mask & 0xFFu;
+            dd.backFaceStencil = back;
+        } else {
+            dd.backFaceStencil = sd;
+        }
     } else {
         dd.frontFaceStencil = nil;
         dd.backFaceStencil  = nil;

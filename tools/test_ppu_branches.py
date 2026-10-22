@@ -21,7 +21,7 @@ import sys
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, TOOLS)
 
-from ppu_disasm import Instruction                  # noqa: E402
+from ppu_disasm import Instruction, decode          # noqa: E402
 from ppu_lifter import PPULifter, LiftedFunction, _last_line_is_terminator  # noqa: E402
 
 
@@ -32,6 +32,19 @@ def emit(mnemonic: str, operands: str = "") -> str:
 
 
 def main() -> int:
+    # Real absolute calls/tail branch from release P5's archive setup. They
+    # must not use CR predicates decoded from their displacement bits.
+    lifter = PPULifter()
+    func = LiftedFunction(name="f", start_addr=0x114C7C, end_addr=0x114D78)
+    absolute_call = lifter._translate_op(decode(0x48968BEB, 0x114CAC), func)
+    assert "ctx->lr = 0x00114CB0; func_00968BE8(ctx);" in absolute_call, absolute_call
+    assert "if (" not in absolute_call and "return;" not in absolute_call, absolute_call
+    assert 0x968BE8 in lifter.call_targets
+    absolute_tail = lifter._translate_op(decode(0x48B44A9E, 0x114CDC), func)
+    assert "func_00B44A9C" in absolute_tail and "return;" in absolute_tail, absolute_tail
+    assert "if (" not in absolute_tail, absolute_tail
+    assert 0xB44A9C in lifter.branch_targets
+
     blr, blrl = emit("blr"), emit("blrl")
     bctrl, bnelrl = emit("bctrl"), emit("bnelrl", "cr7")
 

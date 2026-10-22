@@ -104,3 +104,29 @@ s32 cellUsbdControlTransfer(CellUsbdPipeId pipeId, u8 requestType,
     (void)value; (void)index; (void)data; (void)length; (void)transferred;
     return (s32)CELL_USBD_ERROR_PIPE_NOT_FOUND;
 }
+
+/* RPCS3 cellUsbd.cpp at commit 2ba2f75bc marks these same exports
+ * UNIMPLEMENTED_FUNC and returns CELL_OK. This is explicit compatibility
+ * behavior only: no USB pipes, transfers, device metadata, or allocator were
+ * added. No RPCS3 implementation body is copied. */
+s32 cellUsbdSetThreadPriority(void)                { return CELL_OK; }
+s32 cellUsbdSetThreadPriority2(void)               { return CELL_OK; }
+s32 cellUsbdGetThreadPriority(void)                { return CELL_OK; }
+s32 cellUsbdRegisterCompositeLdd(void)             { return CELL_OK; }
+s32 cellUsbdRegisterExtraLdd(void)                 { return CELL_OK; }
+s32 cellUsbdRegisterExtraLdd2(void)                { return CELL_OK; }
+s32 cellUsbdUnregisterCompositeLdd(void)           { return CELL_OK; }
+s32 cellUsbdUnregisterExtraLdd(void)               { return CELL_OK; }
+s32 cellUsbdInterruptTransfer(void)                { return CELL_OK; }
+s32 cellUsbdIsochronousTransfer(void)              { return CELL_OK; }
+s32 cellUsbdHSIsochronousTransfer(void)             { return CELL_OK; }
+s32 cellUsbdScanStaticDescriptor(void)              { return CELL_OK; }
+s32 cellUsbdGetDeviceSpeed(void)                   { return CELL_OK; }
+s32 cellUsbdGetDeviceLocation(void)                { return CELL_OK; }
+s32 cellUsbdSetPrivateData(void)                   { return CELL_OK; }
+s32 cellUsbdGetPrivateData(void)                   { return CELL_OK; }
+s32 cellUsbdAllocateMemory(void)                   { return CELL_OK; }
+s32 cellUsbdAllocateMemoryFromContainer(void)       { return CELL_OK; }
+s32 cellUsbdAllocateSharedMemory(void)             { return CELL_OK; }
+s32 cellUsbdFreeMemory(void)                       { return CELL_OK; }
+s32 cellUsbdResetDevice(void)                      { return CELL_OK; }

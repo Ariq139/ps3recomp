@@ -49,6 +49,11 @@ typedef struct spu_lifted_thread_result {
  * decides between real SPU execution and the fallback/interpreter paths. */
 int spu_lifted_thread_available(uint32_t entry);
 
+/* Image-aware form for overlapping LS address spaces. It only selects lifted
+ * code when the loaded SPU ELF's fingerprint maps to a registration that
+ * contains this entry point. */
+int spu_lifted_thread_available_for_image(uint32_t entry, uint32_t img_ea);
+
 /* Bring `ctx` up to the state lv2 hands a freshly started SPU thread: image
  * deployed into local store, arguments in r3..r6, pc at the entry, and the
  * image id the registry keys dispatch on. Zeroes `ctx` first, so it may be a

@@ -17,7 +17,7 @@ import glob
 import os
 import sys
 import re
-import sys
+import json
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -30,13 +30,30 @@ from nid_database import compute_nid
 DEF_RE = re.compile(
     r"^(?!static)[A-Za-z_][\w \t\*]*?\b(_?(?:cell|sys|sce|_sys)\w+)\s*\([^;]*?\)\s*\{",
     re.M)
+GENERIC_DEF_RE = re.compile(
+    r"^(?!static)[A-Za-z_][\w \t\*]*?\b([A-Za-z_]\w*)\s*\([^;]*?\)\s*\{",
+    re.M)
+with open(os.path.join(os.path.dirname(__file__), "hle_special_exports.json"),
+          encoding="utf-8") as _special_file:
+    SPECIAL_EXPORTS = json.load(_special_file)["modules"]
 
 
 def scan(c_path):
     txt = open(c_path, encoding="latin1").read()
     out = []
-    for m in DEF_RE.finditer(txt):
-        name = m.group(1)
+    found = {m.group(1) for m in DEF_RE.finditer(txt)}
+    # A small explicit manifest covers guest exports whose firmware names do
+    # not use the cell/sys/sce prefix (currently cellL10n and sysPrxForUser).
+    # Validate them against real definitions so stale entries fail closed.
+    module = os.path.splitext(os.path.basename(c_path))[0]
+    special = set(SPECIAL_EXPORTS.get(module, ()))
+    defined = {m.group(1) for m in GENERIC_DEF_RE.finditer(txt)}
+    missing_special = special - defined
+    if missing_special:
+        raise RuntimeError(f"{c_path}: manifest exports have no local definitions: "
+                           + ", ".join(sorted(missing_special)))
+    found.update(special)
+    for name in sorted(found):
         out.append((compute_nid(name), name))
     return out
 

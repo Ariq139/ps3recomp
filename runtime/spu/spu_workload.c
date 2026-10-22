@@ -1,17 +1,20 @@
 /* spu_workload.c — SPU workload / task dispatch registry (see spu_workload.h).
  *
- * Maps a registered SPU image (by FNV-1a-64 content fingerprint) to its
+ * Maps a registered SPU image (by the project's 64-bit FNV-1a-style content
+ * fingerprint) to its
  * pre-lifted native entry, loads the image into a 256 KB local store, and runs
  * it with the SPURS task ABI. cellSpurs's AddWorkload/CreateTask call
  * spu_workload_dispatch(); the registry is populated by the title's lifted set.
  */
 #include "spu_workload.h"
+#include "spu_image_fingerprint_cache.h"
 #include "spu_lifted_job.h"   /* spu_run_lifted_job */
 #include "../ps3_log.h"      /* ps3_log_verbose */
 #include <stdio.h>
 #include <time.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #include "ps3emu/log_first.h"
 #ifdef _WIN32
 #include <windows.h>
@@ -32,7 +35,10 @@ int g_cri_video_dma = 0;
 uint64_t spu_workload_fingerprint(const void* data, size_t n)
 {
     const uint8_t* p = (const uint8_t*)data;
-    uint64_t h = 1469598103934665603ULL;          /* FNV offset basis */
+    /* Preserve the project's legacy seed. The standard FNV-1a-64 offset basis
+     * is 14695981039346656037; changing this value requires regenerating every
+     * SPU registration table. */
+    uint64_t h = 1469598103934665603ULL;
     for (size_t i = 0; i < n; i++) {
         h ^= p[i];
         h *= 1099511628211ULL;                     /* FNV prime */
@@ -41,6 +47,54 @@ uint64_t spu_workload_fingerprint(const void* data, size_t n)
 }
 
 /* ---- registry ---------------------------------------------------------- */
+
+/* SPU_JOB_AUDIT=<file>: preserve every distinct dispatch/result combination.
+ * Unlike the console throttle, new fingerprints never disappear after the
+ * first 32 misses. This covers job dispatch, not task/overlay execution. */
+static void spu_job_audit(uint64_t fp, uint32_t size, int image_id, int result)
+{
+    typedef struct AuditSeen {
+        struct AuditSeen* next;
+        uint64_t fp;
+        uint32_t size;
+        int image_id, result;
+    } AuditSeen;
+    static atomic_flag lock = ATOMIC_FLAG_INIT;
+    static atomic_int configured;
+    static const char* path;
+    static AuditSeen* seen;
+    static FILE* file;
+    if (atomic_load_explicit(&configured, memory_order_acquire) && !path) return;
+    while (atomic_flag_test_and_set_explicit(&lock, memory_order_acquire)) { }
+    if (!atomic_load_explicit(&configured, memory_order_relaxed)) {
+        path = getenv("SPU_JOB_AUDIT");
+        if (path && !*path) path = NULL;
+        if (path) {
+            file = fopen(path, "w");
+            if (file) fputs("fingerprint,size,image,result\n", file);
+            else fprintf(stderr, "[spu-audit] cannot open %s\n", path);
+        }
+        atomic_store_explicit(&configured, 1, memory_order_release);
+    }
+    if (file) {
+        AuditSeen* e;
+        for (e = seen; e; e = e->next)
+            if (e->fp == fp && e->size == size &&
+                e->image_id == image_id && e->result == result) break;
+        if (!e) {
+            fprintf(file, "%016llX,%u,%d,%s\n", (unsigned long long)fp,
+                    size, image_id, result > 0 ? "completed" :
+                    result == 0 ? "missing" : "failed");
+            fflush(file);
+            e = (AuditSeen*)malloc(sizeof(*e));
+            if (e) {
+                e->fp = fp; e->size = size; e->image_id = image_id;
+                e->result = result; e->next = seen; seen = e;
+            }
+        }
+    }
+    atomic_flag_clear_explicit(&lock, memory_order_release);
+}
 
 #ifndef SPU_WORKLOAD_MAX
 #define SPU_WORKLOAD_MAX 256
@@ -51,15 +105,66 @@ typedef struct {
     spu_lifted_entry_fn fn;
     int                 image_id;
     const char*         name;
+    uint32_t            job_context_tag;
 } spu_workload_entry;
 
 static spu_workload_entry s_registry[SPU_WORKLOAD_MAX];
 static unsigned           s_registry_count = 0;
 
+typedef struct {
+    const uint8_t* bytes;
+    uint32_t size;
+    spu_lifted_entry_fn fn;
+    int image_id;
+    const char* name;
+} spu_raw_region;
+static spu_raw_region s_raw_regions[SPU_WORKLOAD_MAX];
+static unsigned s_raw_region_count;
+
+void spu_workload_register_raw_region(const uint8_t* bytes, uint32_t size,
+                                     spu_lifted_entry_fn fn, int image_id,
+                                     const char* name)
+{
+    if (!bytes || !fn || size < 64 || size > SPU_LS_SIZE) return;
+    for (unsigned i = 0; i < s_raw_region_count; ++i)
+        if (s_raw_regions[i].image_id == image_id) return;
+    if (s_raw_region_count >= SPU_WORKLOAD_MAX) {
+        fprintf(stderr, "[spu_workload] raw-region registry full; dropping '%s'\n",
+                name ? name : "?");
+        return;
+    }
+    spu_raw_region* r = &s_raw_regions[s_raw_region_count++];
+    r->bytes = bytes; r->size = size; r->fn = fn;
+    r->image_id = image_id; r->name = name;
+}
+
+static spu_lifted_entry_fn find_raw_region(const uint8_t* bytes, uint32_t size,
+                                          int* image_id)
+{
+    static atomic_uint reported[SPU_WORKLOAD_MAX];
+    if (size < 64) return NULL;
+    for (unsigned i = 0; i < s_raw_region_count; ++i) {
+        const spu_raw_region* r = &s_raw_regions[i];
+        if (size <= r->size && !memcmp(bytes, r->bytes, 16) &&
+            !memcmp(bytes, r->bytes, size)) {
+            *image_id = r->image_id;
+            if (getenv("SPU_IMAGE_MATCH_TRACE") &&
+                !atomic_exchange_explicit(&reported[i], 1, memory_order_relaxed))
+                fprintf(stderr, "[SPU] raw-region match image=%d size=%u name='%s'\n",
+                        r->image_id, size, r->name ? r->name : "?");
+            return r->fn;
+        }
+    }
+    return NULL;
+}
+
 void spu_workload_register_img(uint64_t fingerprint, spu_lifted_entry_fn fn,
                                int image_id, const char* name)
 {
     if (!fn) return;
+    if (getenv("SPU_IMAGE_MATCH_TRACE"))
+        fprintf(stderr, "[SPU] workload-register fp=0x%016llX image_id=%d name=\"%s\"\n",
+                (unsigned long long)fingerprint, image_id, name ? name : "?");
     for (unsigned i = 0; i < s_registry_count; i++) {
         if (s_registry[i].fp == fingerprint) {     /* idempotent on fingerprint */
             s_registry[i].fn       = fn;
@@ -77,7 +182,27 @@ void spu_workload_register_img(uint64_t fingerprint, spu_lifted_entry_fn fn,
     s_registry[s_registry_count].fn       = fn;
     s_registry[s_registry_count].image_id = image_id;
     s_registry[s_registry_count].name     = name;
+    s_registry[s_registry_count].job_context_tag = 20u;
     s_registry_count++;
+}
+
+void spu_workload_set_job_context_tag(uint64_t fingerprint, uint32_t value)
+{
+    if (value > 31u) return;
+    for (unsigned i = 0; i < s_registry_count; ++i) {
+        if (s_registry[i].fp == fingerprint) {
+            s_registry[i].job_context_tag = value;
+            return;
+        }
+    }
+}
+
+uint32_t spu_workload_job_context_tag(int image_id)
+{
+    for (unsigned i = 0; i < s_registry_count; ++i)
+        if (s_registry[i].image_id == image_id)
+            return s_registry[i].job_context_tag;
+    return 20u;
 }
 
 void spu_workload_register(uint64_t fingerprint, spu_lifted_entry_fn fn,
@@ -99,8 +224,15 @@ spu_lifted_entry_fn spu_workload_find_img(uint64_t fingerprint, int* image_id_ou
     for (unsigned i = 0; i < s_registry_count; i++)
         if (s_registry[i].fp == fingerprint) {
             if (image_id_out) *image_id_out = s_registry[i].image_id;
+            if (getenv("SPU_IMAGE_MATCH_TRACE"))
+                fprintf(stderr, "[SPU] workload-hit fp=0x%016llX image_id=%d name=\"%s\"\n",
+                        (unsigned long long)fingerprint, s_registry[i].image_id,
+                        s_registry[i].name ? s_registry[i].name : "?");
             return s_registry[i].fn;
         }
+    if (getenv("SPU_IMAGE_MATCH_TRACE"))
+        fprintf(stderr, "[SPU] workload-miss fp=0x%016llX registered=%u\n",
+                (unsigned long long)fingerprint, s_registry_count);
     if (image_id_out) *image_id_out = 0;
     return NULL;
 }
@@ -884,12 +1016,20 @@ int spu_workload_dispatch_job(const uint8_t* image, uint32_t image_size,
 {
     if (!image || image_size == 0) return 0;
 
-    uint64_t fp = spu_workload_fingerprint(image, image_size);
+#ifdef _MSC_VER
+    static __declspec(thread) spu_image_fingerprint_cache image_cache;
+#else
+    static _Thread_local spu_image_fingerprint_cache image_cache;
+#endif
+    uint64_t fp = spu_image_fingerprint_cached(&image_cache, image, image_size,
+                                               spu_workload_fingerprint);
     spu_lifted_entry_fn fn = NULL;
     int image_id = 0;
     for (unsigned i = 0; i < s_registry_count; i++)
         if (s_registry[i].fp == fp) { fn = s_registry[i].fn; image_id = s_registry[i].image_id; break; }
+    if (!fn) fn = find_raw_region(image, image_size, &image_id);
     if (!fn) {
+        spu_job_audit(fp, image_size, 0, 0);
         /* Capped: an unlifted job a title dispatches every frame (Tornado
          * Outbreak's Wwise audio jobs) wrote 2 GB of these in three minutes,
          * and the logging itself distorts guest timing. */
@@ -941,6 +1081,7 @@ int spu_workload_dispatch_job(const uint8_t* image, uint32_t image_size,
     struct timespec t0, t1;
     if (s_prof) timespec_get(&t0, TIME_UTC);
     int rc = spu_run_spurs_job(fn, image_id, job_ea, job_desc_size);
+    spu_job_audit(fp, image_size, image_id, rc == 0 ? 1 : -1);
     if (s_prof) {
         static double acc[64], last; static unsigned cnt[64];
         timespec_get(&t1, TIME_UTC);
@@ -960,10 +1101,14 @@ int spu_workload_dispatch_job(const uint8_t* image, uint32_t image_size,
         fprintf(stderr, "[spurs-job] job 0x%08X RETURNED rc=%d\n", job_ea, rc);
         fflush(stderr);
     }
-    return 1;
+    return rc == 0 ? 1 : 0;
 }
 
-/* ---- SPURS task signal channel (real WAIT_SIGNAL semantics) --------------
+/* RPCS3_REFERENCE_REVIEWED: this host wait/wake path implements the documented
+ * SPURS syscall contract in local code; targeted review did not establish a
+ * copied RPCS3 body.
+ * See docs/RPCS3_LICENSE_AUDIT.md. This is not license clearance.
+ * ---- SPURS task signal channel (real WAIT_SIGNAL semantics) --------------
  *
  * Mirrors the kernel/RPCS3 contract (spursTasksetProcessSyscall):
  *   - _cellSpursSendSignal / cellSpursEventFlagSet mark the task's bit in the

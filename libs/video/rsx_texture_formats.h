@@ -14,7 +14,9 @@
 extern "C" {
 #endif
 
-/* RSX texture format values (from NV4097_SET_TEXTURE_FORMAT, bits 8-15) */
+/* RSX texture format values (from NV4097_SET_TEXTURE_FORMAT, bits 8-15).
+ * The extracted byte also contains layout flags such as LINEAR (0x20) and
+ * UNNORMALISED (0x40); mask those before switching on a base format. */
 #define RSX_TEXTURE_B8               0x81
 #define RSX_TEXTURE_A1R5G5B5         0x82
 #define RSX_TEXTURE_A4R4G4B4         0x83
@@ -41,17 +43,24 @@ extern "C" {
 #define RSX_TEXTURE_COMPRESSED_B8R8_G8R8 0xAD
 #define RSX_TEXTURE_COMPRESSED_R8B8_R8G8 0xAE
 
-/* Extract the base format from the full texture format word.
- * The format field is in bits 8-15 of the NV4097_SET_TEXTURE_FORMAT register. */
+/* Extract the format byte, including its layout flags, from the full register. */
 static inline u32 rsx_texture_get_format(u32 format_word)
 {
     return (format_word >> 8) & 0xFF;
 }
 
-/* Check if format is swizzled (bit 5 of format_word) */
-static inline int rsx_texture_is_swizzled(u32 format_word)
+/* The extracted RSX format byte has bit 5 set for linear layout. Compressed
+ * DXT formats are always linear; non-power-of-two dimensions cannot be swizzled. */
+static inline int rsx_texture_is_swizzled(u32 rsx_format, u32 width, u32 height)
 {
-    return (format_word & 0x20) != 0;
+    const u32 base = rsx_format & 0x9Fu;
+    if (base == RSX_TEXTURE_COMPRESSED_DXT1 ||
+        base == RSX_TEXTURE_COMPRESSED_DXT23 ||
+        base == RSX_TEXTURE_COMPRESSED_DXT45)
+        return 0;
+    return !(rsx_format & 0x20u) && width && height &&
+           (width & (width - 1u)) == 0u &&
+           (height & (height - 1u)) == 0u;
 }
 
 /* Get bits per pixel for an RSX texture format */

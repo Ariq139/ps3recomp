@@ -765,8 +765,11 @@ not changed while a title runs.
   `runtime/ppu/tests/boot_main.cpp:147`  _(+1 more sites)_
 - **`PS3_WAITBT`** — PS3_WAITBT: one-shot guest-stack dump per (tid,queue) so we can name the exact game function the main thread is stuck polling in the flip loop. */
   `runtime/syscalls/sys_event.c:301`
-- **`PS3_WAIT_OBJ`** — _(no description in source)_
-  `runtime/syscalls/sys_timer.c:119`
+- **`PS3_WAIT_OBJ=<lr-hex>`** — for a matching `sys_timer_usleep` return
+  address, prints the guest thread, sleep length, index, object pointer, the
+  first four big-endian words at that object, and r29 (up to four lines).
+  Example: `PS3_WAIT_OBJ=00B14B50` reports the `r25` object used by that poll
+  site. `runtime/syscalls/sys_timer.c:169`
 
 ## `PS3RECOMP`
 

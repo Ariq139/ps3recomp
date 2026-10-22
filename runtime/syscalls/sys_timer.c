@@ -22,6 +22,13 @@ sys_timer_info g_sys_timers[SYS_TIMER_MAX];
 #ifdef _WIN32
 static LARGE_INTEGER s_qpc_freq;
 static int           s_qpc_init = 0;
+/* A high-resolution waitable timer lets short guest sleeps park their host
+ * thread instead of consuming a core in the QPC busy-tail below. Keep one per
+ * host thread: a shared timer would let concurrent guest sleeps replace each
+ * other's deadlines. If the OS does not support the high-resolution flag, the
+ * existing QPC path remains the fallback. */
+static PPU_THREAD_LOCAL HANDLE s_hr_usleep_timer;
+static PPU_THREAD_LOCAL int    s_hr_usleep_timer_initialized;
 
 static void ensure_qpc_init(void)
 {
@@ -207,7 +214,22 @@ int64_t sys_timer_usleep(ppu_context* ctx)
               fprintf(stderr, "]");
             }
           }
-          fprintf(stderr, "\n"); fflush(stderr);
+          fprintf(stderr, " r29=0x%08X", (uint32_t)ctx->gpr[29]);
+          /* The NPEB02436 black-screen probe waits for GCM label 0x57 from
+           * caller LR 0x008F7C98. Report the actual compare operands so a
+           * stuck label poll can be distinguished from a missing RSX write. */
+          if ((uint32_t)ctx->lr == 0x008F7C98u) {
+            uint32_t label57 = 0;
+            if (vm_base) {
+              const uint8_t* p = (const uint8_t*)vm_base + 0x03000570u;
+              label57 = ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+                        ((uint32_t)p[2] << 8) | (uint32_t)p[3];
+            }
+            fprintf(stderr, " expect(r31)=0x%08X label57=0x%08X",
+                    (uint32_t)ctx->gpr[31], label57);
+          }
+          fputc('\n', stderr);
+          fflush(stderr);
         } } }
 
     /* POLLSITE: resolve the host chain of the 1ms poller (LBP bringup) to
@@ -218,6 +240,27 @@ int64_t sys_timer_usleep(ppu_context* ctx)
         ppu_log_host_chain("usleep1ms"); } }
 
 #ifdef _WIN32
+    /* GFD workers poll with 100-us usleeps. A QPC busy-tail at that interval
+     * can pin one host core indefinitely even though the guest requested a
+     * sleep. Use a cached high-resolution timer for waits long enough to park
+     * efficiently, while retaining the precise busy-tail for very short waits
+     * and for systems that reject CREATE_WAITABLE_TIMER_HIGH_RESOLUTION. */
+    if (usec >= 50 && usec < 1000000) {
+        if (!s_hr_usleep_timer_initialized) {
+            s_hr_usleep_timer_initialized = 1;
+            s_hr_usleep_timer = CreateWaitableTimerExW(
+                NULL, NULL, 0x00000002 /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION */,
+                TIMER_ALL_ACCESS);
+        }
+        if (s_hr_usleep_timer) {
+            LARGE_INTEGER due;
+            due.QuadPart = -((LONGLONG)usec * 10); /* 100-ns units */
+            if (SetWaitableTimer(s_hr_usleep_timer, &due, 0, NULL, NULL, FALSE) &&
+                WaitForSingleObject(s_hr_usleep_timer, INFINITE) == WAIT_OBJECT_0)
+                return CELL_OK;
+        }
+    }
+
     /* Use high-resolution sleep via waitable timer for better precision */
     if (usec >= 1000) {
         HANDLE timer = CreateWaitableTimerW(NULL, TRUE, NULL);
@@ -231,7 +274,11 @@ int64_t sys_timer_usleep(ppu_context* ctx)
             Sleep((DWORD)(usec / 1000));
         }
     } else if (usec > 0) {
-        /* Sub-millisecond sleep. Sleep()/waitable timers round up to the
+        /* RPCS3_PROVENANCE_REVIEW: the short-wait strategy is described as
+         * mirroring RPCS3; this code uses the host QPC/SwitchToThread APIs.
+         * Direct source copying is not established; see the audit document.
+         *
+         * Sub-millisecond sleep. Sleep()/waitable timers round up to the
          * ~0.5-1 ms scheduler quantum, far too coarse for a guest that relies
          * on accurate microsecond pacing -- a short usleep() spin waiting on
          * another thread to make progress otherwise collapses to a single yield

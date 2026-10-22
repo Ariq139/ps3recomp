@@ -84,6 +84,11 @@ extern "C" {
  * a fat format. Overruns are counted, not silently truncated -- half a
  * vertex stream is worse than no draw. */
 #define RSX_DSP_INLINE_MAX_BYTES 65536
+/* Immediate ARRAY_ELEMENT data is staged as 32-bit indices, matching the
+ * RPCS3 immediate-draw path. Bound one BEGIN_END group to the same 64 KiB
+ * working set as INLINE_ARRAY instead of allowing malformed FIFO streams to
+ * grow the dispatcher without limit. */
+#define RSX_DSP_MAX_INLINE_INDEX_ELEMENTS (RSX_DSP_INLINE_MAX_BYTES / 4u)
 
 typedef struct rsx_dispatch rsx_dispatch;
 
@@ -106,6 +111,12 @@ typedef struct rsx_dispatch_sink {
      * see the note on M_INLINE_ARRAY in rsx_dispatch.c. Delivered at END. */
     void (*inline_array)(void* user, const rsx_dispatch* rsx,
                          const u8* data, u32 bytes);
+    /* ARRAY_ELEMENT16/32 stream: indices pushed directly through the FIFO.
+     * RPCS3 treats this as an immediate indexed draw when no explicit draw
+     * method was issued in the BEGIN_END group. Values are host u32s and the
+     * stream is valid until the END callback returns. */
+    void (*inline_index_array)(void* user, const rsx_dispatch* rsx,
+                               const u32* indices, u32 count);
     void (*flip)(void* user, const rsx_dispatch* rsx, u32 arg);
     /* A completed ATTR0 DATA3F/DATA4F inside BEGIN emits one vertex.
      * Snapshot the current attributes now; later register writes replace them.
@@ -122,6 +133,11 @@ struct rsx_dispatch {
 
     int in_begin_end;                 /* between BEGIN_END(prim) and (0)    */
     u32 current_primitive;
+
+    /* NV4097_SET_RENDER_ENABLE conditional rendering references the report
+     * RAM value written by NV4097_GET_REPORT. */
+    int conditional_render_enabled;
+    u32 conditional_render_offset;
 
     u32 inline_len;                   /* bytes accumulated this primitive   */
     u32 inline_dropped;               /* streams lost to the cap            */
@@ -140,6 +156,12 @@ struct rsx_dispatch {
      * emits no inline arrays at all, still lost an order of magnitude of
      * poll rate in the regression gate purely from the added stride. */
     u8  inline_data[RSX_DSP_INLINE_MAX_BYTES];
+    /* Kept last for the same hot-method cache-locality reason as inline_data. */
+    u32 inline_indices[RSX_DSP_MAX_INLINE_INDEX_ELEMENTS];
+    u32 inline_index_count;
+    u32 inline_index_dropped;
+    u8  inline_index_overflow;
+    u8  draw_command_seen;
 };
 
 /* ---- lifecycle -------------------------------------------------------- */
@@ -249,6 +271,7 @@ typedef struct rsx_dsp_texture {
     u32 remap;           /* raw component-remap (swizzle) word              */
     u32 filter;          /* raw min/mag filter word (TEX_FILTER)            */
     u32 control0;        /* raw TEX_CONTROL0 word (enable[31], LOD fields)  */
+    u32 control2;        /* raw NV4097_SET_TEXTURE_CONTROL2 at 0x0B00+unit*4 */
     u32 border_color;
 } rsx_dsp_texture;
 void rsx_dsp_get_texture(const rsx_dispatch* rsx, u32 unit, rsx_dsp_texture* out);

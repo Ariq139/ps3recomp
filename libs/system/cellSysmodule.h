@@ -132,6 +132,14 @@ s32 cellSysmoduleUnloadModule(u16 id);
 
 /* NID: 0x5A59E258 */
 s32 cellSysmoduleIsLoaded(u16 id);
+s32 cellSysmoduleLoadModuleInternal(u16 id);
+s32 cellSysmoduleUnloadModuleInternal(u16 id);
+s32 cellSysmoduleLoadModuleEx(u16 id);
+s32 cellSysmoduleUnloadModuleEx(u16 id);
+s32 cellSysmoduleIsLoadedEx(u16 id);
+s32 cellSysmoduleSetMemcontainer(u32 container_id);
+s32 cellSysmoduleSetDebugmode(u32 debug_mode);
+s32 cellSysmoduleSetInternalmode(void);
 
 /* NID: 0x70E319B5; query the extended 0xF000..0xF056 namespace. */
 s32 cellSysmoduleIsLoadedEx(u16 id);

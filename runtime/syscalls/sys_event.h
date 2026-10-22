@@ -110,6 +110,9 @@ typedef struct sys_event_flag_info {
     uint32_t type;       /* single / multi waiter */
     char     name[8];
     uint64_t pattern;    /* 64-bit flag word */
+    uint32_t waiters;
+    uint32_t _waiter_pad;
+    uint64_t cancel_generation;
 
 #ifdef _WIN32
     CRITICAL_SECTION lock;
@@ -147,6 +150,7 @@ int64_t sys_event_flag_trywait(ppu_context* ctx);
 int64_t sys_event_flag_set(ppu_context* ctx);
 int64_t sys_event_flag_clear(ppu_context* ctx);
 int64_t sys_event_flag_get(ppu_context* ctx);
+int64_t sys_event_flag_cancel(ppu_context* ctx);
 
 /* Registration */
 void sys_event_init(lv2_syscall_table* tbl);
@@ -159,12 +163,16 @@ int sys_event_queue_push_by_id(uint32_t queue_id,
                                uint64_t source, uint64_t data1,
                                uint64_t data2,  uint64_t data3);
 
+/* Check whether a 1-based LV2 event queue ID currently names an active queue. */
+int sys_event_queue_is_active(uint32_t queue_id);
+
 /* Resolve an event queue by its ipc_key; returns queue_id (1-based) or 0. */
 uint32_t sys_event_find_queue_by_key(uint64_t key);
 
 /* Create a queue without a guest context (for HLE libs that must hand the
  * game a queue id, e.g. cellAudioCreateNotifyEventQueue). 0 = table full. */
 uint32_t sys_event_queue_create_direct(uint64_t key, int32_t size);
+uint32_t sys_event_queue_create_direct_ex(uint64_t key, int32_t size, int32_t type);
 
 /* Mark a queue as having no producer left and release anyone blocked on it.
  * Used by cellSpursFinalize: after it, no job completion can ever arrive, and

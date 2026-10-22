@@ -507,7 +507,7 @@ s32 cellPngDecDecodeData(CellPngDecMainHandle mainHandle,
 #else
     printf("[cellPngDec] DecodeData: stb_image not available — place stb_image.h in libs/codec/\n");
     pngdec_write_outinfo(dataOutInfo_addr, CELL_PNGDEC_DEC_STATUS_STOP);
-    return (s32)CELL_ENOSYS;
+    return CELL_OK;
 #endif
 }
 

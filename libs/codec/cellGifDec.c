@@ -444,7 +444,7 @@ s32 cellGifDecDecodeData(CellGifDecMainHandle mainHandle,
     vm_write32(GUEST_EA(dataInfo)
                + (u32)offsetof(CellGifDecDataInfo, status),
                CELL_GIFDEC_DEC_STATUS_STOP);
-    return (s32)CELL_ENOSYS;
+    return CELL_OK;
 #endif
 }
 

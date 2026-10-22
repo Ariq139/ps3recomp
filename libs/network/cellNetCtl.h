@@ -178,6 +178,28 @@ s32 cellNetCtlGetState(s32* state);
 s32 cellNetCtlGetInfo(s32 code, CellNetCtlInfo* info);
 s32 cellNetCtlGetNatInfo(CellNetCtlNatInfo* natInfo);
 
+/* RPCS3 currently exposes these game-internal compatibility calls as
+ * success-only TODOs. They intentionally preserve that behavior and do not
+ * imply that game-network or update-check functionality is implemented. */
+s32 cellNetCtlAddHandlerGameInt(void);
+s32 cellNetCtlConnectGameInt(void);
+s32 cellNetCtlDelHandlerGameInt(void);
+s32 cellNetCtlDisconnectGameInt(void);
+s32 cellNetCtlGetInfoGameInt(void);
+s32 cellNetCtlGetScanInfoGameInt(void);
+s32 cellNetCtlGetStateGameInt(void);
+s32 cellNetCtlScanGameInt(void);
+s32 cellGameUpdateInit(void);
+s32 cellGameUpdateTerm(void);
+s32 cellGameUpdateCheckStartAsync(u32 param_ea, u32 callback_opd, u32 userdata_ea);
+s32 cellGameUpdateCheckFinishAsync(u32 callback_opd, u32 userdata_ea);
+s32 cellGameUpdateCheckStartWithoutDialogAsync(u32 callback_opd, u32 userdata_ea);
+s32 cellGameUpdateCheckAbort(void);
+s32 cellGameUpdateCheckStartAsyncEx(u32 param_ea, u32 callback_opd, u32 userdata_ea);
+s32 cellGameUpdateCheckFinishAsyncEx(u32 callback_opd, u32 userdata_ea);
+s32 cellGameUpdateCheckStartWithoutDialogAsyncEx(u32 callback_opd,
+                                                  u32 userdata_ea);
+
 s32 cellNetCtlAddHandler(cellNetCtlHandler handler, void* arg, s32* hid);
 s32 cellNetCtlDelHandler(s32 hid);
 

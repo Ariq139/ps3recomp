@@ -2,11 +2,18 @@
 
 Status of HLE (High-Level Emulation) implementations for PS3 system modules in ps3recomp.
 
+This is a qualitative inventory, not a PS3 API compliance claim. A handler or
+backend may be present while side effects, formats, or title-specific behavior
+remain incomplete. “Complete” means only the behavior described in that row is
+implemented for the stated local scope; it does not mean full SDK coverage or
+verified compatibility with an arbitrary title. The target game's logs and the
+module's regression coverage are stronger evidence than the status label.
+
 **Legend:**
 - **Not Started**: No implementation exists
-- **Stubbed**: Functions exist but only log and return CELL_OK
+- **Stubbed**: A placeholder exists but does not model the requested operation; it may log or return a fixed result
 - **Partial**: Core functions implemented, advanced features missing
-- **Complete**: Fully functional for known game use cases
+- **Complete**: The behavior described in the row is implemented for its stated scope; not a full API conformance claim
 
 ## System / Core
 
@@ -38,15 +45,15 @@ Status of HLE (High-Level Emulation) implementations for PS3 system modules in p
 | Module | Category | Status | Notes |
 |---|---|---|---|
 | cellPad | Gamepad | **Complete** | XInput (Windows) / SDL2 backends, analog sticks, triggers, pressure buttons, rumble |
-| cellKb | Keyboard | **Complete** | Key event injection, raw/ASCII modes, modifier/LED tracking |
-| cellMouse | Mouse | **Complete** | Delta accumulation, buttons, wheel, buffered ring-buffer mode |
+| cellKb | Keyboard | **Complete** | Native Win32/SDL events, raw/ASCII modes, modifier tracking |
+| cellMouse | Mouse | **Complete** | Native Win32/SDL events, relative movement, buttons, vertical/horizontal wheel, buffered mode |
 
 ## Graphics
 
 | Module | Category | Status | Notes |
 |---|---|---|---|
-| cellGcmSys | RSX System | **Complete** | Command buffer control, local mem allocator, IO mapping with offset tables, flip handler/VBlank callbacks, tile/zcull config, report/label areas, timestamps, 27+ functions |
-| RSX Command Processor | GPU Commands | **Complete** | NV47xx FIFO parsing, state tracking (surfaces, viewport, scissor, blend, depth/stencil, cull, color mask, alpha test, 16 texture units, 16 vertex attribs, shader programs), draw arrays/indexed dispatch, rsx_backend callback interface. **D3D12 backend renders real titles** — the guest's own NV4097 vertex and fragment programs, indexed draws, per-draw constants and textures, render-to-texture, MRT. A Metal backend covers macOS. Vulkan is still unwritten, and is what Linux and Android need. |
+| cellGcmSys | RSX System | Partial | Core command-buffer, memory-mapping, display-buffer, flip, tile/zcull, and report/label APIs are present; title-specific behavior is not fully validated. |
+| RSX Command Processor | GPU Commands | Partial | NV47xx FIFO parsing, state tracking, and draw dispatch are present. D3D12 and Metal backends exist; Vulkan is an optional Linux backend. Guest-program translation depends on build options and each backend has unsupported features. No broad game-compatibility claim is made here. See `BUILDING.md` and `RSX_GRAPHICS.md`. |
 | cellResc | Resolution | **Complete** | Init, display modes, buffer management, aspect ratio, interlace, flip/vblank handlers |
 | cellVideoOut | Video Output | **Complete** | Resolution config, device info, all PS3 resolution IDs, default 720p |
 
@@ -54,8 +61,8 @@ Status of HLE (High-Level Emulation) implementations for PS3 system modules in p
 
 | Module | Category | Status | Notes |
 |---|---|---|---|
-| cellAudio | Audio Output | **Complete** | WASAPI (Win) / SDL2 backends, mixing thread @ 5.33ms, multi-port mixing, 7.1 downmix |
-| cellVoice | Voice Chat | **Complete** | Port management, connect/disconnect, start/stop, read/write (no actual voice data) |
+| cellAudio | Audio Output | Partial | WASAPI (Win) / SDL2 backends, multi-port mixing, flagged event subscriptions and 2/6/8-channel input, 7.1 downmix; before-mix ack timing remains incomplete |
+| cellVoice | Voice Chat | Partial | Implements RPCS3's exported port, lifecycle, property, and event-queue API surface. No microphone capture, voice codec, or audio transfer is available. |
 | cellMic | Microphone | **Complete** | Init/end, all queries report no microphone attached |
 
 ## Media / Codec
@@ -85,7 +92,7 @@ Status of HLE (High-Level Emulation) implementations for PS3 system modules in p
 | cellFont | Font Rendering | **Complete** | Full lifecycle, stb_truetype backend, fallback metrics without STB |
 | cellFontFT | FreeType Font | **Complete** | FreeType-based rendering, 16 font slots, fallback metrics (ascender=0.8×size, descender=-0.2×size), empty glyph bitmaps, kerning stub |
 | cellFreeType | FreeType | **Complete** | FreeType2 library wrapper, reports version 2.4.12 (PS3 firmware 4.x), init/end lifecycle |
-| cellL10n | Localization | **Complete** | UTF-8/16/32/UCS-2 bidirectional, ISO-8859-1, ASCII, generic converter API |
+| cellL10n | Localization | Partial | UTF-8/16/32/UCS-2 and code-page conversions, CP932/EUC-JP conversion, and generic converter API; 42 of RPCS3's 165 registered names are present locally |
 
 ## Network
 
@@ -123,7 +130,7 @@ Status of HLE (High-Level Emulation) implementations for PS3 system modules in p
 | cellGame | Game Utility | **Complete** | Boot check, content permit, param read, data directory management |
 | cellMsgDialog | Message Dialog | **Complete** | Prints to stdout, auto-responds YES/OK, progress bar tracking |
 | cellOskDialog | OSK Dialog | **Complete** | UTF-16 support, configurable default response, async pattern |
-| cellVideoUpload | Video Upload | **Complete** | Init/term, upload returns NOT_SUPPORTED |
+| cellVideoUpload | Video Upload | Partial | Initialization/finalization notifications use the sysutil callback pump. No remote upload service is implemented. |
 | cellScreenshot | Screenshot | **Complete** | Enable/disable, parameter/overlay tracking (capture via GCM integration) |
 | cellBGDL | Background DL | **Complete** | Init/term, download list always empty, start returns BUSY |
 | cellUserInfo | User Info | **Complete** | Default user (00000001/"User"), GetStat/GetList/SelectUser |
@@ -132,8 +139,8 @@ Status of HLE (High-Level Emulation) implementations for PS3 system modules in p
 
 | Module | Category | Status | Notes |
 |---|---|---|---|
-| cellSpurs | SPURS | Partial | Management APIs, workloads, tasks, tasksets, event flags with real blocking (CRITICAL_SECTION/pthread condvars). Tasks, job chains and workloads run lifted SPU code; see SPU_LIFTER.md |
-| cellSpursJq | SPURS Job Queue | **Complete** | Job queue create/destroy, push with completion tracking, wait/tryWait with proper BUSY returns, port create/destroy, 16 max queues |
+| cellSpurs | SPURS | Partial | Management APIs and host-side synchronization plus selected lifted workload paths; arbitrary SPU images and full SPURS scheduling are not covered. |
+| cellSpursJq | SPURS Job Queue | Partial | Queue and completion tracking; supported descriptors dispatch registered lifted jobs, while unknown fingerprints fail explicitly. |
 | cellDaisy | Daisy Chain | **Complete** | Lock-free FIFO pipes with real ring buffer, push/pop/try variants, 32 max pipes, 256 max depth, count/free queries |
 | cellFiber | Fiber | **Complete** | PPU fibers via Windows Fibers/ucontext: scheduler, create, RunFibers, WaitSignal/SendSignal, JoinFiber, Yield, Exit, Self |
 | cellSync | Sync Primitives | **Complete** | Atomic spinlock mutex, counter barrier, RWM, bounded queue, lock-free queue |
@@ -143,7 +150,7 @@ Status of HLE (High-Level Emulation) implementations for PS3 system modules in p
 
 | Module | Category | Status | Notes |
 |---|---|---|---|
-| cellUsbd | USB Driver | **Complete** | LDD registration, device list returns empty, pipe/transfer ops return NO_DEVICE |
+| cellUsbd | USB Driver | Partial | Device enumeration/pipe operations report the absent-device state. RPCS3's additional no-op TODO exports are registered as explicit compatibility placeholders; no USB transfer backend exists. |
 | cellCamera | Camera | **Complete** | Init/end, all device queries return DEVICE_NOT_FOUND / not attached |
 | cellGem | Move Controller | **Complete** | Init/end, GetInfo reports 0 connected, all queries return NOT_CONNECTED |
 | cellAvconfExt | AV Config | **Complete** | Audio output device info, sound availability, configuration, gamma control |

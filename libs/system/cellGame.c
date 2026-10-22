@@ -64,12 +64,14 @@ static int  s_content_path_resolved = 0;
  * if set, else the VFS root -- in both cases with the "/dev_hdd0/" prefix
  * stripped, which is what ppu_fs does to the guest path. */
 extern const char* ppu_vfs_root;
+extern const char* ppu_hdd0_root;
 
 static const char* content_root(void)
 {
     if (!s_content_path_resolved) {
         s_content_path_resolved = 1;
         const char* hdd0 = getenv("PS3_HDD0_ROOT");
+        if (!hdd0 || !*hdd0) hdd0 = ppu_hdd0_root;
         if (hdd0 && *hdd0)
             snprintf(s_content_path, sizeof s_content_path, "%s/game", hdd0);
         else if (ppu_vfs_root && *ppu_vfs_root && strcmp(ppu_vfs_root, ".") != 0)
@@ -90,6 +92,22 @@ static char s_exit_param[256] = "";
 
 static int  s_boot_checked = 0;
 static u32  s_game_type = CELL_GAME_GAMETYPE_DISC;
+
+/* The recompiler can launch either a disc image or an installed HDD title.
+ * Keep the historical disc default, but let the same PS3_BOOT_PATH used by
+ * ppu_loader select the matching cellGame content namespace. */
+static void cellGame_select_boot_type(void)
+{
+    const char* boot_path = getenv("PS3_BOOT_PATH");
+    if (!boot_path || !*boot_path)
+        return;
+
+    if (strncmp(boot_path, "/dev_hdd0/", 10) == 0 ||
+        strncmp(boot_path, "/app_home/", 10) == 0)
+        s_game_type = CELL_GAME_GAMETYPE_HDD;
+    else if (strncmp(boot_path, "/dev_bdvd/", 10) == 0)
+        s_game_type = CELL_GAME_GAMETYPE_DISC;
+}
 
 /* Current content-check session. BootCheck/DataCheck open a session naming
  * some content; ContentPermit reports THAT content's paths and closes it.
@@ -317,6 +335,12 @@ void cellGame_init_from_paramsfo(const char* sfo_path)
     if (sfo_read_string(sfo_path, "APP_VER", tmp, sizeof(tmp)) == 0 && tmp[0]) {
         strncpy(s_app_ver, tmp, sizeof(s_app_ver) - 1); s_app_ver[sizeof(s_app_ver) - 1] = '\0';
     }
+    if (sfo_read_string(sfo_path, "CATEGORY", tmp, sizeof(tmp)) == 0) {
+        if (strcmp(tmp, "HG") == 0)
+            s_game_type = CELL_GAME_GAMETYPE_HDD;
+        else if (strcmp(tmp, "DG") == 0)
+            s_game_type = CELL_GAME_GAMETYPE_DISC;
+    }
 }
 
 /* Central title-id accessor so other modules (cellSysutil etc.) don't hardcode it. */
@@ -328,10 +352,51 @@ const char* cellGame_get_hdd_title_id(void)
     return s_game_type == CELL_GAME_GAMETYPE_HDD && s_title_id[0] ? s_title_id : NULL;
 }
 
+const char* cellGame_get_boot_path(void)
+{
+    const char* override = getenv("PS3_BOOT_PATH");
+    if (override && *override) return override;
+    if (s_game_type == CELL_GAME_GAMETYPE_HDD) {
+        static char path[128];
+        snprintf(path, sizeof path, "/dev_hdd0/game/%s/USRDIR/EBOOT.BIN", s_title_id);
+        return path;
+    }
+    return "/dev_bdvd/PS3_GAME/USRDIR/EBOOT.BIN";
+}
+
+/* RPCS3's cellGamePatchCheck checks whether the disc title has installed
+ * patch content, reports available storage, and returns NOTPATCH otherwise.
+ * This HLE has no patch-permission manager, but the VFS exposes the installed
+ * update directory directly. Treat it as a patch only when its PARAM.SFO is
+ * present; do not report success for an empty placeholder directory. */
+s32 cellGamePatchCheck(CellGameContentSize* size, void* reserved)
+{
+    (void)reserved;
+    if (!s_check_is_disc)
+        return CELL_GAME_ERROR_NOTPATCH;
+
+    char patch_sfo[2048];
+    snprintf(patch_sfo, sizeof patch_sfo, "%s/%s/PARAM.SFO",
+             content_root(), s_title_id);
+    HOST_STAT_T st;
+    if (HOST_STAT(patch_sfo, &st) != 0)
+        return CELL_GAME_ERROR_NOTPATCH;
+
+    if (size) {
+        uint32_t size_ea = (uint32_t)(uintptr_t)size;
+        vm_write32(size_ea + 0, (u32)content_free_kb());
+        vm_write32(size_ea + 4, (u32)CELL_GAME_SIZEKB_NOTCALC);
+        vm_write32(size_ea + 8, 0);
+    }
+    printf("[cellGame] PatchCheck: installed update found at '%s'\n", patch_sfo);
+    return CELL_OK;
+}
+
 s32 cellGameBootCheck(u32* type, u32* attributes, CellGameContentSize* size,
                        char* dirName)
 {
     printf("[cellGame] BootCheck()\n");
+    cellGame_select_boot_type();
 
     /* Build paths based on title ID */
     snprintf(s_content_info_path, sizeof(s_content_info_path),
@@ -471,7 +536,10 @@ s32 cellGameDataCheck(u32 type, const char* dirName, CellGameContentSize* size)
     return CELL_GAME_RET_NONE;
 }
 
-/* cellGameDataCheckCreate2 (NID 0xC9645C41) -- check/prepare game data, invoking the
+/* RPCS3_REFERENCE_REVIEWED: this callback path follows behavior documented in
+ * RPCS3's cellGame implementation; targeted review did not establish a copied
+ * function body. See docs/RPCS3_LICENSE_AUDIT.md. This is not license clearance.
+ * cellGameDataCheckCreate2 (NID 0xC9645C41) -- check/prepare game data, invoking the
  * title's funcStat callback (CellGameDataStatCallback) exactly like firmware so the
  * save/boot state machine advances. Struct layout + behavior cross-referenced against
  * RPCS3 cellGame.cpp. Demon's Souls's DsSaveLoadMan thread calls this; without the
@@ -554,7 +622,10 @@ s32 cellGameDataCheckCreate2(u32 version, const char* dirName, u32 errDialog,
     return CELL_OK;
 }
 
-/* cellGameDataCheckCreate -- the pre-3.00 entry point. Same arguments and same
+/* RPCS3_REFERENCE_REVIEWED: the pre-3.00 wrapper follows RPCS3's forwarding
+ * behavior; targeted review did not establish a copied function body. See
+ * docs/RPCS3_LICENSE_AUDIT.md.
+ * cellGameDataCheckCreate -- the pre-3.00 entry point. Same arguments and same
  * behaviour as Create2 (RPCS3 forwards it the same way); the only difference is
  * the size of CellGameDataStatGet in older SDKs, and a title that asks for the
  * smaller one simply ignores the tail of ours.

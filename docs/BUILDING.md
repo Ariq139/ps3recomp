@@ -42,16 +42,16 @@ Complete guide to building the ps3recomp runtime library and game projects.
 **Windows:**
 - Visual Studio 2022 (MSVC 17.x) or Clang/LLVM 14+
 - Windows SDK 10.0.19041+
-- System libraries (auto-linked): `ws2_32.lib`, `xinput.lib`, `ole32.lib`, `bcrypt.lib`
+- System libraries (auto-linked): `ws2_32.lib`, `xinput.lib`, `ole32.lib`, `bcrypt.lib`, `dxguid.lib`
 
 **Linux:**
 - GCC 12+ or Clang 14+
 - Development headers: `libpthread`, `libm`
-- Optional: SDL2 development package (`libsdl2-dev`) for input/audio
+- SDL2 development package (`libsdl2-dev`) for input/audio
 
 **macOS:**
 - Xcode 14+ (Apple Clang 14+)
-- Optional: SDL2 via Homebrew (`brew install sdl2`)
+- SDL2 via Homebrew (`brew install sdl2`) for input/audio
 
 ---
 
@@ -384,6 +384,7 @@ guarded now (see `include/ps3emu/endian.h`) and that is no longer true.
 - `xinput` — XInput for gamepad (cellPad)
 - `ole32` — COM initialization for WASAPI audio (cellAudio)
 - `bcrypt` — BCryptGenRandom for cryptographic RNG (cellSsl)
+- `dxguid` — D3D/DXGI interface identifiers used by the Windows renderer
 
 **MSVC Compiler Flags:**
 - `/W3` — Warning level 3
@@ -467,7 +468,7 @@ and the Metal backend ([#96](https://github.com/sp00nznet/ps3recomp/pull/96)).
 | MSVC | 19.35+ (VS 2022) | Windows | Full support |
 | GCC | 12+ | Linux | Full support |
 | Clang | 14+ | Linux | Full support |
-| Clang / Apple Clang | 14+ (Xcode 14) | macOS | **Not building** — see #94, fix in review (#95) |
+| Clang / Apple Clang | 14+ | macOS | Build status is not verified by this guide; check the current CI/build result for the selected revision. |
 | MinGW-w64 | GCC 12+ | Windows | Supported |
 
 ### Required C17 Features
@@ -579,7 +580,7 @@ target_include_directories(my_game PRIVATE
 On Windows, your game project must also link:
 ```cmake
 target_link_libraries(my_game PRIVATE
-    ws2_32 xinput ole32 bcrypt d3d12 dxgi d3dcompiler uuid
+    ws2_32 xinput ole32 bcrypt d3d12 dxgi d3dcompiler uuid dxguid
 )
 ```
 
@@ -594,6 +595,7 @@ target_link_libraries(my_game PRIVATE
 | `dxgi` | Swap chain creation |
 | `d3dcompiler` | Runtime HLSL shader compilation |
 | `uuid` | COM interface GUIDs |
+| `dxguid` | DXGI interface GUIDs, including `IID_IDXGIFactory6` |
 
 **Vendored dependencies** (in-tree, no external install needed):
 - `stb_image.h` v2.30 — PNG/JPG/GIF decoding for cellPngDec/cellJpgDec/cellGifDec

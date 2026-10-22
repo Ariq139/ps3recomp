@@ -6,9 +6,9 @@ A step-by-step guide to adding new High-Level Emulation modules to ps3recomp.
 
 ## What Are HLE Modules?
 
-Every PS3 game depends on system libraries (PRX modules) for graphics, audio, input, filesystem, networking, and more. Instead of running the original Sony code, ps3recomp replaces these libraries with **HLE (High-Level Emulation) modules** — native implementations that provide equivalent behavior using host OS services.
+Every PS3 game depends on system libraries (PRX modules) for graphics, audio, input, filesystem, networking, and more. Instead of running the original Sony code, ps3recomp replaces selected calls with **HLE (High-Level Emulation) modules**. Each handler must model the guest-visible ABI and side effects needed by its callers; using a host service does not by itself establish equivalent behavior.
 
-When a game calls `cellAudioInit()`, our HLE module initializes WASAPI (Windows) or SDL2 (Linux) audio instead of the PS3's audio hardware. The game can't tell the difference.
+For example, an audio handler may use WASAPI or SDL2 on the host. Differences in timing, formats, callbacks, and error behavior can still be visible to a game.
 
 ---
 
@@ -80,10 +80,14 @@ s32 cellFooDecDecode(u32 handle, const CellFooDecSrc* src, CellFooDecInfo* info)
 **Key conventions:**
 - Error codes use the module's assigned error base from the PS3 SDK
 - Structs match PS3 SDK layout (member names, sizes, alignment)
-- All functions return `s32` (CELL_OK on success, negative on error)
+- Match each function's SDK ABI: return type, argument layout, pointer
+  direction, structure packing, and error values. Many APIs do not return `s32`.
 - `extern "C"` guards for C++ compatibility
 
 ### 2. Create the Implementation
+
+The decoder below is a scaffolding example: its fixed 64×64 output is
+deliberately fake and must be replaced with the real API behavior before use.
 
 `libs/codec/cellFooDec.c`:
 
@@ -331,7 +335,10 @@ static int64_t bridge_cellFooGetInfo(ppu_context* ctx)
 1. **Build the runtime** — your module must compile clean
 2. **Link to a game** — add bridge functions to a game's `hle_modules.cpp`
 3. **Run and compare** — check HLE log output against RPCS3's behavior
-4. **Stub first** — start with functions returning CELL_OK, then add real behavior
+4. **Implement the observed contract first** — use traces, SDK declarations,
+   and a behavior reference to model the call. Use a placeholder only when the
+   required behavior is unknown or outside the current scope, and document the
+   missing outputs and side effects.
 
 ### RPCS3 Cross-Reference
 

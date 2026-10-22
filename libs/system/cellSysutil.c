@@ -7,6 +7,7 @@
 
 #include "cellSysutil.h"
 #include "ps3emu/guest_call.h"
+#include "../../runtime/syscalls/sys_memory.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,7 +22,12 @@
 #  ifndef mkdir
 #    define mkdir(p, m) _mkdir(p)
 #  endif
+#define SYSCACHE_MKDIR(path) _mkdir(path)
+#else
+#define SYSCACHE_MKDIR(path) mkdir(path, 0755)
 #endif
+
+extern void sys_fs_translate_path(const char* guest, char* host, int capacity);
 
 /* Guest-memory stores — out-params from the recompiled title are guest VM
  * addresses, not host pointers. */
@@ -108,23 +114,63 @@ static pthread_mutex_t s_completion_lock = PTHREAD_MUTEX_INITIALIZER;
 typedef struct GuestCompletion {
     struct GuestCompletion* next;
     u32 opd;
+    u32 owned_payload_ea;
     u64 args[8];
 } GuestCompletion;
 static GuestCompletion* s_completion_head;
 static GuestCompletion* s_completion_tail;
 
-s32 cellSysutilQueueGuestCallbackArgs(u32 opd, const u64 args[8])
+/* RPCS3_REFERENCE_REVIEWED: callback completions are deferred until the guest
+ * pumps cellSysutilCheckCallback, matching RPCS3 sysutil_register_cb behavior.
+ * This queue and its temporary-payload lifetime are local implementations. */
+static s32 queue_guest_completion(u32 opd, const u64 args[8], u32 owned_payload_ea)
 {
-    if (!opd) return CELL_OK;
+    if (!opd) {
+        if (owned_payload_ea) ps3_guest_memory_free(owned_payload_ea);
+        return CELL_OK;
+    }
     GuestCompletion* item = malloc(sizeof(*item));
-    if (!item) return (s32)CELL_ENOMEM;
-    item->next = NULL; item->opd = opd; memcpy(item->args, args, sizeof(item->args));
+    if (!item) {
+        if (owned_payload_ea) ps3_guest_memory_free(owned_payload_ea);
+        return (s32)CELL_ENOMEM;
+    }
+    item->next = NULL;
+    item->opd = opd;
+    item->owned_payload_ea = owned_payload_ea;
+    memcpy(item->args, args, sizeof(item->args));
     COMPLETION_LOCK();
     if (s_completion_tail) s_completion_tail->next = item;
     else s_completion_head = item;
     s_completion_tail = item;
     COMPLETION_UNLOCK();
     return CELL_OK;
+}
+
+s32 cellSysutilQueueGuestCallbackArgs(u32 opd, const u64 args[8])
+{
+    if (!opd) return CELL_OK;
+    if (!args) return CELL_EINVAL;
+    return queue_guest_completion(opd, args, 0);
+}
+
+s32 ps3_sysutil_queue_guest_callback_payload(u32 opd, const u64 args[8],
+                                            u32 payload_arg,
+                                            const void* payload,
+                                            u32 payload_size)
+{
+    if (!opd) return CELL_OK;
+    if (!args || !payload || !payload_size || payload_arg >= 8)
+        return CELL_EINVAL;
+
+    u32 payload_ea = 0;
+    int32_t rc = ps3_guest_memory_alloc(payload_size, 8, &payload_ea);
+    if (rc != CELL_OK) return rc;
+    memcpy(vm_to_host(payload_ea), payload, payload_size);
+
+    u64 queued_args[8];
+    memcpy(queued_args, args, sizeof(queued_args));
+    queued_args[payload_arg] = payload_ea;
+    return queue_guest_completion(opd, queued_args, payload_ea);
 }
 
 s32 cellSysutilQueueGuestCallback(u32 opd, u64 arg0, u64 arg1)
@@ -146,6 +192,8 @@ static void drain_guest_completions(void)
         GuestCompletion* next = item->next;
         g_ps3_guest_caller(item->opd, item->args[0], item->args[1], item->args[2],
             item->args[3], item->args[4], item->args[5], item->args[6], item->args[7]);
+        if (item->owned_payload_ea)
+            ps3_guest_memory_free(item->owned_payload_ea);
         free(item);
         item = next;
     }
@@ -543,6 +591,21 @@ s32 cellSysutilDisableBgmPlaybackEx(void)
  * System cache
  * -----------------------------------------------------------------------*/
 
+static int syscache_create_path(char* path)
+{
+    for (char* p = path + 1; *p; ++p) {
+        if (*p != '/' && *p != '\\') continue;
+        char sep = *p;
+        *p = '\0';
+        int result = SYSCACHE_MKDIR(path);
+        *p = sep;
+        if (result != 0 && errno != EEXIST) return -1;
+    }
+    if (SYSCACHE_MKDIR(path) != 0 && errno != EEXIST) return -1;
+    struct stat st;
+    return stat(path, &st) == 0 && (st.st_mode & S_IFDIR) ? 0 : -1;
+}
+
 s32 cellSysCacheMount(char* param)
 {
     /* The argument is a GUEST EA of CellSysCacheParam:
@@ -560,7 +623,24 @@ s32 cellSysCacheMount(char* param)
     cache_id[32] = '\0';
     printf("[cellSysutil] SysCacheMount(id='%s')\n", cache_id);
 
-    snprintf(s_cache_path, CELL_SYSCACHE_PATH_MAX, "/dev_hdd1/cache/%s", cache_id);
+    /* A successful mount must expose a writable directory. Merely returning a
+     * guest path made Persona 5 copy its entire cache.cpk to a failed open and
+     * then remain on its loading screen. Use the same translator as sys_fs so
+     * the directory we create is the one guest opens actually resolve to.
+     * Behavior reference: RPCS3 cellSysCache.cpp; implementation is local. */
+    for (const char* p = cache_id; *p; ++p) {
+        if (*p == '/' || *p == '\\' || *p == ':') return (s32)0x8002BC03u;
+    }
+    if (strcmp(cache_id, ".") == 0 || strcmp(cache_id, "..") == 0)
+        return (s32)0x8002BC03u;
+    char guest_path[CELL_SYSCACHE_PATH_MAX];
+    char host_path[2048];
+    snprintf(guest_path, sizeof guest_path, "/dev_hdd1/cache/%s", cache_id);
+    sys_fs_translate_path(guest_path, host_path, sizeof host_path);
+    struct stat st;
+    int existed = stat(host_path, &st) == 0 && (st.st_mode & S_IFDIR);
+    if (syscache_create_path(host_path) != 0) return (s32)0x8002BC01u;
+    snprintf(s_cache_path, sizeof s_cache_path, "%s", guest_path);
     size_t n = strlen(s_cache_path);
     if (n > 135) n = 135;
     memcpy(vm_base + ea + 0x20, s_cache_path, n);
@@ -585,7 +665,7 @@ s32 cellSysCacheMount(char* param)
               printf("[cellSysutil] SysCacheMount: host cache dir %s NOT created (errno=%d)\n",
                      hpath, errno); } }
 
-    return CELL_OK;   /* CELL_SYSCACHE_RET_OK_CLEARED */
+    return existed ? 1 : 0; /* RET_OK_RELAYED / RET_OK_CLEARED */
 }
 
 s32 cellSysCacheClear(void)

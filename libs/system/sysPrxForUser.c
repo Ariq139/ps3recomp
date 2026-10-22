@@ -299,8 +299,8 @@ s32 _sys_printf(const char* fmt, ...)
  *
  * So printing the message and returning is the faithful behaviour, not a stub
  * standing in for something better. What it changes is that the abort is
- * legible: without it the call is an unresolved NID answering CELL_ENOSYS in a
- * trace, three lines after the assertion text that explains it, with nothing
+ * legible: without it the call is an unresolved NID answered by the generic
+ * CELL_OK fallback, three lines after the assertion text, with nothing
  * connecting the two. */
 s32 _sys_trap_process(const char* msg)
 {

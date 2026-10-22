@@ -3,6 +3,11 @@
  * The algorithm is the published one (RPCS3's Crypto/unedat.cpp is the clearest
  * write-up); the structure below follows it closely so the two can be diffed:
  *
+ * RPCS3_PROVENANCE_REVIEW_REQUIRED: this source comment records close structural
+ * alignment with RPCS3's GPL-2.0 implementation. That is a provenance flag,
+ * not a finding that code was copied or a grant of license clearance. See
+ * docs/RPCS3_LICENSE_AUDIT.md.
+ *
  *   header  0x00  NPD: magic, version, license, type, content_id[0x30],
  *                      digest[0x10], title_hash[0x10], dev_hash[0x10], times
  *           0x80  EDAT: flags, block_size, file_size
@@ -442,8 +447,11 @@ static int edat_rif_key(const char* in_path, uint8_t out[16])
     return 0;
 }
 
-int edat_decrypt_file(const char* in_path, const char* out_path)
+int edat_decrypt_file_with_klicensee(const char* in_path, const char* out_path,
+                                     const uint8_t klicensee[16])
 {
+    if (!in_path || !out_path)
+        return -1;
     static int checked = 0;
     if (!checked) {
         int rc = edat_selftest();
@@ -514,18 +522,42 @@ int edat_decrypt_file(const char* in_path, const char* out_path)
         const int n_builtin = (int)(sizeof KLIC_CANDIDATES / sizeof KLIC_CANDIDATES[0]);
         int found = -1;
         const uint8_t* found_key = NULL;
-        for (int c = 0; c < s_guest_klic_n + n_builtin && found < 0; c++) {
-            const uint8_t* k = (c < s_guest_klic_n) ? s_guest_klic[c]
-                                                    : KLIC_CANDIDATES[c - s_guest_klic_n].key;
-            uint8_t ck[16], mac[16];
-            for (int i = 0; i < 16; i++) ck[i] = (uint8_t)(k[i] ^ NP_OMAC_KEY_2[i]);
-            aes128_cmac(ck, hdr, 0x60, mac);
-            if (memcmp(mac, dev_hash, 16) == 0) { found = c; found_key = k; }
+        if (klicensee) {
+            uint8_t check_key[16], mac[16];
+            for (int i = 0; i < 16; i++)
+                check_key[i] = (uint8_t)(klicensee[i] ^ NP_OMAC_KEY_2[i]);
+            aes128_cmac(check_key, hdr, 0x60, mac);
+            if (memcmp(mac, dev_hash, 16) != 0) {
+                fprintf(stderr, "[edat] supplied klicensee does not match dev_hash\n");
+                fclose(in); return -9;
+            }
+            found = -2; /* valid caller-supplied KLicensee */
+            found_key = klicensee;
         }
-        if (found >= 0 && (license & 3) == 3) {
+
+        if (!klicensee) {
+            for (int c = 0; c < s_guest_klic_n + n_builtin; c++) {
+                const uint8_t* candidate = c < s_guest_klic_n
+                    ? s_guest_klic[c]
+                    : KLIC_CANDIDATES[c - s_guest_klic_n].key;
+                uint8_t ck[16], mac[16];
+                for (int i = 0; i < 16; i++)
+                    ck[i] = (uint8_t)(candidate[i] ^ NP_OMAC_KEY_2[i]);
+                aes128_cmac(ck, hdr, 0x60, mac);
+                if (memcmp(mac, dev_hash, 16) == 0) {
+                    found = c;
+                    found_key = candidate;
+                    break;
+                }
+            }
+        }
+
+        if (found != -1 && (license & 3) == 3) {
             memcpy(key, found_key, 16);
             have_key = 1;
-            if (found < s_guest_klic_n)
+            if (found == -2)
+                fprintf(stderr, "[edat] caller klicensee verified against dev_hash\n");
+            else if (found < s_guest_klic_n)
                 fprintf(stderr, "[edat] guest klicensee #%d verified against dev_hash\n", found + 1);
             else
                 fprintf(stderr, "[edat] klicensee %s verified against dev_hash\n",
@@ -533,7 +565,7 @@ int edat_decrypt_file(const char* in_path, const char* out_path)
         } else if (edat_rif_key(in_path, key)) {
             have_key = 1;
             fprintf(stderr, "[edat] license type %u: using the supplied RIF key%s\n",
-                    license, found >= 0 ? "" : " (dev_hash names an unknown klicensee)");
+                    license, found == -1 ? " (dev_hash names an unknown klicensee)" : "");
         }
         if (!have_key && (license & 3) == 3) {
             fprintf(stderr,
@@ -666,6 +698,11 @@ int edat_decrypt_file(const char* in_path, const char* out_path)
     else
         remove(out_path);   /* never leave a half-written cache behind */
     return rc;
+}
+
+int edat_decrypt_file(const char* in_path, const char* out_path)
+{
+    return edat_decrypt_file_with_klicensee(in_path, out_path, NULL);
 }
 
 const char* edat_resolve(const char* host_path, char* buf, size_t cap)

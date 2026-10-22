@@ -14,18 +14,27 @@ sys_mem_alloc_info       g_sys_mem_allocs[SYS_MEMORY_ALLOC_MAX];
 sys_mem_container_info   g_sys_mem_containers[SYS_MEMORY_CONTAINER_MAX];
 sys_mmapper_shared_info  g_sys_mmapper_shared[SYS_MMAPPER_SHARED_MAX];
 
-/* Bump allocator for main memory pool.
- * Starts after a reasonable offset to avoid the low addresses used by ELF. */
+/* Retained as a high-water diagnostic for older tools; placement is first-fit
+ * over the tracked primary and spill ranges below. */
 uint32_t g_sys_mem_bump_ptr = 0;
 
 /* Total user memory size (default 213 MB, after kernel reservation) */
-#define SYS_MEM_USER_TOTAL  (213 * 1024 * 1024)
+#ifndef PS3RECOMP_SYS_MEM_USER_TOTAL
+#define PS3RECOMP_SYS_MEM_USER_TOTAL (213u * 1024u * 1024u)
+#endif
+#define SYS_MEM_USER_TOTAL PS3RECOMP_SYS_MEM_USER_TOTAL
 
 /* LV2 user memory and mapper reservations occupy separate address domains.
  * User allocations start above the executable region. Mapper addresses may
  * carry high address bits; ordinary user allocations must not inherit them. */
-#define SYS_MEM_ALLOC_BASE  0x10000000u
-#define SYS_MEM_ALLOC_END   0x20000000u
+#ifndef PS3RECOMP_SYS_MEM_ALLOC_BASE
+#define PS3RECOMP_SYS_MEM_ALLOC_BASE 0x10000000u
+#endif
+#ifndef PS3RECOMP_SYS_MEM_ALLOC_END
+#define PS3RECOMP_SYS_MEM_ALLOC_END  0x20000000u
+#endif
+#define SYS_MEM_ALLOC_BASE PS3RECOMP_SYS_MEM_ALLOC_BASE
+#define SYS_MEM_ALLOC_END  PS3RECOMP_SYS_MEM_ALLOC_END
 #define SYS_MAPPER_BASE     0x40000000u
 #define SYS_MAPPER_END      0xC0000000u
 static uint32_t s_mapper_bump_ptr = SYS_MAPPER_BASE;
@@ -43,7 +52,7 @@ void sys_memory_set_image_query(uint64_t (*query)(uint64_t addr, uint64_t end))
     s_image_query = query;
 }
 
-/* Guest threads are real host threads; serialize the bump allocator. */
+/* Guest threads are real host threads; serialize allocation records and totals. */
 #ifdef _WIN32
 static SRWLOCK s_bump_lock = SRWLOCK_INIT;
 static void bump_lock(void)   { AcquireSRWLockExclusive(&s_bump_lock); }
@@ -65,6 +74,196 @@ static void write_be32(uint32_t addr, uint32_t val)
     *p = val;
 }
 
+typedef struct sys_mem_range {
+    uint32_t base;
+    uint32_t end;
+} sys_mem_range;
+
+static const sys_mem_range s_alloc_ranges[] = {
+    { SYS_MEM_ALLOC_BASE,       SYS_MEM_ALLOC_END },
+    { SYS_MEM_ALLOC_SPILL_BASE, SYS_MEM_ALLOC_SPILL_END },
+};
+
+static int is_power_of_two(uint32_t value)
+{
+    return value && !(value & (value - 1u));
+}
+
+static uint64_t align_up_u64(uint64_t value, uint32_t alignment)
+{
+    return (value + alignment - 1u) & ~((uint64_t)alignment - 1u);
+}
+
+/* First-fit across the primary sys_memory window and the non-overlapping
+ * spill arena. Active mmapper reservations participate too, so no allocation
+ * path can hand out an address already owned by another path. */
+static int find_guest_range(uint32_t size, uint32_t alignment, uint32_t* out_addr)
+{
+    for (size_t r = 0; r < sizeof(s_alloc_ranges) / sizeof(s_alloc_ranges[0]); r++) {
+        uint64_t candidate = align_up_u64(s_alloc_ranges[r].base, alignment);
+        const uint64_t range_end = s_alloc_ranges[r].end;
+
+        while (candidate + size <= range_end) {
+            const uint64_t candidate_end = candidate + size;
+            uint64_t next_candidate = s_image_query
+                ? s_image_query(candidate, candidate_end) : candidate;
+            const uint64_t reserved[][2] = {
+                { VM_HLE_INJECT_BASE, (uint64_t)VM_HLE_INJECT_BASE + VM_HLE_INJECT_SIZE },
+                { VM_PPU_TLS_BASE, (uint64_t)VM_PPU_TLS_BASE + VM_PPU_TLS_SIZE },
+            };
+            for (size_t i = 0; i < sizeof reserved / sizeof reserved[0]; i++)
+                if (candidate < reserved[i][1] && reserved[i][0] < candidate_end &&
+                    reserved[i][1] > next_candidate)
+                    next_candidate = reserved[i][1];
+            if (next_candidate != candidate) {
+                candidate = align_up_u64(next_candidate, alignment);
+                continue;
+            }
+
+            for (int i = 0; i < SYS_MEMORY_ALLOC_MAX; i++) {
+                const sys_mem_alloc_info* a = &g_sys_mem_allocs[i];
+                if (!a->active || !a->size) continue;
+
+                const uint64_t alloc_start = a->addr;
+                const uint64_t alloc_end = alloc_start + a->size;
+                if (candidate < alloc_end && alloc_start < candidate_end) {
+                    next_candidate = align_up_u64(alloc_end, alignment);
+                    break;
+                }
+            }
+
+            if (next_candidate == candidate) {
+                *out_addr = (uint32_t)candidate;
+                return 0;
+            }
+            candidate = next_candidate;
+        }
+    }
+    return -1;
+}
+
+static int range_was_freed(uint32_t addr, uint32_t size)
+{
+    const uint64_t end = (uint64_t)addr + size;
+    for (int i = 0; i < SYS_MEMORY_ALLOC_MAX; i++) {
+        const sys_mem_alloc_info* a = &g_sys_mem_allocs[i];
+        if (a->active || !a->size || a->kind == SYS_MEM_ALLOC_KIND_NONE) continue;
+        const uint64_t old_end = (uint64_t)a->addr + a->size;
+        if ((uint64_t)addr < old_end && (uint64_t)a->addr < end)
+            return 1;
+    }
+    return 0;
+}
+
+static int32_t allocate_guest_range(uint32_t size, uint32_t alignment,
+                                    uint32_t page_size, uint32_t kind,
+                                    int account_user_memory, uint32_t* out_addr)
+{
+    if (!size || !is_power_of_two(alignment) ||
+        size > UINT32_MAX - (alignment - 1u))
+        return CELL_EINVAL;
+
+    size = VM_ALIGN_UP(size, alignment);
+    bump_lock();
+
+    if (account_user_memory &&
+        (s_total_allocated > SYS_MEM_USER_TOTAL ||
+         size > SYS_MEM_USER_TOTAL - s_total_allocated)) {
+        const uint32_t allocated = s_total_allocated;
+        bump_unlock();
+        static int denied = 0;
+        if (PS3_LOG_FIRST(denied, 8))
+            fprintf(stderr, "[sys_memory] allocation denied: requested=0x%X allocated=0x%X budget=0x%X\n",
+                    size, allocated, (unsigned)SYS_MEM_USER_TOTAL);
+        return CELL_ENOMEM;
+    }
+    int slot = -1;
+    for (int i = 0; i < SYS_MEMORY_ALLOC_MAX; i++) {
+        if (!g_sys_mem_allocs[i].active) { slot = i; break; }
+    }
+    if (slot < 0) {
+        bump_unlock();
+        return CELL_ENOMEM;
+    }
+
+    uint32_t addr = 0;
+    if (find_guest_range(size, alignment, &addr) != 0) {
+        bump_unlock();
+        return CELL_ENOMEM;
+    }
+    const int reused = range_was_freed(addr, size);
+
+    sys_mem_alloc_info* a = &g_sys_mem_allocs[slot];
+    a->active       = 1;
+    a->addr         = addr;
+    a->size         = size;
+    a->container_id = 0;
+    a->page_size    = page_size;
+    a->kind         = kind;
+    if (account_user_memory) s_total_allocated += size;
+    if (addr + size > g_sys_mem_bump_ptr) g_sys_mem_bump_ptr = addr + size;
+
+    bump_unlock();
+
+    if (vm_commit(addr, size) != CELL_OK) {
+        bump_lock();
+        a->active = 0;
+        if (account_user_memory) s_total_allocated -= size;
+        bump_unlock();
+        return CELL_ENOMEM;
+    }
+    /* A previously freed range is already committed and therefore is not
+     * cleared by the host VM. Give a reused PS3 allocation fresh zeroed pages. */
+    if (reused) memset(vm_to_host(addr), 0, size);
+
+    *out_addr = addr;
+    return CELL_OK;
+}
+
+int sys_memory_contains(uint32_t addr, uint32_t size)
+{
+    if (!size || (uint64_t)addr + size > 0x100000000ull)
+        return 0;
+
+    const uint64_t end = (uint64_t)addr + size;
+    int found = 0;
+    bump_lock();
+    for (int i = 0; i < SYS_MEMORY_ALLOC_MAX; i++) {
+        const sys_mem_alloc_info* a = &g_sys_mem_allocs[i];
+        if (a->active && addr >= a->addr && end <= (uint64_t)a->addr + a->size) {
+            found = 1;
+            break;
+        }
+    }
+    bump_unlock();
+    return found;
+}
+
+int32_t ps3_guest_memory_alloc(uint32_t size, uint32_t alignment,
+                               uint32_t* out_addr)
+{
+    if (!out_addr) return CELL_EINVAL;
+    return allocate_guest_range(size, alignment, VM_PAGE_SIZE,
+                                SYS_MEM_ALLOC_KIND_MEMORY, 1, out_addr);
+}
+
+int32_t ps3_guest_memory_free(uint32_t addr)
+{
+    bump_lock();
+    for (int i = 0; i < SYS_MEMORY_ALLOC_MAX; i++) {
+        sys_mem_alloc_info* a = &g_sys_mem_allocs[i];
+        if (a->active && a->kind == SYS_MEM_ALLOC_KIND_MEMORY && a->addr == addr) {
+            if (s_total_allocated >= a->size) s_total_allocated -= a->size;
+            else s_total_allocated = 0;
+            a->active = 0;
+            bump_unlock();
+            return CELL_OK;
+        }
+    }
+    bump_unlock();
+    return CELL_EINVAL;
+}
+
 /* ---------------------------------------------------------------------------
  * sys_memory_allocate
  *
@@ -72,35 +271,6 @@ static void write_be32(uint32_t addr, uint32_t val)
  * r4 = flags (page size)
  * r5 = pointer to receive allocated address (u32*)
  * -----------------------------------------------------------------------*/
-/* Find an aligned gap among live user allocations. Freed blocks are reusable.
- * The small runtime-injected window is reserved even when a port relocates it
- * into this domain, and loaded ELF data/BSS remain owned by the image.
- * Use 64-bit arithmetic for every exclusive range end. */
-static uint32_t user_address(uint32_t size, uint32_t alignment)
-{
-    uint64_t candidate = SYS_MEM_ALLOC_BASE;
-    for (;;) {
-        candidate = (candidate + alignment - 1u) & ~(uint64_t)(alignment - 1u);
-        if (candidate + size > SYS_MEM_ALLOC_END) return 0;
-        uint64_t next = s_image_query ? s_image_query(candidate, candidate + size) : candidate;
-        uint64_t injected = VM_HLE_INJECT_BASE;
-        if (candidate < injected + VM_HLE_INJECT_SIZE && injected < candidate + size &&
-            injected + VM_HLE_INJECT_SIZE > next)
-            next = injected + VM_HLE_INJECT_SIZE;
-        if (candidate < (uint64_t)VM_PPU_TLS_BASE + VM_PPU_TLS_SIZE &&
-            VM_PPU_TLS_BASE < candidate + size && (uint64_t)VM_PPU_TLS_BASE + VM_PPU_TLS_SIZE > next)
-            next = (uint64_t)VM_PPU_TLS_BASE + VM_PPU_TLS_SIZE;
-        for (int i = 0; i < SYS_MEMORY_ALLOC_MAX; ++i) {
-            const sys_mem_alloc_info* a = &g_sys_mem_allocs[i];
-            uint64_t end = (uint64_t)a->addr + a->size;
-            if (a->active && candidate < end && a->addr < candidate + size && end > next)
-                next = end;
-        }
-        if (next == candidate) return (uint32_t)candidate;
-        candidate = next;
-    }
-}
-
 int64_t sys_memory_allocate(ppu_context* ctx)
 {
     uint64_t requested = LV2_ARG_U64(ctx, 0);
@@ -111,24 +281,10 @@ int64_t sys_memory_allocate(ppu_context* ctx)
     if (!requested || requested > UINT32_MAX || !rounded || rounded > UINT32_MAX)
         return (int64_t)(int32_t)CELL_EINVAL;
     uint32_t size = (uint32_t)rounded;
-    bump_lock();
-    if (size > SYS_MEM_USER_TOTAL - s_total_allocated) {
-        bump_unlock(); return (int64_t)(int32_t)CELL_ENOMEM;
-    }
-    int slot = -1;
-    for (int i = 0; i < SYS_MEMORY_ALLOC_MAX; ++i)
-        if (!g_sys_mem_allocs[i].active) { slot = i; break; }
-    uint32_t addr = slot < 0 ? 0 : user_address(size, alignment);
-    if (!addr || vm_commit(addr, size) != CELL_OK) {
-        bump_unlock(); return (int64_t)(int32_t)CELL_ENOMEM;
-    }
-    memset(vm_to_host(addr), 0, size);
-    sys_mem_alloc_info* a = &g_sys_mem_allocs[slot];
-    a->active = 1; a->addr = addr; a->size = size;
-    a->container_id = 0; a->page_size = alignment;
-    s_total_allocated += size;
-    if (addr + size > g_sys_mem_bump_ptr) g_sys_mem_bump_ptr = addr + size;
-    bump_unlock();
+    uint32_t addr = 0;
+    const int32_t result = allocate_guest_range(size, alignment, alignment,
+        SYS_MEM_ALLOC_KIND_MEMORY, 1, &addr);
+    if (result != CELL_OK) return (int64_t)result;
     fprintf(stderr, "[sys_memory] allocate(size=0x%X, flags=0x%X) -> 0x%08X\n", size, flags, addr);
     if (addr_out) write_be32(addr_out, addr);
     return CELL_OK;
@@ -144,8 +300,13 @@ int64_t sys_memory_free(ppu_context* ctx)
     uint32_t addr = LV2_ARG_U32(ctx, 0);
     bump_lock();
     for (int i = 0; i < SYS_MEMORY_ALLOC_MAX; i++) {
-        if (g_sys_mem_allocs[i].active && g_sys_mem_allocs[i].addr == addr) {
-            s_total_allocated -= g_sys_mem_allocs[i].size;
+        if (g_sys_mem_allocs[i].active &&
+            g_sys_mem_allocs[i].kind == SYS_MEM_ALLOC_KIND_MEMORY &&
+            g_sys_mem_allocs[i].addr == addr) {
+            if (s_total_allocated >= g_sys_mem_allocs[i].size)
+                s_total_allocated -= g_sys_mem_allocs[i].size;
+            else
+                s_total_allocated = 0;
             g_sys_mem_allocs[i].active = 0;
             bump_unlock(); return CELL_OK;
         }
@@ -166,7 +327,10 @@ int64_t sys_memory_get_user_memory_size(ppu_context* ctx)
     fprintf(stderr, "[sys_memory] get_user_memory_size()\n");
     if (out_addr != 0) {
         uint32_t total = SYS_MEM_USER_TOTAL;
-        uint32_t avail = total - s_total_allocated;
+        bump_lock();
+        uint32_t allocated = s_total_allocated;
+        bump_unlock();
+        uint32_t avail = allocated >= total ? 0 : total - allocated;
         write_be32(out_addr + 0, total);
         write_be32(out_addr + 4, avail);
     }
@@ -197,6 +361,7 @@ int64_t sys_memory_get_page_attribute(ppu_context* ctx)
 
     /* Report the page size of the allocation containing addr. */
     uint32_t page_size = 0x10000;  /* default 64K */
+    bump_lock();
     for (int i = 0; i < SYS_MEMORY_ALLOC_MAX; i++) {
         if (g_sys_mem_allocs[i].active &&
             addr >= g_sys_mem_allocs[i].addr &&
@@ -205,6 +370,7 @@ int64_t sys_memory_get_page_attribute(ppu_context* ctx)
             break;
         }
     }
+    bump_unlock();
 
     if (attr_out != 0) {
         write_be32(attr_out + 0x00, 0);          /* attribute    (hi) */
@@ -391,10 +557,19 @@ int64_t sys_mmapper_search_map_address(uint32_t start, uint32_t size, uint32_t* 
  * -----------------------------------------------------------------------*/
 int64_t sys_mmapper_free_address(ppu_context* ctx)
 {
-    /* uint32_t addr = LV2_ARG_U32(ctx, 0); */
-    (void)ctx;
-    /* In our bump allocator we don't actually free, just acknowledge */
-    return CELL_OK;
+    uint32_t addr = LV2_ARG_U32(ctx, 0);
+    bump_lock();
+    for (int i = 0; i < SYS_MEMORY_ALLOC_MAX; i++) {
+        if (g_sys_mem_allocs[i].active &&
+            g_sys_mem_allocs[i].kind == SYS_MEM_ALLOC_KIND_MAPPER_ADDRESS &&
+            g_sys_mem_allocs[i].addr == addr) {
+            g_sys_mem_allocs[i].active = 0;
+            bump_unlock();
+            return CELL_OK;
+        }
+    }
+    bump_unlock();
+    return (int64_t)(int32_t)CELL_EINVAL;
 }
 
 /* ---------------------------------------------------------------------------

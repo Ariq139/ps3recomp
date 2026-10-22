@@ -56,6 +56,245 @@ extern PPU_THREAD_LOCAL ppu_context* g_active_ctx;
 /* r3 for the fiber's thread id when it is created outside a PPU thread. */
 #define FIBER_FALLBACK_THREAD_ID 0x7FFF0000ull
 
+/* The retail cellFiber PPU scheduler API is different from the small
+ * CellFiber handle API below. A guest fiber is a PPU function running on a
+ * host fiber: switching the host fiber preserves the recompiled C call stack
+ * and its live ppu_context while cellFiberPpuYield switches back to the guest
+ * scheduler. */
+typedef struct PpuFiberSlot {
+    int in_use;
+    u32 scheduler_ea;
+    u32 fiber_ea;
+    u32 entry_opd;
+    u64 arg;
+    u32 priority;
+    u32 guest_stack_ea;
+    u32 guest_stack_size;
+    u32 on_exit_opd;
+    u64 on_exit_arg;
+    s32 exit_status;
+    int exit_status_set;
+    int exit_callback_called;
+    int state;                 /* 0 ready, 1 running, 2 waiting, 3 terminated */
+    int wait_target;
+    u32 run_epoch;
+    int force_resume;
+#ifdef _WIN32
+    LPVOID native_fiber;
+#else
+    ucontext_t context;
+    u8* host_stack;
+    size_t host_stack_size;
+#endif
+} PpuFiberSlot;
+
+typedef struct PpuSchedulerSlot {
+    int in_use;
+    u32 scheduler_ea;
+    u32 epoch;
+} PpuSchedulerSlot;
+
+#define CELL_FIBER_MAX_FIBERS 256
+#define CELL_FIBER_PPU_MAX_SCHEDULERS 8
+#define CELL_FIBER_PPU_HOST_STACK_SIZE (1024u * 1024u)
+static PpuFiberSlot s_ppu_fibers[CELL_FIBER_MAX_FIBERS];
+static PpuSchedulerSlot s_ppu_schedulers[CELL_FIBER_PPU_MAX_SCHEDULERS];
+#ifdef _WIN32
+static __declspec(thread) LPVOID s_ppu_scheduler_host = NULL;
+static __declspec(thread) int s_ppu_running_slot = -1;
+static __declspec(thread) u32 s_ppu_running_scheduler = 0;
+#else
+static _Thread_local ucontext_t s_ppu_scheduler_host;
+static _Thread_local int s_ppu_running_slot = -1;
+static _Thread_local u32 s_ppu_running_scheduler = 0;
+#endif
+
+extern u64 ppu_guest_call_on_stack(u32 opd_addr, u32 guest_sp,
+                                   u64 a0, u64 a1, u64 a2, u64 a3,
+                                   u64 a4, u64 a5, u64 a6, u64 a7);
+extern u64 ppu_guest_call(u32 opd_addr, u64 a0, u64 a1, u64 a2, u64 a3,
+                          u64 a4, u64 a5, u64 a6, u64 a7);
+extern void ps3_hle_register_ctx(u32 nid, const char* name,
+                                void (*fn)(ppu_context*));
+extern PPU_THREAD_LOCAL ppu_context* g_active_ctx;
+
+static PpuSchedulerSlot* ppu_scheduler_find(u32 scheduler_ea)
+{
+    for (int i = 0; i < CELL_FIBER_PPU_MAX_SCHEDULERS; i++)
+        if (s_ppu_schedulers[i].in_use &&
+            s_ppu_schedulers[i].scheduler_ea == scheduler_ea)
+            return &s_ppu_schedulers[i];
+    return NULL;
+}
+
+static int ppu_fiber_find(u32 fiber_ea)
+{
+    for (int i = 0; i < CELL_FIBER_MAX_FIBERS; i++)
+        if (s_ppu_fibers[i].in_use && s_ppu_fibers[i].fiber_ea == fiber_ea)
+            return i;
+    return -1;
+}
+
+static void ppu_fiber_finish(PpuFiberSlot* f)
+{
+    if (!f->exit_status_set) {
+        f->exit_status = 0;
+        f->exit_status_set = 1;
+    }
+    if (f->on_exit_opd && !f->exit_callback_called) {
+        f->exit_callback_called = 1;
+        (void)ppu_guest_call(f->on_exit_opd, f->on_exit_arg,
+                             (u64)(s64)f->exit_status, 0, 0, 0, 0, 0, 0);
+    }
+    f->state = 3;
+    s_ppu_running_slot = -1;
+    s_ppu_running_scheduler = 0;
+#ifdef _WIN32
+    SwitchToFiber(s_ppu_scheduler_host);
+#else
+    setcontext(&s_ppu_scheduler_host);
+#endif
+}
+
+#ifdef _WIN32
+static VOID CALLBACK ppu_fiber_trampoline(LPVOID param)
+{
+    PpuFiberSlot* f = (PpuFiberSlot*)param;
+    int slot = (int)(f - s_ppu_fibers);
+    s_ppu_running_slot = slot;
+    s_ppu_running_scheduler = f->scheduler_ea;
+    /* Reserve the PPC64 caller frame below the end of the allocation.
+     * A callee saves LR at entry SP + 0x10; using the allocation end as SP
+     * would overwrite the next heap chunk's free-list links. */
+    u32 guest_sp = ((f->guest_stack_ea + f->guest_stack_size) & ~15u) - 0x70u;
+    vm_write64(guest_sp, 0); /* terminate the guest stack backchain */
+    u64 result = ppu_guest_call_on_stack(
+        f->entry_opd, guest_sp, f->arg, 0, 0, 0, 0, 0, 0, 0);
+    f->exit_status = (s32)(u32)result;
+    f->exit_status_set = 1;
+    ppu_fiber_finish(f);
+}
+#else
+static void ppu_fiber_trampoline(int slot)
+{
+    PpuFiberSlot* f = &s_ppu_fibers[(u32)slot];
+    s_ppu_running_slot = slot;
+    s_ppu_running_scheduler = f->scheduler_ea;
+    u32 guest_sp = ((f->guest_stack_ea + f->guest_stack_size) & ~15u) - 0x70u;
+    vm_write64(guest_sp, 0);
+    u64 result = ppu_guest_call_on_stack(
+        f->entry_opd, guest_sp, f->arg, 0, 0, 0, 0, 0, 0, 0);
+    f->exit_status = (s32)(u32)result;
+    f->exit_status_set = 1;
+    ppu_fiber_finish(f);
+}
+#endif
+
+static void ppu_fiber_switch_to_host(PpuFiberSlot* f)
+{
+    ppu_context* scheduler_ctx = g_active_ctx;
+    int slot = (int)(f - s_ppu_fibers);
+    f->state = 1;
+    s_ppu_running_slot = slot;
+    s_ppu_running_scheduler = f->scheduler_ea;
+#ifdef _WIN32
+    SwitchToFiber(f->native_fiber);
+#else
+    swapcontext(&s_ppu_scheduler_host, &f->context);
+#endif
+    g_active_ctx = scheduler_ctx;
+    s_ppu_running_slot = -1;
+    s_ppu_running_scheduler = 0;
+}
+
+static void ppu_fiber_suspend_to_host(PpuFiberSlot* f)
+{
+    /* Native fibers share thread-local storage. Restore this fiber's guest
+     * context on resume so reservation checks use its own lwarx state. */
+    ppu_context* fiber_ctx = g_active_ctx;
+#ifdef _WIN32
+    SwitchToFiber(s_ppu_scheduler_host);
+#else
+    swapcontext(&f->context, &s_ppu_scheduler_host);
+#endif
+    g_active_ctx = fiber_ctx;
+}
+
+static int ppu_scheduler_pick(PpuSchedulerSlot* scheduler, u32 epoch)
+{
+    int best = -1;
+    for (int i = 0; i < CELL_FIBER_MAX_FIBERS; i++) {
+        PpuFiberSlot* f = &s_ppu_fibers[i];
+        if (!f->in_use || f->scheduler_ea != scheduler->scheduler_ea ||
+            f->state != 0 || (f->run_epoch == epoch && !f->force_resume))
+            continue;
+        if (best < 0 || f->priority < s_ppu_fibers[best].priority)
+            best = i;
+    }
+    return best;
+}
+
+static void ppu_scheduler_wake_joiners(u32 scheduler_ea)
+{
+    for (int i = 0; i < CELL_FIBER_MAX_FIBERS; i++) {
+        PpuFiberSlot* f = &s_ppu_fibers[i];
+        if (!f->in_use || f->scheduler_ea != scheduler_ea || f->state != 2)
+            continue;
+        if (f->wait_target >= 0 && f->wait_target < CELL_FIBER_MAX_FIBERS &&
+            s_ppu_fibers[f->wait_target].in_use &&
+            s_ppu_fibers[f->wait_target].state == 3) {
+            f->state = 0;
+            f->force_resume = 1;
+        }
+    }
+}
+
+/* Give each runnable fiber one turn per epoch. Yielded fibers run again after
+ * the other ready fibers have had a turn; a JoinFiber waiter resumes after its
+ * target completes. */
+static int ppu_scheduler_run_pass(PpuSchedulerSlot* scheduler)
+{
+    if (!scheduler) return 0;
+    int ran = 0;
+    u32 epoch = ++scheduler->epoch;
+    if (!epoch) epoch = ++scheduler->epoch;
+#ifdef _WIN32
+    if (!s_ppu_scheduler_host) {
+        s_ppu_scheduler_host = ConvertThreadToFiber(NULL);
+        if (!s_ppu_scheduler_host && GetLastError() == ERROR_ALREADY_FIBER)
+            s_ppu_scheduler_host = GetCurrentFiber();
+    }
+    if (!s_ppu_scheduler_host) return 0;
+#else
+    getcontext(&s_ppu_scheduler_host);
+#endif
+    for (;;) {
+        ppu_scheduler_wake_joiners(scheduler->scheduler_ea);
+        int slot = ppu_scheduler_pick(scheduler, epoch);
+        if (slot < 0) {
+            int more_ready = 0;
+            for (int i = 0; i < CELL_FIBER_MAX_FIBERS; i++) {
+                PpuFiberSlot* f = &s_ppu_fibers[i];
+                if (f->in_use && f->scheduler_ea == scheduler->scheduler_ea &&
+                    f->state == 0) {
+                    more_ready = 1;
+                    break;
+                }
+            }
+            if (!more_ready) break;
+            epoch = ++scheduler->epoch;
+            if (!epoch) epoch = ++scheduler->epoch;
+            continue;
+        }
+        PpuFiberSlot* f = &s_ppu_fibers[slot];
+        f->run_epoch = epoch;
+        f->force_resume = 0;
+        ppu_fiber_switch_to_host(f);
+        ran++;
+    }
+    return ran;
+}
+
 /* ---------------------------------------------------------------------------
  * State
  *
@@ -107,6 +346,18 @@ struct Sched {
 static Sched* s_scheds;
 static Fiber* s_fibers;
 static u64    s_seq;
+
+/* Lifecycle events only: no logging or environment lookup on fiber switches.
+ * Call with s_lock held, including the one-time environment lookup. */
+static int fiber_lifecycle_trace(void)
+{
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char* value = getenv("PPU_FIBER_TRACE");
+        enabled = value && *value && strcmp(value, "0") != 0;
+    }
+    return enabled;
+}
 
 /* The fiber running on this host thread, if any. */
 static PPU_THREAD_LOCAL Fiber* t_cur;
@@ -243,6 +494,9 @@ static void fiber_finish_locked(Fiber* f, s32 status)
 {
     f->status = status;
     f->state  = F_DONE;
+    if (fiber_lifecycle_trace())
+        fprintf(stderr, "[fiber-life] finish ea=%08X entry=%08X status=%08X\n",
+                f->ea, f->opd, (u32)status);
     for (Fiber* g = s_fibers; g; g = g->next)
         if (g->state == F_WAIT_JOIN && g->join_ea == f->ea) g->state = F_READY;
 }
@@ -396,12 +650,20 @@ s32 cellFiberPpuCreateFiber(CellFiberPpuScheduler* scheduler, CellFiberPpu* fibe
     if (!s) {
         rc = (s32)CELL_FIBER_ERROR_INVAL;
     } else if (find_fiber(fiber_ea)) {
+        Fiber* previous = find_fiber(fiber_ea);
+        fprintf(stderr, "[fiber-life] create rejected ea=%08X entry=%08X "
+                "previous_state=%d previous_entry=%08X previous_status=%08X\n",
+                fiber_ea, entry, previous->state, previous->opd, (u32)previous->status);
         rc = (s32)CELL_FIBER_ERROR_STAT;
     } else {
         f->sched = s;
         f->seq   = s_seq++;
         f->next  = s_fibers;
         s_fibers = f;
+        if (fiber_lifecycle_trace())
+            fprintf(stderr, "[fiber-life] create ea=%08X entry=%08X arg=%llX "
+                    "stack=%08X+%X scheduler=%08X\n", fiber_ea, entry,
+                    (unsigned long long)arg, stack_ea, sizeStack, sched_ea);
     }
     UNLOCK();
     if (rc != CELL_OK) {
@@ -544,6 +806,9 @@ s32 cellFiberPpuJoinFiber(CellFiberPpu* fiber, s32* status)
     s32 rc = CELL_OK;
     if (!f) rc = (s32)CELL_FIBER_ERROR_INVAL;      /* the scheduler was finalized under the join */
     else if (status) vm_write32((u32)(uintptr_t)status, (u32)f->status);
+    if (fiber_lifecycle_trace())
+        fprintf(stderr, "[fiber-life] join ea=%08X rc=%08X state=%d\n",
+                ea, (u32)rc, f ? f->state : -1);
     UNLOCK();
     return rc;
 }

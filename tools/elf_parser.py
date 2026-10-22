@@ -539,6 +539,7 @@ class PRXExportEntry:
         self.name_ptr = 0
         self.nid_table_ptr = 0
         self.stub_table_ptr = 0
+        self.vaddr = 0
         self.name_str = ""
         self.nids: list[int] = []
         self.addrs: list[int] = []   # stub-table entry per NID (OPD vaddr for funcs)
@@ -778,10 +779,12 @@ class ELFFile:
             off = vaddr_to_offset(self.program_headers, mi.exports_start)
             end_off = vaddr_to_offset(self.program_headers, mi.exports_end)
             if off is not None and end_off is not None:
+                exports_file_start = off
                 while off < end_off and off + PRXExportEntry.SIZE_MIN <= len(self.raw_data):
                     entry = PRXExportEntry.parse(self.raw_data, off, self.elf_header.big_endian)
                     if entry.size == 0:
                         break
+                    entry.vaddr = mi.exports_start + (off - exports_file_start)
                     # resolve name
                     if entry.name_ptr:
                         name_off = vaddr_to_offset(self.program_headers, entry.name_ptr)

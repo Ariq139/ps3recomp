@@ -11,6 +11,23 @@
 #include <stdlib.h>               /* getenv */
 #include "ps3emu/log_first.h"
 
+/* EVQ_TRACE=all or a queue ID enables optional event diagnostics. */
+static int sys_evt_trace_matches(uint32_t queue_id)
+{
+    static int initialized = 0;
+    static uint32_t selected = 0;
+    static int all = 0;
+    if (!initialized) {
+        const char* value = getenv("EVQ_TRACE");
+        if (value && *value) {
+            all = strcmp(value, "all") == 0;
+            selected = (uint32_t)strtoul(value, NULL, 0);
+        }
+        initialized = 1;
+    }
+    return all || (selected && selected == queue_id);
+}
+
 /* Recorded by sys_spu_thread_initialize (lv2_register.c): the SPURS kernel
  * context EA the title's SPU task runtime is dispatched against. */
 uint32_t g_ydkj_spurs_ctx_ea = 0;
@@ -103,8 +120,12 @@ static uint64_t bswap64(uint64_t v)
  * game then blocks on. Without this the game receives on an id nothing ever
  * created and gets ESRCH forever -- YDKJ printed 1.7 MILLION "LIBAUDIO DROPOUT"
  * lines a run that way. Returns the queue id, or 0 if the table is full. */
-uint32_t sys_event_queue_create_direct(uint64_t key, int32_t size)
+/* RPCS3_REFERENCE_REVIEWED: cellAudioCreateNotifyEventQueueEx selects the
+ * PPU/SPU queue type; the queue implementation and synchronization are local. */
+uint32_t sys_event_queue_create_direct_ex(uint64_t key, int32_t size, int32_t type)
 {
+    if (type != SYS_PPU_QUEUE && type != SYS_SPU_QUEUE)
+        return 0;
     if (size <= 0 || size > SYS_EVENT_QUEUE_BUF_MAX)
         size = SYS_EVENT_QUEUE_BUF_MAX;
 
@@ -120,7 +141,7 @@ uint32_t sys_event_queue_create_direct(uint64_t key, int32_t size)
     q->active   = 1;
     q->key      = key;
     q->capacity = size;
-    q->type     = SYS_PPU_QUEUE;
+    q->type     = type;
 
     /* The waiter primitives MUST be initialised here too. memset+fields is
      * not enough: a zeroed CRITICAL_SECTION is not a valid one, and the
@@ -140,6 +161,11 @@ uint32_t sys_event_queue_create_direct(uint64_t key, int32_t size)
     fprintf(stderr, "[evt] queue_create_direct -> id=%d key=0x%llX size=%d\n",
             slot + 1, (unsigned long long)key, size);
     return (uint32_t)(slot + 1);
+}
+
+uint32_t sys_event_queue_create_direct(uint64_t key, int32_t size)
+{
+    return sys_event_queue_create_direct_ex(key, size, SYS_PPU_QUEUE);
 }
 
 int64_t sys_event_queue_create(ppu_context* ctx)
@@ -364,6 +390,54 @@ int64_t sys_event_queue_receive(ppu_context* ctx)
         return (int64_t)(int32_t)CELL_ESRCH;
     }
 
+    if (sys_evt_trace_matches(queue_id)) {
+        static unsigned long long waits = 0;
+        unsigned long long seq = ++waits;
+        if (seq <= 256 || (seq % 1000) == 0) {
+            int count = q->count;
+            int capacity = q->capacity;
+            fprintf(stderr,
+                    "[EVQ_TRACE] WAIT#%llu tid=%llu q=%u eventEA=0x%08X "
+                    "timeout=%llu cia=0x%08X lr=0x%08X active=%d "
+                    "cancelled=%d key=0x%016llX name=%02X%02X%02X%02X%02X%02X%02X%02X "
+                    "type=%d capacity=%d count=%d head=%d tail=%d\n",
+                    seq, (unsigned long long)ctx->thread_id, queue_id,
+                    event_addr, (unsigned long long)timeout_us,
+                    (uint32_t)ctx->cia, (uint32_t)ctx->lr, q->active,
+                    q->cancelled, (unsigned long long)q->key,
+                    (unsigned char)q->name[0], (unsigned char)q->name[1],
+                    (unsigned char)q->name[2], (unsigned char)q->name[3],
+                    (unsigned char)q->name[4], (unsigned char)q->name[5],
+                    (unsigned char)q->name[6], (unsigned char)q->name[7],
+                    q->type, capacity, count, q->head, q->tail);
+            if (count > 0 && capacity > 0 &&
+                capacity <= SYS_EVENT_QUEUE_BUF_MAX && count <= capacity &&
+                q->head >= 0 && q->head < capacity) {
+                int shown = count < 16 ? count : 16;
+                for (int i = 0; i < shown; ++i) {
+                    int ix = (q->head + i) % capacity;
+                    const sys_event_t* e = &q->buffer[ix];
+                    fprintf(stderr,
+                            "[EVQ_TRACE] PENDING q=%u index=%d src=0x%016llX "
+                            "d1=0x%016llX d2=0x%016llX d3=0x%016llX\n",
+                            queue_id, i, (unsigned long long)e->source,
+                            (unsigned long long)e->data1,
+                            (unsigned long long)e->data2,
+                            (unsigned long long)e->data3);
+                }
+            }
+            fflush(stderr);
+        }
+    }
+
+    if (getenv("GFD_QUEUE_TRACE") && queue_id == 3 &&
+        ctx->thread_id == 1) {
+        static unsigned dumped = 0;
+        if (dumped++ < 64) {
+            extern void ppu_dump_guest_stack(ppu_context*, const char*);
+            ppu_dump_guest_stack(ctx, "gfd-command43-wait");
+        }
+    }
     /* SPURS bring-up: when a PPU thread is about to block forever for SPU
      * completion (libsre created the taskset correctly but never started its SPU
      * kernel), drive the title's REAL lifted SPU task runtime (image 22 @guest
@@ -786,6 +860,17 @@ static int event_queue_push(sys_event_queue_info* q, const sys_event_t* evt)
     pthread_mutex_unlock(&q->lock);
 #endif
 
+    if (sys_evt_trace_matches((uint32_t)(q - g_sys_event_queues) + 1u)) {
+        uint32_t queue_id = (uint32_t)(q - g_sys_event_queues) + 1u;
+        fprintf(stderr,
+                "[EVQ_TRACE] PUSH q=%u src=0x%016llX d1=0x%016llX "
+                "d2=0x%016llX d3=0x%016llX\n",
+                queue_id, (unsigned long long)evt->source,
+                (unsigned long long)evt->data1, (unsigned long long)evt->data2,
+                (unsigned long long)evt->data3);
+        fflush(stderr);
+    }
+
     return 0;
 }
 
@@ -943,6 +1028,15 @@ int sys_event_queue_push_by_id(uint32_t queue_id,
     return event_queue_push(q, &evt);
 }
 
+int sys_event_queue_is_active(uint32_t queue_id)
+{
+    if (queue_id == 0 || queue_id > SYS_EVENT_QUEUE_MAX) return 0;
+    evt_table_lock();
+    int active = g_sys_event_queues[queue_id - 1].active;
+    evt_table_unlock();
+    return active;
+}
+
 /* Public helper: resolve an event queue by its ipc_key (as registered at
  * sys_event_queue_create). Returns the queue_id (1-based) or 0 if none. Used by
  * cellAudio to route the audio-period notify event to the game's queue. */
@@ -999,8 +1093,12 @@ int64_t sys_event_port_send(ppu_context* ctx)
         fprintf(stderr, "[evt] port_send(port=%u): NOT CONNECTED to any queue\n", port_id);
         return (int64_t)(int32_t)CELL_ENOTCONN;
     }
+    /* RPCS3 sys_event_port_send uses the port name when present, otherwise
+     * (process_getpid() << 32) | port_id. Its current process_getpid() is 1.
+     * Keep that source identity: event consumers may distinguish unnamed ports. */
+    const uint64_t source = p->name ? p->name : (UINT64_C(1) << 32) | port_id;
     if (ps3_log_verbose()) fprintf(stderr, "[evt] port_send(port=%u) -> queue id=%d (source=0x%llX)\n",
-            port_id, p->connected_queue, (unsigned long long)p->name);
+            port_id, p->connected_queue, (unsigned long long)source);
 
     int32_t qidx = p->connected_queue;
     if (qidx <= 0 || qidx > SYS_EVENT_QUEUE_MAX)
@@ -1011,7 +1109,7 @@ int64_t sys_event_port_send(ppu_context* ctx)
         return (int64_t)(int32_t)CELL_ESRCH;
 
     sys_event_t evt;
-    evt.source = p->name;
+    evt.source = source;
     evt.data1  = data1;
     evt.data2  = data2;
     evt.data3  = data3;
@@ -1249,9 +1347,13 @@ int64_t sys_event_flag_wait(ppu_context* ctx)
 
 #ifdef _WIN32
     EnterCriticalSection(&f->lock);
+    uint64_t cancel_generation = f->cancel_generation;
+    int queued = !flag_check(f->pattern, bitpat, mode);
+    if (queued) f->waiters++;
 
     if (timeout_us == 0) {
-        while (!flag_check(f->pattern, bitpat, mode) && f->active) {
+        while (!flag_check(f->pattern, bitpat, mode) && f->active &&
+               f->cancel_generation == cancel_generation) {
             SleepConditionVariableCS(&f->cv, &f->lock, INFINITE);
         }
     } else if (timeout_us < 1000) {
@@ -1261,13 +1363,15 @@ int64_t sys_event_flag_wait(ppu_context* ctx)
          * dropped never misses a committed pattern change -- it just re-reads
          * the latest value on the next lock acquisition. */
         int64_t deadline = lv2_usec_deadline(timeout_us);
-        while (!flag_check(f->pattern, bitpat, mode) && f->active) {
+        while (!flag_check(f->pattern, bitpat, mode) && f->active &&
+               f->cancel_generation == cancel_generation) {
             if (lv2_deadline_passed(deadline)) {
                 /* Write current pattern even on timeout */
                 if (result_addr != 0) {
                     uint64_t* out = (uint64_t*)vm_to_host(result_addr);
                     *out = bswap64(f->pattern);
                 }
+                if (queued) f->waiters--;
                 LeaveCriticalSection(&f->lock);
                 return (int64_t)(int32_t)CELL_ETIMEDOUT;
             }
@@ -1277,7 +1381,8 @@ int64_t sys_event_flag_wait(ppu_context* ctx)
         }
     } else {
         DWORD ms = (DWORD)(timeout_us / 1000);
-        while (!flag_check(f->pattern, bitpat, mode) && f->active) {
+        while (!flag_check(f->pattern, bitpat, mode) && f->active &&
+               f->cancel_generation == cancel_generation) {
             if (!SleepConditionVariableCS(&f->cv, &f->lock, ms)) {
                 if (GetLastError() == ERROR_TIMEOUT) {
                     /* Write current pattern even on timeout */
@@ -1285,6 +1390,7 @@ int64_t sys_event_flag_wait(ppu_context* ctx)
                         uint64_t* out = (uint64_t*)vm_to_host(result_addr);
                         *out = bswap64(f->pattern);
                     }
+                    if (queued) f->waiters--;
                     LeaveCriticalSection(&f->lock);
                     return (int64_t)(int32_t)CELL_ETIMEDOUT;
                 }
@@ -1293,6 +1399,18 @@ int64_t sys_event_flag_wait(ppu_context* ctx)
     }
 
     uint64_t result = f->pattern;
+    int canceled = queued && f->cancel_generation != cancel_generation &&
+                   !flag_check(f->pattern, bitpat, mode);
+    if (queued) f->waiters--;
+
+    if (canceled) {
+        if (result_addr != 0) {
+            uint64_t* out = (uint64_t*)vm_to_host(result_addr);
+            *out = bswap64(result);
+        }
+        LeaveCriticalSection(&f->lock);
+        return (int64_t)(int32_t)CELL_ECANCELED;
+    }
 
     /* Clear matched bits if requested */
     if (mode & SYS_EVENT_FLAG_WAIT_CLEAR) {
@@ -1309,9 +1427,13 @@ int64_t sys_event_flag_wait(ppu_context* ctx)
     LeaveCriticalSection(&f->lock);
 #else
     pthread_mutex_lock(&f->lock);
+    uint64_t cancel_generation = f->cancel_generation;
+    int queued = !flag_check(f->pattern, bitpat, mode);
+    if (queued) f->waiters++;
 
     if (timeout_us == 0) {
-        while (!flag_check(f->pattern, bitpat, mode) && f->active) {
+        while (!flag_check(f->pattern, bitpat, mode) && f->active &&
+               f->cancel_generation == cancel_generation) {
             pthread_cond_wait(&f->cv, &f->lock);
         }
     } else {
@@ -1323,13 +1445,15 @@ int64_t sys_event_flag_wait(ppu_context* ctx)
             ts.tv_sec++;
             ts.tv_nsec -= 1000000000L;
         }
-        while (!flag_check(f->pattern, bitpat, mode) && f->active) {
+        while (!flag_check(f->pattern, bitpat, mode) && f->active &&
+               f->cancel_generation == cancel_generation) {
             int rc = pthread_cond_timedwait(&f->cv, &f->lock, &ts);
             if (rc == ETIMEDOUT) {
                 if (result_addr != 0) {
                     uint64_t* out = (uint64_t*)vm_to_host(result_addr);
                     *out = bswap64(f->pattern);
                 }
+                if (queued) f->waiters--;
                 pthread_mutex_unlock(&f->lock);
                 return (int64_t)(int32_t)CELL_ETIMEDOUT;
             }
@@ -1337,6 +1461,18 @@ int64_t sys_event_flag_wait(ppu_context* ctx)
     }
 
     uint64_t result = f->pattern;
+    int canceled = queued && f->cancel_generation != cancel_generation &&
+                   !flag_check(f->pattern, bitpat, mode);
+    if (queued) f->waiters--;
+
+    if (canceled) {
+        if (result_addr != 0) {
+            uint64_t* out = (uint64_t*)vm_to_host(result_addr);
+            *out = bswap64(result);
+        }
+        pthread_mutex_unlock(&f->lock);
+        return (int64_t)(int32_t)CELL_ECANCELED;
+    }
 
     if (mode & SYS_EVENT_FLAG_WAIT_CLEAR) {
         f->pattern &= ~bitpat;
@@ -1489,6 +1625,47 @@ int64_t sys_event_flag_clear(ppu_context* ctx)
     return CELL_OK;
 }
 
+/* Cancel queued waiters on a flag. RPCS3 returns the number of threads that
+ * were waiting, wakes each with CELL_ECANCELED, and preserves the flag pattern. */
+int64_t sys_event_flag_cancel(ppu_context* ctx)
+{
+    uint32_t flag_id = LV2_ARG_U32(ctx, 0);
+    uint32_t count_out = LV2_ARG_PTR(ctx, 1);
+    if (count_out) write_be32(count_out, 0);
+
+    if (flag_id == 0 || flag_id > SYS_EVENT_FLAG_MAX)
+        return (int64_t)(int32_t)CELL_ESRCH;
+
+    sys_event_flag_info* f = &g_sys_event_flags[flag_id - 1];
+    if (!f->active)
+        return (int64_t)(int32_t)CELL_ESRCH;
+
+#ifdef _WIN32
+    EnterCriticalSection(&f->lock);
+#else
+    pthread_mutex_lock(&f->lock);
+#endif
+
+    uint32_t canceled = f->waiters;
+    if (canceled) {
+        f->cancel_generation++;
+#ifdef _WIN32
+        WakeAllConditionVariable(&f->cv);
+#else
+        pthread_cond_broadcast(&f->cv);
+#endif
+    }
+
+#ifdef _WIN32
+    LeaveCriticalSection(&f->lock);
+#else
+    pthread_mutex_unlock(&f->lock);
+#endif
+
+    if (count_out) write_be32(count_out, canceled);
+    return CELL_OK;
+}
+
 int64_t sys_event_flag_get(ppu_context* ctx)
 {
     uint32_t flag_id  = LV2_ARG_U32(ctx, 0);
@@ -1557,5 +1734,6 @@ void sys_event_init(lv2_syscall_table* tbl)
     lv2_syscall_register(tbl, SYS_EVENT_FLAG_TRYWAIT,  sys_event_flag_trywait);
     lv2_syscall_register(tbl, SYS_EVENT_FLAG_SET,      sys_event_flag_set);
     lv2_syscall_register(tbl, SYS_EVENT_FLAG_CLEAR,    sys_event_flag_clear);
+    lv2_syscall_register(tbl, SYS_EVENT_FLAG_CANCEL,   sys_event_flag_cancel);
     lv2_syscall_register(tbl, SYS_EVENT_FLAG_GET,      sys_event_flag_get);
 }

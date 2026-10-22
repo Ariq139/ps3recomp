@@ -30,6 +30,7 @@ extern int      sys_event_queue_push_by_id(uint32_t queue_id,
                                             uint64_t data2,  uint64_t data3);
 extern uint32_t sys_event_find_queue_by_key(uint64_t key);
 extern uint32_t sys_event_queue_create_direct(uint64_t key, int32_t size);
+extern uint32_t sys_event_queue_create_direct_ex(uint64_t key, int32_t size, int32_t type);
 
 /* ---------------------------------------------------------------------------
  * Backend selection
@@ -124,6 +125,9 @@ typedef struct {
     u32                  buf_size;       /* buffer size in bytes */
     u64                  read_index;     /* current read position (block index) */
     u64                  write_index;    /* where the game is writing */
+    float                level_current;
+    float                level_step;
+    u32                  level_remaining;
     /* For address reporting to guest */
     u64                  port_addr;      /* guest-visible buffer address */
     u64                  read_idx_addr;  /* guest-visible read index address */
@@ -136,8 +140,13 @@ static AudioPortSlot  s_ports[CELL_AUDIO_PORT_MAX];
 typedef struct {
     int  in_use;
     u64  key;
+    u64  source;
+    u64  ack_timestamp;
+    u32  flags;
+    u8   start_period;
 } AudioNotifySlot;
 static AudioNotifySlot s_notify_queues[CELL_AUDIO_MAX_NOTIFY_EVENT_QUEUES];
+static u8              s_audio_event_period;
 
 /* Timestamp anchor for cellAudioGetPortTimestamp (microseconds, set at init) */
 static u64            s_audio_start_us = 0;
@@ -458,10 +467,6 @@ static void audio_mix_one_block(void)
 
         u32 nch    = (u32)port->param.nChannel;
         u32 nblock = (u32)port->param.nBlock;
-        float level = port->param.level;
-        if (level <= 0.0f) level = 1.0f;
-        if (level > 1.0f) level = 1.0f;
-
         /* Read one block at the current read_index */
         u32 block_idx = (u32)(port->read_index % nblock);
         u32 block_offset = block_idx * CELL_AUDIO_BLOCK_SAMPLES * nch;
@@ -487,6 +492,15 @@ static void audio_mix_one_block(void)
             } } }
 
         for (u32 s = 0; s < CELL_AUDIO_BLOCK_SAMPLES; s++) {
+            if (port->level_remaining) {
+                port->level_current += port->level_step;
+                if (--port->level_remaining == 0)
+                    port->level_current = port->param.level;
+            }
+            float level = port->level_current;
+            if (!isfinite(level) || level < 0.0f) level = 0.0f;
+            if (level > 1.0f) level = 1.0f;
+
             float left, right;
             if (nch >= 2) {
                 left  = ld_be_f32(&src[s * nch + 0]) * level;
@@ -540,17 +554,50 @@ static void audio_mix_one_block(void)
 
 static void audio_notify_event_queues(void)
 {
-    /* Push the audio-period event (data1 = CELL_AUDIO_EVENT_MIX = 0) to each
-     * registered notify queue, so the game's audio loop (blocked on
-     * sys_event_queue_receive) wakes once per block and writes the next one.
-     * Resolve the queue by its ipc_key (set via cellAudioSetNotifyEventQueue). */
+    AudioNotifySlot slots[CELL_AUDIO_MAX_NOTIFY_EVENT_QUEUES];
+    u8 event_period;
+
+    /* Snapshot associations while locked; queue delivery can take the LV2
+     * event-table lock and must not hold the audio-state lock while doing so. */
+    mutex_lock(&s_audio_mutex);
+    event_period = ++s_audio_event_period;
+    memcpy(slots, s_notify_queues, sizeof(slots));
+    mutex_unlock(&s_audio_mutex);
+
     for (int i = 0; i < CELL_AUDIO_MAX_NOTIFY_EVENT_QUEUES; i++) {
-        if (!s_notify_queues[i].in_use) continue;
-        uint32_t qid = sys_event_find_queue_by_key(s_notify_queues[i].key);
-        if (qid)
-            sys_event_queue_push_by_id(qid, s_notify_queues[i].key,
-                                       0 /*CELL_AUDIO_EVENT_MIX*/, 0, 0);
+        const AudioNotifySlot* slot = &slots[i];
+        if (!slot->in_use || (slot->flags & CELL_AUDIO_EVENTFLAG_NOMIX)) continue;
+
+        u32 periods = 1;
+        if (slot->flags & CELL_AUDIO_EVENTFLAG_DECIMATE_2) periods *= 2;
+        if (slot->flags & CELL_AUDIO_EVENTFLAG_DECIMATE_4) periods *= 4;
+        if ((event_period ^ slot->start_period) & (periods - 1)) continue;
+
+        const uint32_t qid = sys_event_find_queue_by_key(slot->key);
+        if (qid) {
+            const u64 data3 = (slot->flags & CELL_AUDIO_EVENTFLAG_BEFOREMIX)
+                            ? slot->source : 0;
+            sys_event_queue_push_by_id(qid, slot->source,
+                                       CELL_AUDIO_EVENT_MIX, 0, data3);
+        }
     }
+}
+
+static u64 audio_get_system_time_us(void)
+{
+#ifdef _WIN32
+    LARGE_INTEGER frequency, counter;
+    if (!QueryPerformanceFrequency(&frequency) || !QueryPerformanceCounter(&counter) ||
+        frequency.QuadPart <= 0)
+        return 0;
+    return (u64)(counter.QuadPart / frequency.QuadPart) * 1000000ULL +
+           (u64)(counter.QuadPart % frequency.QuadPart) * 1000000ULL /
+               (u64)frequency.QuadPart;
+#else
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+    return (u64)ts.tv_sec * 1000000ULL + (u64)ts.tv_nsec / 1000ULL;
+#endif
 }
 
 #ifdef _WIN32
@@ -710,6 +757,7 @@ s32 cellAudioInit(void)
 
     memset(s_ports, 0, sizeof(s_ports));
     memset(s_notify_queues, 0, sizeof(s_notify_queues));
+    s_audio_event_period = 0;
     mutex_init(&s_audio_mutex);
 
     if (audio_backend_init() < 0) {
@@ -772,6 +820,8 @@ s32 cellAudioPortOpen(const CellAudioPortParam* param, u32* portNum)
 
     u64 nch  = vm_read64(param_ea + 0);   /* nChannel */
     u64 nblk = vm_read64(param_ea + 8);   /* nBlock   */
+    u64 attr  = vm_read64(param_ea + 16); /* attr     */
+    float level = vm_read_f32(param_ea + 24);
     printf("[cellAudio] PortOpen(nChannel=%llu, nBlock=%llu)\n",
            (unsigned long long)nch, (unsigned long long)nblk);
 
@@ -803,6 +853,12 @@ s32 cellAudioPortOpen(const CellAudioPortParam* param, u32* portNum)
     memset(&port->param, 0, sizeof(port->param));
     port->param.nChannel = nch;
     port->param.nBlock   = nblk;
+    port->param.attr     = attr;
+    port->param.level    = ((attr & CELL_AUDIO_PORTATTR_INITLEVEL) &&
+                            isfinite(level) && level >= 0.0f) ? level : 1.0f;
+    port->level_current  = (float)port->param.level;
+    port->level_step     = 0.0f;
+    port->level_remaining = 0;
     port->read_index  = 0;
     port->write_index = 0;
 
@@ -907,6 +963,163 @@ s32 cellAudioPortStop(u32 portNum)
     return CELL_OK;
 }
 
+/* RPCS3_REFERENCE_REVIEWED (RPCS3 commit 2ba2f75bc): port initialization
+ * level and the 13 ms SetPortLevel ramp follow cellAudio.cpp. State and mixing
+ * remain implemented through ps3recomp's local port ring. */
+s32 cellAudioSetPortLevel(u32 portNum, float level)
+{
+    if (!s_audio_initialized)
+        return CELL_AUDIO_ERROR_NOT_INIT;
+    if (portNum >= CELL_AUDIO_PORT_MAX || !isfinite(level) || level < 0.0f)
+        return CELL_AUDIO_ERROR_PARAM;
+
+    mutex_lock(&s_audio_mutex);
+    AudioPortSlot* port = &s_ports[portNum];
+    if (!port->in_use) {
+        mutex_unlock(&s_audio_mutex);
+        return CELL_AUDIO_ERROR_PORT_NOT_OPEN;
+    }
+
+    port->param.level = level;
+    port->level_step = (level - port->level_current) / 624.0f;
+    port->level_remaining = 624;
+    mutex_unlock(&s_audio_mutex);
+    return CELL_OK;
+}
+
+/* Add one 256-frame chunk to a port's guest-visible ring. The audio thread
+ * consumes `read_index`; this producer owns `write_index`. Input and output
+ * float32 samples are big-endian guest data, so access them through the VM
+ * helpers instead of treating the guest buffer as host-endian floats. */
+s32 cellAudioAddData(u32 portNum, const float* data, u32 samples, float volume)
+{
+    const u32 src_ea = (u32)(uintptr_t)data;
+    if (!s_audio_initialized)
+        return CELL_AUDIO_ERROR_NOT_INIT;
+    if (portNum >= CELL_AUDIO_PORT_MAX || !src_ea || samples != CELL_AUDIO_BLOCK_SAMPLES ||
+        !isfinite(volume))
+        return CELL_AUDIO_ERROR_PARAM;
+
+    mutex_lock(&s_audio_mutex);
+    AudioPortSlot* port = &s_ports[portNum];
+    if (!port->in_use || !port->buffer) {
+        mutex_unlock(&s_audio_mutex);
+        return CELL_AUDIO_ERROR_PORT_NOT_OPEN;
+    }
+
+    const u32 channels = (u32)port->param.nChannel;
+    const u32 block_count = (u32)port->param.nBlock;
+    if ((channels != CELL_AUDIO_PORT_2CH && channels != CELL_AUDIO_PORT_8CH) || !block_count) {
+        mutex_unlock(&s_audio_mutex);
+        return CELL_AUDIO_ERROR_PARAM;
+    }
+    /* The mixer advances read_index on every audio tick, including silence.
+     * If it has passed the producer before the next AddData call, resume at
+     * the current read slot instead of letting unsigned subtraction turn the
+     * ring-space check into a permanent full condition. */
+    if (port->write_index < port->read_index)
+        port->write_index = port->read_index;
+    if (port->write_index - port->read_index >= block_count) {
+        mutex_unlock(&s_audio_mutex);
+        return CELL_AUDIO_ERROR_PORT_FULL;
+    }
+
+    if (volume < -16.0f) volume = -16.0f;
+    if (volume > 16.0f) volume = 16.0f;
+    const u32 block = (u32)(port->write_index % block_count);
+    const u32 dst_ea = (u32)(port->port_addr +
+                             (u64)block * CELL_AUDIO_BLOCK_SAMPLES * channels * sizeof(float));
+    for (u32 i = 0; i < samples * channels; i++) {
+        const float mixed = vm_read_f32(src_ea + i * sizeof(float)) * volume;
+        const float prior = vm_read_f32(dst_ea + i * sizeof(float));
+        vm_write_f32(dst_ea + i * sizeof(float), prior + mixed);
+    }
+    port->write_index++;
+    mutex_unlock(&s_audio_mutex);
+    return CELL_OK;
+}
+
+/* RPCS3_REFERENCE_REVIEWED (RPCS3 commit 2ba2f75bc): preserve the stereo and
+ * six-channel input layouts while writing into this runtime's 2/8-channel
+ * guest ring. No RPCS3 function body is copied. */
+static s32 cell_audio_add_channel_layout(u32 portNum, const float* data,
+                                         u32 samples, float volume,
+                                         u32 input_channels)
+{
+    const u32 src_ea = (u32)(uintptr_t)data;
+    if (!s_audio_initialized)
+        return CELL_AUDIO_ERROR_NOT_INIT;
+    if (portNum >= CELL_AUDIO_PORT_MAX || !src_ea || samples != CELL_AUDIO_BLOCK_SAMPLES ||
+        !isfinite(volume) ||
+        (u64)src_ea + (u64)samples * input_channels * sizeof(float) - 1u > UINT32_MAX)
+        return CELL_AUDIO_ERROR_PARAM;
+
+    mutex_lock(&s_audio_mutex);
+    AudioPortSlot* port = &s_ports[portNum];
+    if (!port->in_use || !port->buffer) {
+        mutex_unlock(&s_audio_mutex);
+        return CELL_AUDIO_ERROR_PORT_NOT_OPEN;
+    }
+
+    const u32 channels = (u32)port->param.nChannel;
+    const u32 block_count = (u32)port->param.nBlock;
+    const int layout_supported = input_channels == 2
+        ? (channels == CELL_AUDIO_PORT_2CH || channels == CELL_AUDIO_PORT_8CH)
+        : (input_channels == 6 && channels == CELL_AUDIO_PORT_8CH);
+    if (!layout_supported || !block_count) {
+        mutex_unlock(&s_audio_mutex);
+        return CELL_AUDIO_ERROR_PARAM;
+    }
+
+    if (port->write_index < port->read_index)
+        port->write_index = port->read_index;
+    if (port->write_index - port->read_index >= block_count) {
+        mutex_unlock(&s_audio_mutex);
+        return CELL_AUDIO_ERROR_PORT_FULL;
+    }
+
+    if (volume < -16.0f) volume = -16.0f;
+    if (volume > 16.0f) volume = 16.0f;
+    const u32 block = (u32)(port->write_index % block_count);
+    const u32 dst_ea = (u32)(port->port_addr +
+        (u64)block * CELL_AUDIO_BLOCK_SAMPLES * channels * sizeof(float));
+    for (u32 frame = 0; frame < samples; ++frame) {
+        const u32 src_frame = src_ea + frame * input_channels * sizeof(float);
+        const u32 dst_frame = dst_ea + frame * channels * sizeof(float);
+        if (input_channels == 2) {
+            for (u32 channel = 0; channel < 2; ++channel) {
+                const float mixed = vm_read_f32(src_frame + channel * sizeof(float)) * volume;
+                const float prior = vm_read_f32(dst_frame + channel * sizeof(float));
+                vm_write_f32(dst_frame + channel * sizeof(float), prior + mixed);
+            }
+        } else {
+            /* Six-channel input order is FL, C, FR, SL, SR, LFE; the local
+             * eight-channel ring uses FL, FR, C, LFE, RL, RR, SL, SR. */
+            static const u8 source_for_output[6] = {0, 2, 1, 5, 3, 4};
+            for (u32 channel = 0; channel < 6; ++channel) {
+                const float mixed = vm_read_f32(src_frame +
+                    source_for_output[channel] * sizeof(float)) * volume;
+                const float prior = vm_read_f32(dst_frame + channel * sizeof(float));
+                vm_write_f32(dst_frame + channel * sizeof(float), prior + mixed);
+            }
+        }
+    }
+    port->write_index++;
+    mutex_unlock(&s_audio_mutex);
+    return CELL_OK;
+}
+
+s32 cellAudioAdd2chData(u32 portNum, const float* data, u32 samples, float volume)
+{
+    return cell_audio_add_channel_layout(portNum, data, samples, volume, 2);
+}
+
+s32 cellAudioAdd6chData(u32 portNum, const float* data, float volume)
+{
+    return cell_audio_add_channel_layout(portNum, data, CELL_AUDIO_BLOCK_SAMPLES,
+        volume, 6);
+}
+
 s32 cellAudioGetPortBlockTag(u32 portNum, u64 blockNo, u64* tag)
 {
     uint32_t tag_ea = (uint32_t)(uintptr_t)tag;
@@ -970,7 +1183,9 @@ s32 cellAudioGetPortTimestamp(u32 portNum, u64 tag, u64* stamp)
  *
  * Both params are GUEST addresses and both are big-endian out-values; the id
  * is 32-bit and the key 64-bit, so they cannot be written with a plain store. */
-s32 cellAudioCreateNotifyEventQueue(u32* id, u64* key)
+/* RPCS3_REFERENCE_REVIEWED (RPCS3 commit 2ba2f75bc): the Ex flag chooses a
+ * PPU or SPU event queue; the queue storage and guest out-parameters are local. */
+static s32 cell_audio_create_notify_event_queue(u32* id, u64* key, u32 flags)
 {
     uint32_t id_ea  = (uint32_t)(uintptr_t)id;
     uint32_t key_ea = (uint32_t)(uintptr_t)key;
@@ -983,24 +1198,19 @@ s32 cellAudioCreateNotifyEventQueue(u32* id, u64* key)
     if (!id_ea || !key_ea)
         return CELL_AUDIO_ERROR_PARAM;
 
-    /* A distinct key per queue: the notify path resolves queues BY KEY, and the
-     * game creates its other queues with key 0, so reusing 0 here would make
-     * find_queue_by_key ambiguous and post audio events to whichever matched. */
+    /* The key identifies the queue. Creation does not subscribe it; the guest
+     * must call SetNotifyEventQueue before it receives audio-period events. */
     static uint64_t s_next_key = 0x8000000000000001ull;
-    uint64_t k = s_next_key++;
-
-    uint32_t qid = sys_event_queue_create_direct(k, 8);
-    if (!qid)
-        return CELL_AUDIO_ERROR_EVENT_QUEUE;
-
     mutex_lock(&s_audio_mutex);
-    int slot = -1;
-    for (int i = 0; i < CELL_AUDIO_MAX_NOTIFY_EVENT_QUEUES; i++) {
-        if (!s_notify_queues[i].in_use) { slot = i; break; }
+    const uint64_t k = s_next_key++;
+    /* sys_event's queue type values are part of the LV2 event ABI. */
+    const int32_t queue_type = (flags & CELL_AUDIO_CREATEEVENTFLAG_SPU) ? 2 : 1;
+    const uint32_t qid = sys_event_queue_create_direct_ex(k, 8, queue_type);
+    if (!qid) {
+        mutex_unlock(&s_audio_mutex);
+        return CELL_AUDIO_ERROR_EVENT_QUEUE;
     }
-    if (slot < 0) { mutex_unlock(&s_audio_mutex); return CELL_AUDIO_ERROR_PARAM; }
-    s_notify_queues[slot].in_use = 1;
-    s_notify_queues[slot].key    = k;
+
     mutex_unlock(&s_audio_mutex);
 
     vm_write32(id_ea, qid);
@@ -1010,49 +1220,120 @@ s32 cellAudioCreateNotifyEventQueue(u32* id, u64* key)
     return CELL_OK;
 }
 
+s32 cellAudioCreateNotifyEventQueue(u32* id, u64* key)
+{
+    return cell_audio_create_notify_event_queue(id, key, 0);
+}
+
+s32 cellAudioCreateNotifyEventQueueEx(u32* id, u64* key, u32 flags)
+{
+    if (flags & ~CELL_AUDIO_CREATEEVENTFLAG_SPU)
+        return CELL_AUDIO_ERROR_PARAM;
+    return cell_audio_create_notify_event_queue(id, key, flags);
+}
+
+static s32 cell_audio_set_notify_event_queue(u64 key, u32 flags)
+{
+    if (!s_audio_initialized)
+        return CELL_AUDIO_ERROR_NOT_INIT;
+
+    if (!sys_event_find_queue_by_key(key))
+        return CELL_AUDIO_ERROR_TRANS_EVENT;
+
+    mutex_lock(&s_audio_mutex);
+    int free_slot = -1;
+    for (int i = 0; i < CELL_AUDIO_MAX_NOTIFY_EVENT_QUEUES; i++) {
+        if (!s_notify_queues[i].in_use) {
+            if (free_slot < 0) free_slot = i;
+        } else if (s_notify_queues[i].key == key) {
+            mutex_unlock(&s_audio_mutex);
+            return CELL_AUDIO_ERROR_TRANS_EVENT;
+        }
+    }
+
+    if (free_slot >= 0) {
+        AudioNotifySlot* slot = &s_notify_queues[free_slot];
+        memset(slot, 0, sizeof(*slot));
+        slot->in_use = 1;
+        slot->key = key;
+        slot->flags = flags;
+        slot->start_period = s_audio_event_period;
+        /* Use the queue's unique IPC key as this local event source. It is
+         * stable for the association and can be echoed back by SendAck. */
+        slot->source = key;
+        mutex_unlock(&s_audio_mutex);
+        return CELL_OK;
+    }
+    mutex_unlock(&s_audio_mutex);
+    return CELL_AUDIO_ERROR_TRANS_EVENT;
+}
+
 s32 cellAudioSetNotifyEventQueue(u64 key)
 {
-    printf("[cellAudio] SetNotifyEventQueue(key=0x%llX)\n",
-           (unsigned long long)key);
+    return cell_audio_set_notify_event_queue(key, 0);
+}
 
+s32 cellAudioSetNotifyEventQueueEx(u64 key, u32 flags)
+{
+    if (flags & ~CELL_AUDIO_EVENTFLAG_VALID_MASK)
+        return CELL_AUDIO_ERROR_PARAM;
+    return cell_audio_set_notify_event_queue(key, flags);
+}
+
+static s32 cell_audio_remove_notify_event_queue(u64 key, u32 flags)
+{
     if (!s_audio_initialized)
         return CELL_AUDIO_ERROR_NOT_INIT;
 
     mutex_lock(&s_audio_mutex);
-
     for (int i = 0; i < CELL_AUDIO_MAX_NOTIFY_EVENT_QUEUES; i++) {
-        if (!s_notify_queues[i].in_use) {
-            s_notify_queues[i].in_use = 1;
-            s_notify_queues[i].key = key;
+        AudioNotifySlot* slot = &s_notify_queues[i];
+        if (!slot->in_use || slot->key != key) continue;
+        if (slot->flags != flags) {
             mutex_unlock(&s_audio_mutex);
-            return CELL_OK;
+            return CELL_AUDIO_ERROR_TRANS_EVENT;
         }
+        memset(slot, 0, sizeof(*slot));
+        mutex_unlock(&s_audio_mutex);
+        return CELL_OK;
     }
-
     mutex_unlock(&s_audio_mutex);
-    return CELL_AUDIO_ERROR_PARAM; /* no free slots */
+    return CELL_AUDIO_ERROR_TRANS_EVENT;
 }
 
 s32 cellAudioRemoveNotifyEventQueue(u64 key)
 {
-    printf("[cellAudio] RemoveNotifyEventQueue(key=0x%llX)\n",
-           (unsigned long long)key);
+    return cell_audio_remove_notify_event_queue(key, 0);
+}
 
+s32 cellAudioRemoveNotifyEventQueueEx(u64 key, u32 flags)
+{
+    if (flags & ~CELL_AUDIO_EVENTFLAG_VALID_MASK)
+        return CELL_AUDIO_ERROR_PARAM;
+    return cell_audio_remove_notify_event_queue(key, flags);
+}
+
+s32 cellAudioSendAck(u64 data3)
+{
     if (!s_audio_initialized)
         return CELL_AUDIO_ERROR_NOT_INIT;
 
     mutex_lock(&s_audio_mutex);
-
     for (int i = 0; i < CELL_AUDIO_MAX_NOTIFY_EVENT_QUEUES; i++) {
-        if (s_notify_queues[i].in_use && s_notify_queues[i].key == key) {
-            s_notify_queues[i].in_use = 0;
-            mutex_unlock(&s_audio_mutex);
-            return CELL_OK;
+        if (s_notify_queues[i].in_use && s_notify_queues[i].source == data3) {
+            s_notify_queues[i].ack_timestamp = audio_get_system_time_us();
+            break;
         }
     }
-
     mutex_unlock(&s_audio_mutex);
-    return CELL_AUDIO_ERROR_PARAM;
+    return CELL_OK;
+}
+
+s32 cellAudioMiscSetAccessoryVolume(u32 devNum, float volume)
+{
+    (void)devNum;
+    (void)volume;
+    return s_audio_initialized ? CELL_OK : CELL_AUDIO_ERROR_NOT_INIT;
 }
 
 s32 cellAudioGetPortConfig(u32 portNum, CellAudioPortConfig* config)
@@ -1121,18 +1402,26 @@ s32 cellAudioPortGetStatus(u32 portNum, u32* status)
     return CELL_OK;
 }
 
+/* RPCS3_REFERENCE_REVIEWED (RPCS3 commit 2ba2f75bc): the current RPCS3
+ * handlers validate initialization and the public stream/device ranges, then
+ * leave routing as TODO. Keep the same observable contract; this backend has
+ * no personal-audio-device routing implementation to substitute. */
 s32 cellAudioSetPersonalDevice(s32 iPersonalStream, s32 iDevice)
 {
-    (void)iPersonalStream;
-    (void)iDevice;
-    printf("[cellAudio] SetPersonalDevice(stream=%d, device=%d) - stub\n",
-           iPersonalStream, iDevice);
+    if (!s_audio_initialized)
+        return (s32)CELL_AUDIO_ERROR_NOT_INIT;
+    if (iPersonalStream < 0 || iPersonalStream >= 4 ||
+        (iDevice != CELL_AUDIO_PERSONAL_DEVICE_PRIMARY &&
+         (iDevice < 0 || iDevice >= 5)))
+        return (s32)CELL_AUDIO_ERROR_PARAM;
     return CELL_OK;
 }
 
 s32 cellAudioUnsetPersonalDevice(s32 iPersonalStream)
 {
-    (void)iPersonalStream;
-    printf("[cellAudio] UnsetPersonalDevice(stream=%d) - stub\n", iPersonalStream);
+    if (!s_audio_initialized)
+        return (s32)CELL_AUDIO_ERROR_NOT_INIT;
+    if (iPersonalStream < 0 || iPersonalStream >= 4)
+        return (s32)CELL_AUDIO_ERROR_PARAM;
     return CELL_OK;
 }

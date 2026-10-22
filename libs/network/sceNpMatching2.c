@@ -65,7 +65,8 @@ enum {
     EV_GetServerInfo = 0x0001, EV_GetWorldInfoList = 0x0002, EV_SetRoomDataExternal = 0x0004,
     EV_CreateServerContext = 0x0009, EV_DeleteServerContext = 0x000A,
     EV_CreateJoinRoom = 0x0101, EV_JoinRoom = 0x0102, EV_LeaveRoom = 0x0103,
-    EV_KickoutRoomMember = 0x0105, EV_SearchRoom = 0x0106, EV_SendRoomMessage = 0x0108,
+    EV_KickoutRoomMember = 0x0105, EV_SearchRoom = 0x0106,
+    EV_SendRoomChatMessage = 0x0107, EV_SendRoomMessage = 0x0108,
     EV_SetRoomDataInternal = 0x0109, EV_SignalingGetPingInfo = 0x0E01,
 
     ROOM_EV_MemberJoined = 0x1101, ROOM_EV_MemberLeft = 0x1102, ROOM_EV_Kickedout = 0x1103,
@@ -813,6 +814,15 @@ static s32 start(u16 ctxId)
 s32 sceNpMatching2ContextStart(u16 ctxId)                     { return start(ctxId); }
 s32 sceNpMatching2ContextStartAsync(u16 ctxId, u32 timeout)   { (void)timeout; return start(ctxId); }
 
+/* The local start path completes before ContextStartAsync returns, so there
+ * is no outstanding start operation to cancel. Validate the context and
+ * report success for the already-completed cancellation request. */
+s32 sceNpMatching2AbortContextStart(u16 ctxId)
+{
+    return ctx_get(ctxId) ? CELL_OK
+                          : (s32)SCE_NP_MATCHING2_ERROR_CONTEXT_NOT_FOUND;
+}
+
 s32 sceNpMatching2ContextStop(u16 ctxId)
 {
     m2_ctx* c = ctx_get(ctxId);
@@ -1268,26 +1278,35 @@ s32 sceNpMatching2SetRoomDataInternal(u16 ctxId, u32 req, u32 opt, u32 reqId)
     return r;
 }
 
-/* SceNpMatching2SendRoomMessageRequest { u64 roomId; u8 castType; u8 pad[3];
- *   RoomMessageDestination dst (8: unicast u16 | multicast { u16* ids; u32 num });
- *   u32 msg*; u32 msgLen; s32 option } */
-s32 sceNpMatching2SendRoomMessage(u16 ctxId, u32 req, u32 opt, u32 reqId)
+/* RPCS3_REFERENCE_REVIEWED: the room-message and room-chat request structure
+ * layouts match; their request event IDs differ. The SDK header verified the
+ * layout; the local PSNR packet/callback implementation is independent. */
+static s32 send_room_message(u16 ctxId, u32 req, u32 opt, u32 reqId, u16 event)
 {
     REQUIRE_STARTED(c, ctxId);
     if (!req) return (s32)SCE_NP_MATCHING2_ERROR_INVALID_ARGUMENT;
     u64 room = vm_read64(req);
+    if (!c->room.in || c->room.id != room)
+        return (s32)SCE_NP_MATCHING2_ERROR_INVALID_ARGUMENT;
     u8 cast = vm_read8(req + 8);
     u32 msg = vm_read32(req + 20), len = vm_read32(req + 24);
-    if (len > 0xFF00) return (s32)SCE_NP_MATCHING2_ERROR_INVALID_ARGUMENT;
+    if (len > 0xFF00 || (len && !msg))
+        return (s32)SCE_NP_MATCHING2_ERROR_INVALID_ARGUMENT;
     u16 targets[MEMBER_MAX];
     int nt = 0;
     if (cast == CAST_UNICAST) targets[nt++] = vm_read16(req + 12);
     else if (cast == CAST_MULTICAST) {
         u32 ids = vm_read32(req + 12), n = vm_read32(req + 16);
-        for (u32 i = 0; i < n && nt < MEMBER_MAX && ids; i++) targets[nt++] = vm_read16(ids + i * 2);
-    } else targets[nt++] = 0;   /* broadcast / team: everyone */
+        if (!ids || n == 0 || n > MEMBER_MAX || ids > UINT32_MAX - n * 2u)
+            return (s32)SCE_NP_MATCHING2_ERROR_INVALID_ARGUMENT;
+        for (u32 i = 0; i < n; i++) targets[nt++] = vm_read16(ids + i * 2u);
+    } else if (cast == CAST_BROADCAST) targets[nt++] = 0;
+    else return (s32)SCE_NP_MATCHING2_ERROR_INVALID_ARGUMENT;
+    if (len && msg > UINT32_MAX - len)
+        return (s32)SCE_NP_MATCHING2_ERROR_INVALID_ARGUMENT;
 
     u8* body = (u8*)malloc(len + 12);
+    if (!body) return (s32)SCE_NP_MATCHING2_ERROR_OUT_OF_MEMORY;
     s32 r = CELL_OK;
     for (int i = 0; i < nt; i++) {
         u8* p = psnr_put64(body, room);
@@ -1295,12 +1314,22 @@ s32 sceNpMatching2SendRoomMessage(u16 ctxId, u32 req, u32 opt, u32 reqId)
         p = psnr_put16(p, (u16)len);
         if (len) memcpy(p, vm_ptr8(msg), len);
         if (i == nt - 1)
-            r = send_simple(c, ctxId, EV_SendRoomMessage, opt, reqId, PSNR_ROOM_MESSAGE, body, 12 + len);
+            r = send_simple(c, ctxId, event, opt, reqId, PSNR_ROOM_MESSAGE, body, 12 + len);
         else
             np_psnr_request(PSNR_ROOM_MESSAGE, body, 12 + len, NULL, NULL);
     }
     free(body);
     return r;
+}
+
+s32 sceNpMatching2SendRoomMessage(u16 ctxId, u32 req, u32 opt, u32 reqId)
+{
+    return send_room_message(ctxId, req, opt, reqId, EV_SendRoomMessage);
+}
+
+s32 sceNpMatching2SendRoomChatMessage(u16 ctxId, u32 req, u32 opt, u32 reqId)
+{
+    return send_room_message(ctxId, req, opt, reqId, EV_SendRoomChatMessage);
 }
 
 s32 sceNpMatching2GetEventData(u16 ctxId, u32 eventKey, u32 buf, u32 bufLen)

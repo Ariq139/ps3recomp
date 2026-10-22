@@ -3,19 +3,47 @@
 #include "spu_lifted_thread.h"
 #include "spu_coherency.h"
 #include "spu_context.h"
+#include "spu_workload.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 extern uint8_t* vm_base;
+extern uint32_t ps3_spu_image_source_ea(uint32_t img_ea);
 
 /* The lifted-code registry, the dispatcher and the per-context MFC engine
  * table, all in spu_channels.c. */
 int  spu_have_function(uint32_t addr);
 int  spu_image_of_function(uint32_t addr);
+int  spu_have_function_in_image(uint32_t addr, int image_id);
 void spu_indirect_branch(struct spu_context* ctx);
 int  spu_run_with_halt(void (*entry)(struct spu_context*), struct spu_context* ctx);
+
+static int spu_guest_image_id(uint32_t img_ea, int* image_id_out,
+                              uint32_t* source_out, size_t* size_out,
+                              uint64_t* fingerprint_out)
+{
+    if (image_id_out) *image_id_out = -1;
+    if (source_out) *source_out = 0;
+    if (size_out) *size_out = 0;
+    if (fingerprint_out) *fingerprint_out = 0;
+    if (!img_ea || !vm_base) return 0;
+
+    const uint32_t src = ps3_spu_image_source_ea(img_ea);
+    if (!src) return 0;
+    const size_t size = spu_elf_image_size(vm_base + src, 1u << 20);
+    if (!size) return 0;
+
+    const uint64_t fingerprint = spu_workload_fingerprint(vm_base + src, size);
+    int image_id = -1;
+    if (!spu_workload_find_img(fingerprint, &image_id)) return 0;
+    if (image_id_out) *image_id_out = image_id;
+    if (source_out) *source_out = src;
+    if (size_out) *size_out = size;
+    if (fingerprint_out) *fingerprint_out = fingerprint;
+    return 1;
+}
 
 /* Guest memory is big-endian and this file reads descriptors out of it. lv2 has
  * its own copy of this helper; duplicating four lines is cheaper than exporting
@@ -69,6 +97,26 @@ int spu_lifted_thread_available(uint32_t entry)
     return spu_have_function(entry & SPU_LS_MASK);
 }
 
+int spu_lifted_thread_available_for_image(uint32_t entry, uint32_t img_ea)
+{
+    int image_id = -1;
+    uint32_t src = 0;
+    size_t size = 0;
+    uint64_t fingerprint = 0;
+    const int registered = spu_guest_image_id(img_ea, &image_id, &src, &size,
+                                               &fingerprint);
+    const int exact = registered &&
+        spu_have_function_in_image(entry & SPU_LS_MASK, image_id);
+    if (getenv("SPU_IMAGE_MATCH_TRACE")) {
+        fprintf(stderr,
+                "[SPU] image-match img=0x%08X src=0x%08X size=%zu "
+                "fp=0x%016llX entry=0x%05X image_id=%d lifted=%d\n",
+                img_ea, src, size, (unsigned long long)fingerprint,
+                entry & SPU_LS_MASK, registered ? image_id : -1, exact);
+    }
+    return exact;
+}
+
 void spu_lifted_thread_setup(spu_context* ctx, const spu_lifted_thread_desc* d)
 {
     if (!ctx || !d) return;
@@ -86,12 +134,25 @@ void spu_lifted_thread_setup(spu_context* ctx, const spu_lifted_thread_desc* d)
      * case. Asking the registry which image owns the entry point gets the same
      * answer the title's own registration order implies, without the lv2 layer
      * having to know any image ids. */
-    { int img = d->image_id > 0 ? d->image_id : spu_image_of_function(ctx->pc);
-      ctx->image_id = (img >= 0) ? img : 0; }
+    { int img = d->image_id > 0 ? d->image_id : -1;
+      if (img < 0 && d->img_ea &&
+          spu_guest_image_id(d->img_ea, &img, NULL, NULL, NULL) &&
+          spu_have_function_in_image(ctx->pc, img)) {
+          ctx->image_id = img;
+      } else if (img >= 0) {
+          ctx->image_id = img;
+      } else {
+          img = spu_image_of_function(ctx->pc);
+          ctx->image_id = (img >= 0) ? img : 0;
+      }
+    }
 
     if (d->img_ea) spu_deploy_image(ctx, d->img_ea);
 
-    /* sys_spu_thread_argument is four u64s and lv2 puts each in the preferred
+    /* RPCS3_REFERENCE_REVIEWED: the guest ABI lane placement below follows the
+     * cited sys_spu contract and is expressed in this runtime's own types.
+     * See docs/RPCS3_LICENSE_AUDIT.md; this is not license clearance.
+     * sys_spu_thread_argument is four u64s and lv2 puts each in the preferred
      * doubleword of r3..r6 (RPCS3 sys_spu.cpp: gpr[3+i] = from64(0, arg[i])).
      * Lane 0 is the preferred word here, so the u64 occupies lanes 0 and 1 and
      * the rest of the register is zero, which memset already did. */
@@ -121,12 +182,43 @@ void spu_lifted_thread_run(spu_context* ctx, spu_lifted_thread_result* out)
      * drains the tail-transfer chain when it returns normally. */
     spu_run_with_halt(spu_indirect_branch, ctx);
 
+    /* Optional postmortem: preserve the actual local store and registers that
+     * led a guest SPU to stop, including dynamically loaded policy code. */
+    {
+        const char* dir = getenv("SPU_STOP_DUMP");
+        if (dir && *dir) {
+            char path[1024];
+            snprintf(path, sizeof(path), "%s/spu-stop-%X.ls", dir, ctx->spu_id);
+            FILE* dump = fopen(path, "wb");
+            if (dump) { fwrite(ctx->ls, 1, SPU_LS_SIZE, dump); fclose(dump); }
+            snprintf(path, sizeof(path), "%s/spu-stop-%X.txt", dir, ctx->spu_id);
+            dump = fopen(path, "w");
+            if (dump) {
+                fprintf(dump, "image=%d pc=%05X status=%X stop=%X\n",
+                        ctx->image_id, ctx->pc, ctx->status, ctx->stop_code);
+                for (unsigned i = 0; i < 128; ++i) {
+                    unsigned char bytes[16];
+                    memcpy(bytes, &ctx->gpr[i], sizeof(bytes));
+                    fprintf(dump, "r%u=", i);
+                    for (unsigned j = 0; j < 16; ++j) fprintf(dump, "%02X", bytes[j]);
+                    fputc('\n', dump);
+                }
+                fclose(dump);
+            }
+        }
+    }
+
     /* What the SPU meant by stopping. The SPU-side sys_spu_thread_exit ABI
      * writes the status to SPU_WrOutMbox and then executes stop 0x102; lv2 pops
      * that mailbox value as the thread's exit status. The 14-bit stop code is
      * the selector, not the status (CBEA p97, SPU_Status.StopCode): 0x102
      * THREAD_EXIT carries this thread's status, 0x101 GROUP_EXIT the group's. */
-    if (ctx->status == SPU_STATUS_STOPPED_BY_STOP &&
+    extern int spu_group_was_stopped(spu_context* ctx);
+    if (spu_group_was_stopped(ctx)) {
+        /* A peer requested GROUP_EXIT. This cooperative halt is not a guest
+         * fault, and must let the PPU join finish before the next group run. */
+        r.exit_status = 0;
+    } else if (ctx->status == SPU_STATUS_STOPPED_BY_STOP &&
         ctx->stop_code == 0x102u && ctx->ch_out_mbox.count) {
         r.exit_status = (int32_t)ctx->ch_out_mbox.value;
         ctx->ch_out_mbox.count = 0;

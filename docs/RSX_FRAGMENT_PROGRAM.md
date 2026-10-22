@@ -65,7 +65,12 @@ POW_NV30=0x26, TXL_NV40=0x2F, RFL_NV30=0x36).
 
 Branch ops (when DWORD2 bit31 IS_BRANCH set): BRK0 CAL1 IF2 LOOP3 REP4 RET5.
 
-## Decompiler status (MVP)
+> **Status note:** The following feature list is an older MVP snapshot, not a
+> current inventory. Check `libs/video/rsx_fp_decompiler.c` and the backend
+> status in [`RSX_GRAPHICS.md`](RSX_GRAPHICS.md) and [`BUILDING.md`](BUILDING.md)
+> before relying on any item below.
+
+## Decompiler status (historical MVP snapshot)
 Implemented in the HLSL emitter: NOP, MOV, MUL, ADD, MAD, DP3, DP4, MIN, MAX,
 FRC, FLR, RCP, RSQ, EX2, LG2, SLT/SGE/SLE/SGT/SNE/SEQ, COS, SIN, POW, LRP,
 TEX/TXP, KIL. Per-source swizzle, negate, abs, and the dest write-mask are
@@ -76,15 +81,15 @@ pack/unpack (PK*/UP*), DDX/DDY beyond XY, DST/LIT/DP2A/TXD/TXB, branching
 (IF/LOOP/REP/CAL/RET), conditional writes (COND_WRITE_ENABLE), fp16 precision
 differences (H registers are treated as full-precision float4).
 
-### Integration TODO (not done this increment)
-1. Wire `rsx_fp_decompile()` into the D3D12 backend: hash the bytecode at
+### Historical integration checklist
+1. The original checklist said to wire `rsx_fp_decompile()` into the D3D12 backend: hash the bytecode at
    `fragment_program_addr`, decompile once, compile with `D3DCompile`, cache
    the PS blob, and fold the shader identity into the `PsoKey` so the PSO
    cache builds a pipeline per (shader × blend × depth).
-2. **DONE.** Interpolated inputs COL0/COL1/FOG/TEXCOORD0..7 (+ WPOS via
+2. The original checklist marked interpolated inputs COL0/COL1/FOG/TEXCOORD0..7 (+ WPOS via
    SV_POSITION) are plumbed through the passthrough VS + 12-element input
    layout; `input_expr` maps INPUT_SRC accordingly. TC8/TC9/FACING still → 0.
    Caveat: passthrough-VP model (raw attributes forwarded; the vertex program
    is not translated).
-3. Upload fragment-program constants to a constant buffer (the inline CONST
+3. The original checklist left fragment-program constants to a constant buffer (the inline CONST
    slots) and bind textures (depends on `d3d12_bind_texture`, still a stub).

@@ -172,8 +172,8 @@ s32 cellAudioOutGetNumberOfDevice(u32 audioOut)
 
 s32 cellVideoOutGetGamma(u32 videoOut, float* gamma)
 {
-    (void)videoOut;
-    if (!gamma) return CELL_EINVAL;
+    if (!gamma) return CELL_VIDEO_OUT_ERROR_ILLEGAL_PARAMETER;
+    if (videoOut != 0) return CELL_VIDEO_OUT_ERROR_UNSUPPORTED_VIDEO_OUT;
     { float g = s_gamma; uint32_t bits; memcpy(&bits, &g, 4);
       vm_write32((uint32_t)(uintptr_t)gamma, bits); }
     return CELL_OK;
@@ -181,9 +181,13 @@ s32 cellVideoOutGetGamma(u32 videoOut, float* gamma)
 
 s32 cellVideoOutSetGamma(u32 videoOut, float gamma)
 {
-    (void)videoOut;
     printf("[cellAvconfExt] VideoOutSetGamma(%.2f)\n", gamma);
-    if (gamma < 0.8f || gamma > 1.2f) return (s32)0x8002b223;   /* PARAMETER_OUT_OF_RANGE */
+    /* RPCS3 behavior reference (GPL-2.0): cellAvconfExt.cpp.
+     * Independently written parameter validation; no source copied. */
+    if (gamma < 0.8f || gamma > 1.2f)
+        return CELL_VIDEO_OUT_ERROR_PARAMETER_OUT_OF_RANGE;
+    if (videoOut != 0)
+        return CELL_VIDEO_OUT_ERROR_UNSUPPORTED_VIDEO_OUT;
     s_gamma = gamma;
     return CELL_OK;
 }

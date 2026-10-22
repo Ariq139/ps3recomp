@@ -7,6 +7,7 @@
 
 #include "cellNetCtl.h"
 #include "cellSysutil.h"   /* cellSysutilQueueEvent, CELL_SYSUTIL_MAX_CALLBACKS */
+#include "../../runtime/memory/vm.h" /* vm_to_host for guest callback payloads */
 #include "../../runtime/ppu/ppu_memory.h"   /* vm_base, vm_write32 (guest mem) */
 #include "ps3emu/endian.h" /* ps3_bswap32 -- CellNetCtlInfo/NatInfo integer fields are guest big-endian */
 #include "np_psnr.h"      /* np_psnr_identity -- the player name the MAC derives from */
@@ -36,7 +37,11 @@
 
 static int s_netctl_initialized = 0;
 
-/* Offline by default: titles gate their whole online boot path on this state
+/* RPCS3_REFERENCE_REVIEWED: the offline path is based on observed RPCS3
+ * behavior and local guest traces; targeted review did not establish copied
+ * code. See docs/RPCS3_LICENSE_AUDIT.md.
+ *
+ * Offline by default: titles gate their whole online boot path on this state
  * and hang waiting on PSN jobs that can never complete if we claim a live
  * connection. A real console with no link reports Disconnected and games take
  * their offline path (verified against LBP's working RPCS3 boot, where
@@ -281,6 +286,92 @@ s32 cellNetCtlGetNatInfo(CellNetCtlNatInfo* natInfo)
 
     printf("[cellNetCtl] GetNatInfo() -> NAT Type 2\n");
     return CELL_OK;
+}
+
+/* RPCS3 behavior reference (GPL-2.0): cellNetCtl.cpp at checkout commit
+ * 2ba2f75bc. These names are registered there as TODO functions that return
+ * CELL_OK without reading arguments or writing output memory. Keep these
+ * compatibility exports behaviorally identical; no RPCS3 function body is
+ * copied. The callback-bearing cellGameUpdateCheck* APIs below use the local
+ * sysutil completion queue and callback-scoped guest result allocation. */
+s32 cellNetCtlAddHandlerGameInt(void) { return CELL_OK; }
+s32 cellNetCtlConnectGameInt(void) { return CELL_OK; }
+s32 cellNetCtlDelHandlerGameInt(void) { return CELL_OK; }
+s32 cellNetCtlDisconnectGameInt(void) { return CELL_OK; }
+s32 cellNetCtlGetInfoGameInt(void) { return CELL_OK; }
+s32 cellNetCtlGetScanInfoGameInt(void) { return CELL_OK; }
+s32 cellNetCtlGetStateGameInt(void) { return CELL_OK; }
+s32 cellNetCtlScanGameInt(void) { return CELL_OK; }
+s32 cellGameUpdateInit(void) { return CELL_OK; }
+s32 cellGameUpdateTerm(void) { return CELL_OK; }
+s32 cellGameUpdateCheckAbort(void) { return CELL_OK; }
+
+enum {
+    CELL_GAMEUPDATE_RESULT_STATUS_NO_UPDATE = 0,
+    CELL_GAMEUPDATE_RESULT_STATUS_FINISHED = 5
+};
+
+static s32 game_update_queue_result(u32 callback_opd, u32 userdata_ea,
+                                    s32 status, int extended)
+{
+    if (!callback_opd) return CELL_OK;
+    if (!extended) {
+        const u64 args[8] = {(u32)status, (u32)CELL_OK, userdata_ea, 0, 0, 0, 0, 0};
+        return cellSysutilQueueGuestCallbackArgs(callback_opd, args);
+    }
+
+    /* RPCS3's CellGameUpdateResult is 16 bytes: status, error_code, a six-byte
+     * app version, and two padding bytes. All integer fields are guest BE. */
+    u8 payload[16] = {0};
+    u32 be_status = ps3_bswap32((u32)status);
+    u32 be_error = ps3_bswap32((u32)CELL_OK);
+    memcpy(payload, &be_status, sizeof(be_status));
+    memcpy(payload + 4, &be_error, sizeof(be_error));
+    const u64 args[8] = {0, userdata_ea, 0, 0, 0, 0, 0, 0};
+    return ps3_sysutil_queue_guest_callback_payload(callback_opd, args, 0,
+                                                    payload, sizeof(payload));
+}
+
+s32 cellGameUpdateCheckStartAsync(u32 param_ea, u32 callback_opd,
+                                  u32 userdata_ea)
+{
+    (void)param_ea;
+    return game_update_queue_result(callback_opd, userdata_ea,
+                                    CELL_GAMEUPDATE_RESULT_STATUS_NO_UPDATE, 0);
+}
+
+s32 cellGameUpdateCheckFinishAsync(u32 callback_opd, u32 userdata_ea)
+{
+    return game_update_queue_result(callback_opd, userdata_ea,
+                                    CELL_GAMEUPDATE_RESULT_STATUS_FINISHED, 0);
+}
+
+s32 cellGameUpdateCheckStartWithoutDialogAsync(u32 callback_opd,
+                                               u32 userdata_ea)
+{
+    return game_update_queue_result(callback_opd, userdata_ea,
+                                    CELL_GAMEUPDATE_RESULT_STATUS_NO_UPDATE, 0);
+}
+
+s32 cellGameUpdateCheckStartAsyncEx(u32 param_ea, u32 callback_opd,
+                                    u32 userdata_ea)
+{
+    (void)param_ea;
+    return game_update_queue_result(callback_opd, userdata_ea,
+                                    CELL_GAMEUPDATE_RESULT_STATUS_NO_UPDATE, 1);
+}
+
+s32 cellGameUpdateCheckFinishAsyncEx(u32 callback_opd, u32 userdata_ea)
+{
+    return game_update_queue_result(callback_opd, userdata_ea,
+                                    CELL_GAMEUPDATE_RESULT_STATUS_FINISHED, 1);
+}
+
+s32 cellGameUpdateCheckStartWithoutDialogAsyncEx(u32 callback_opd,
+                                                 u32 userdata_ea)
+{
+    return game_update_queue_result(callback_opd, userdata_ea,
+                                    CELL_GAMEUPDATE_RESULT_STATUS_NO_UPDATE, 1);
 }
 
 s32 cellNetCtlAddHandler(cellNetCtlHandler handler, void* arg, s32* hid)

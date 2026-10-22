@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <setjmp.h>
+#include <stdatomic.h>
 #ifndef _WIN32
 #include <sched.h>   /* sched_yield */
 #endif
@@ -120,6 +121,18 @@ void spu_restart_dispatch(spu_context* ctx)
     if (s_spu_halt_armed) longjmp(s_spu_halt_env, 2);
     fprintf(stderr, "[spu] non-local return outside execution driver at 0x%05X\n", ctx->pc);
     ctx->status = SPU_STATUS_STOPPED_BY_HALT;
+}
+
+/* LV2 installs the group predicate; standalone workloads have no group. */
+int (*g_spu_group_stop_hook)(uint32_t) = NULL;
+int spu_group_was_stopped(spu_context* ctx)
+{
+    return g_spu_group_stop_hook && ctx->spu_group_id &&
+           g_spu_group_stop_hook(ctx->spu_group_id);
+}
+void spu_check_group_stop(spu_context* ctx)
+{
+    if (spu_group_was_stopped(ctx)) spu_halt(ctx);
 }
 
 /* SPU->PPU outbound-mailbox delivery hook. The SPU writing WrOutMbox /
@@ -319,9 +332,16 @@ static DWORD WINAPI spu_pcsample_thread(LPVOID p)
 
 static mfc_engine* mfc_for(spu_context* ctx)
 {
-    { static volatile LONG started = 0; const char* e;
-      if (!started && (e = getenv("SPU_PCSAMPLE")) && !InterlockedExchange(&started, 1))
-          CreateThread(NULL, 0, spu_pcsample_thread, (LPVOID)(uintptr_t)(atoi(e) * 1000), 0, NULL); }
+    { static volatile LONG checked = 0;
+      if (!checked && InterlockedCompareExchange(&checked, 1, 0) == 0) {
+          const char* e = getenv("SPU_PCSAMPLE");
+          int seconds = e ? atoi(e) : 0;
+          if (seconds > 0) {
+              HANDLE thread = CreateThread(NULL, 0, spu_pcsample_thread,
+                  (LPVOID)(uintptr_t)((DWORD)seconds * 1000u), 0, NULL);
+              if (thread) CloseHandle(thread);
+          }
+      } }
     AcquireSRWLockShared(&s_mfc_claim_lock);
     for (spu_mfc_slot* slot = s_mfc_slots; slot; slot = slot->next) {
         if (slot->ctx == ctx) {
@@ -815,6 +835,7 @@ static int channel_is_mfc(uint32_t ch)
  * ===========================================================================*/
 void spu_wrch(spu_context* ctx, uint32_t channel, u128 value)
 {
+    spu_check_group_stop(ctx);
     /* SPU_CHHIST=1: which channels a job actually touches, and how often. A
      * worker that never issues an MFC command is either not being handed its
      * work descriptor or is waiting on a channel we never satisfy; the channel
@@ -1021,6 +1042,7 @@ static void spu_ch_wait(spu_context* ctx, uint32_t channel, const char* op)
     {
         unsigned long long start = GetTickCount64(), next_hb = 2000;
         while (!spu_ch_ready(ctx, channel)) {
+            spu_check_group_stop(ctx);
             AcquireSRWLockExclusive((SRWLOCK*)&ctx->ch_wait_lock);
             if (!spu_ch_ready(ctx, channel))
                 SleepConditionVariableSRW((CONDITION_VARIABLE*)&ctx->ch_wait_cv,
@@ -1047,6 +1069,7 @@ static void spu_ch_wait(spu_context* ctx, uint32_t channel, const char* op)
  * ===========================================================================*/
 u128 spu_rdch(spu_context* ctx, uint32_t channel)
 {
+    spu_check_group_stop(ctx);
     { static int s_c = -1; if (s_c < 0) { const char* e = getenv("SPU_CHHIST"); s_c = e ? (atoi(e) > 0 ? atoi(e) : 2000) : 0; }
       if (s_c) { static unsigned long long r[128]; static unsigned long long n;
           r[channel & 127]++;
@@ -1351,7 +1374,7 @@ typedef struct {
  * the real workload; the overflow is now loud (see spu_register_function). */
 #define SPU_FN_REGISTRY_MAX 262144
 static spu_reg_entry s_registry[SPU_FN_REGISTRY_MAX];
-static uint32_t s_registry_count = 0;
+static _Atomic(uint32_t) s_registry_count = 0;
 
 /* Accessor for the sampling profiler in ppu_loader.cpp. Its address->function
  * map is built from the PPU table alone, which leaves the SPU-lifted bodies as
@@ -1419,7 +1442,6 @@ void spu_register_function(uint32_t addr, spu_fn fn)
     s_registry[i].addr = addr;
     s_registry[i].fn = fn;
     s_registry[i].image_id = s_reg_image;
-    s_registry_count = i + 1;
     uint32_t h = spu_fn_hash(addr);
     s_hash_next[i] = 0;
     if (s_hash_head[h] == 0)
@@ -1427,6 +1449,7 @@ void spu_register_function(uint32_t addr, spu_fn fn)
     else
         s_hash_next[s_hash_tail[h] - 1] = i + 1;
     s_hash_tail[h] = i + 1;
+    atomic_store_explicit(&s_registry_count, i + 1, memory_order_release);
 }
 
 /* Report a CROSS-IMAGE match: the registry served a function some other image
@@ -1508,13 +1531,47 @@ int spu_have_function(uint32_t addr)
     return spu_image_of_function(addr) >= 0;
 }
 
+/* Exact-image probe for SPU thread startup. Unlike spu_lookup(), this does not
+ * accept image 0 as a wildcard: distinct programs can share an LS entry point. */
+int spu_have_function_in_image(uint32_t addr, int image_id)
+{
+    for (uint32_t n = s_hash_head[spu_fn_hash(addr)]; n; n = s_hash_next[n - 1]) {
+        const spu_reg_entry* e = &s_registry[n - 1];
+        if (e->addr == addr && e->image_id == image_id)
+            return 1;
+    }
+    return 0;
+}
+
 /* The pure interpreter's fast-path "is this LSA already lifted?" probe
  * (spu_interp.c, rejoin path). It IS the registry lookup, so overlay eviction and
  * self-modifying-code invalidation are honored automatically. Lived in
  * spu_fn_registry.c before the registry was consolidated into this TU. */
 spu_lifted_fn spu_lifted_lookup(const spu_context* ctx, uint32_t lsa)
 {
-    return (spu_lifted_fn)spu_lookup(lsa, ctx ? ctx->image_id : 0);
+    /* The interpreter probes every instruction, including loop bodies with no
+     * lifted entry. Cache misses too, without borrowing another image's code.
+     * Registrations are append-only; publishing the completed registry count
+     * invalidates cached misses when a new image/function becomes available. */
+    typedef struct {
+        uint32_t epoch, lsa;
+        int image_id;
+        spu_lifted_fn fn;
+    } lookup_cache_entry;
+    static _Thread_local lookup_cache_entry cache[256];
+    const int image_id = ctx ? ctx->image_id : 0;
+    const uint32_t epoch =
+        atomic_load_explicit(&s_registry_count, memory_order_acquire) + 1u;
+    const uint32_t slot = ((lsa >> 2) ^ ((uint32_t)image_id * 2654435761u)) & 255u;
+    lookup_cache_entry* entry = &cache[slot];
+    if (entry->epoch == epoch && entry->lsa == lsa && entry->image_id == image_id)
+        return entry->fn;
+    spu_lifted_fn fn = (spu_lifted_fn)spu_lookup(lsa, image_id);
+    entry->lsa = lsa;
+    entry->image_id = image_id;
+    entry->fn = fn;
+    entry->epoch = epoch;
+    return fn;
 }
 
 /* ---- Swappable code overlays (see spu_context.resident_ovl) --------------
@@ -1845,7 +1902,11 @@ void spu_spurs_taskset_syscall(spu_context* ctx)   /* non-static: also called by
         spu_halt(ctx);          /* longjmp out to spu_run_with_halt; post-run writes exit code */
         return;
     }
-    /* WAIT_SIGNAL(2): REAL semantics (RPCS3 spursTasksetProcessSyscall) --
+    /* RPCS3_PROVENANCE_REVIEW: WAIT_SIGNAL(2) implements behavior described
+     * by RPCS3 spursTasksetProcessSyscall and guest traces. No copied source
+     * is established here; see docs/RPCS3_LICENSE_AUDIT.md.
+     *
+     * WAIT_SIGNAL(2): REAL semantics (RPCS3 spursTasksetProcessSyscall) --
      * consume the task's bit in the guest taskset's `signalled` bitset, or
      * SLEEP this task's host thread until _cellSpursSendSignal /
      * cellSpursEventFlagSet delivers one (the FMOD mixer's flag-A wait path:
@@ -2095,19 +2156,14 @@ static int spu_smc_microstep(spu_context* ctx)
         /* Stop at the drain's return point too: it sits mid-function, so it is
          * no lifted entry, and a job's return would otherwise run on through
          * the caller's code (GH3's song-freeze; see drain_ret_pc). */
-        const uint32_t return_pc = ctx->drain_ret_pc;
-        uint32_t result = spu_interp_run_until(ctx, pc, return_pc);
-        /* A live interpreter rejoin is a transfer, not a host return. Nested
-         * drains can repair an empty trampoline, but the top-level driver
-         * otherwise ends the run before executing the lifted target.
-         * An already-owning drain must retain its own host continuation;
-         * stopped states and diagnostic exits keep their existing behavior. */
-        if (ctx->image_id >= 0 && (ctx->status & SPU_STATUS_RUNNING) &&
-            (!return_pc || (ctx->pc & SPU_LS_MASK) != return_pc) &&
-            spu_lifted_lookup(ctx, ctx->pc)) {
+        uint32_t result = spu_interp_run_until(ctx, pc, ctx->drain_ret_pc);
+        /* An interpreter rejoin is a guest continuation, not completion of
+         * the host execution driver. Publish it just as the branch cases
+         * above do. A matched call return belongs to its live drain frame. */
+        if (ctx->status == SPU_STATUS_RUNNING &&
+            (!ctx->drain_ret_pc ||
+             (ctx->pc & 0x3FFFCu) != (ctx->drain_ret_pc & 0x3FFFCu)))
             g_spu_trampoline_fn = spu_indirect_branch;
-            return 1;
-        }
         return result ? 1 : 0;
     }
     { static int _n = 0; if (PS3_LOG_FIRST(_n, 4))
@@ -2118,12 +2174,28 @@ static int spu_smc_microstep(spu_context* ctx)
 
 void spu_indirect_branch(spu_context* ctx)
 {
+    extern void spu_group_pause_point(uint32_t group_id);
+    spu_group_pause_point(ctx->spu_group_id);
+    spu_check_group_stop(ctx);
     /* Real SPU bi/bisl mask the target to the 256 KB local store; the high bits
      * of a computed pointer (e.g. a packed handle like 0x7a028803) are ignored.
      * Without this, any indirect branch through such a value fails the lookup
      * and falls into branch-to-0. All lifted funcs live below SPU_LS_SIZE, so
      * masking is a no-op for already-valid targets. */
     ctx->pc &= SPU_LS_MASK;
+    if (ctx->spurs_job_services && ctx->pc == 0x3FF10u) {
+        /* Job-manager DMA progress callback. Read the actual MFC completion
+         * mask; do not manufacture a job result or clear guest busy flags. */
+        u128 all = spu_make_preferred_u32(0xFFFFFFFFu);
+        u128 immediate = spu_make_preferred_u32(0);
+        uint32_t saved_mask = ctx->mfc_tag_mask;
+        spu_wrch(ctx, MFC_WrTagMask, all);
+        spu_wrch(ctx, MFC_WrTagUpdate, immediate);
+        ctx->gpr[3] = spu_rdch(ctx, MFC_RdTagStat);
+        spu_wrch(ctx, MFC_WrTagMask, spu_make_preferred_u32(saved_mask));
+        ctx->pc = ctx->gpr[0]._u32[0] & SPU_LS_MASK;
+        return;
+    }
     /* Interrupt-return register restore (see spu_drain.c spu_irq_regs_save):
      * the WWS handler's save/restore shim lives at unlifted top-of-LS, so we
      * enforce the preserve-all-registers hardware contract here -- the first

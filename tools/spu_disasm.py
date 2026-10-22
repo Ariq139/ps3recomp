@@ -107,6 +107,11 @@ RI18_TABLE: dict[int, str] = {
 # opcodes share the top 8 bits with RI10 entries (e.g. brz op9=0x040 vs
 # shlhi op8=0x20, brnz op9=0x042 vs shli op8=0x21).
 RI16_TABLE: dict[int, str] = {
+    # RPCS3_PROVENANCE_REVIEW_REQUIRED: commit 7a02d919 says these opcode
+    # mappings were rebuilt from RPCS3; SPU_RR below is explicitly described
+    # as verbatim. RPCS3 is GPL-2.0 and this repository declares MIT. This
+    # marker records provenance, not license clearance. See
+    # docs/RPCS3_LICENSE_AUDIT.md before redistribution.
     # --- Rebuilt from the authoritative SPU ISA opcode table (rpcs3
     # SPUOpcodes.h). The previous table had lqr/stqr/fsmbi WRONGLY excluded
     # (mis-decoded as RI10 rotate-immediates) and brhz/brhnz/stqa/lqa/hbra at
@@ -226,6 +231,9 @@ RR_TABLE_CORRECT: dict[int, str] = {
 
 # Let's define the real SPU 11-bit RR opcodes properly
 SPU_RR: dict[int, str] = {
+    # RPCS3_PROVENANCE_REVIEW_REQUIRED: the following mapping is described as
+    # rebuilt verbatim from RPCS3's SPU decoder. See the audit note above and
+    # docs/RPCS3_LICENSE_AUDIT.md; this comment is not license clearance.
     # --- Rebuilt verbatim from the authoritative SPU ISA opcode table (rpcs3
     # SPUOpcodes.h). Key = 11-bit opcode (insn >> 21). The RI8 float
     # conversions (cflts/cfltu/csflt/cuflt) are decoded separately in
@@ -552,6 +560,11 @@ def spu_decode(insn: int, addr: int = 0) -> SPUInstruction:
         if mne == "stop":
             code = insn & 0x3FFF
             result.operands = f"0x{code:X}"
+            return result
+        # DFTSV is encoded in the RR opcode space, but RB's seven bits are an
+        # unsigned special-value selector rather than a register number.
+        if mne == "dftsv":
+            result.operands = f"$r{rt}, $r{ra}, {rb & 0x7F}"
             return result
         # nop/sync/dsync: no real operand consumed by the ISA semantics.
         if mne in ("lnop", "nop", "sync", "dsync"):

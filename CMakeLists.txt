@@ -132,9 +132,9 @@ target_include_directories(ps3recomp_runtime PRIVATE
 if(WIN32)
     target_link_libraries(ps3recomp_runtime PRIVATE
         ws2_32      # Winsock for network modules
-        xinput      # XInput for gamepad
         ole32       # COM for WASAPI audio
         bcrypt      # BCryptGenRandom for SSL RNG
+        dxguid      # IID_IDXGIFactory6 used by the D3D12 backend
     )
 else()
     # cellPad and cellAudio select their SDL2 backends unconditionally off
@@ -550,6 +550,7 @@ if(UNIX)
                     --out "${SMOKE_GEN}/ppu_hle_nids.cpp" --all
             DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_hle_nids.py"
                     "${CMAKE_CURRENT_SOURCE_DIR}/tools/nid_database.py"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tools/hle_special_exports.json"
             COMMENT "Generating the HLE NID -> handler table")
 
         add_executable(ps3recomp_boot_smoke

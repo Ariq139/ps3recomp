@@ -11,6 +11,8 @@
  *    rights, so both bits together is a valid request;
  *  - the main-memory (0x0/0x1), user-64K/sys_memory (0x2), RSX-local (0xC)
  *    and RawSPU-MMIO (0xE) segments are reservation-capable;
+ *  - this runtime's configured primary/spill sys_memory arenas keep those
+ *    rights when relocated outside the usual user-memory segment;
  *  - private SPU MMIO (0xF) refuses RawSPU access with EPERM, and allows
  *    SPU threads;
  *  - the PPU stack segment (0xD) refuses with EPERM;
@@ -22,6 +24,7 @@
 #include "lv2_lock_line.h"
 
 #include "sys_vm.h"                       /* SYS_VM_REGION_*, g_sys_vm_maps */
+#include "sys_memory.h"                   /* configured sys_memory arenas */
 
 #include "../../include/ps3emu/error_codes.h"
 
@@ -52,6 +55,15 @@ int64_t lv2_spu_lock_line_classify(uint32_t addr, uint64_t flags)
         return (int64_t)(int32_t)CELL_EPERM;
 
     default:
+        /* The flat runtime can relocate sys_memory outside PS3 segment 0x2.
+         * Those arenas retain the same SPU access rights as user memory.
+         * In particular, P5's debug port uses 0x30200000..0x40000000: treating
+         * it as an unmapped segment makes libsre reject a valid SPURS area.
+         * As with segment 0x2 above, classify the arena, not individual pages. */
+        if ((addr >= SYS_MEM_ALLOC_BASE && addr < SYS_MEM_ALLOC_END) ||
+            (addr >= SYS_MEM_ALLOC_SPILL_BASE && addr < SYS_MEM_ALLOC_SPILL_END)) {
+            return 0;
+        }
         /* sys_vm mappings live in the one 256 MB window sys_vm.h tracks.
          * RPCS3 answers EPERM for an address a mapping covers, EINVAL for
          * a hole in that region (a mapping reserves all of it), and EINVAL

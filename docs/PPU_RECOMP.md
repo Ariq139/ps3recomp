@@ -1,5 +1,12 @@
 # PPU Static Recompilation — loader, ISA, HLE, boot
 
+> **Historical project snapshot.** The Uncharted-specific measurements and
+> boot status below describe an earlier prototype, not current P5 project
+> coverage. Current per-title gaps are recorded in
+> [`UNIMPLEMENTED_AUDIT.md`](UNIMPLEMENTED_AUDIT.md); `tools/ppu_lifter.py` is
+> the source of truth for current instruction lowering. Reachability and runtime
+> correctness still require target evidence.
+
 The PPU half of the recompiler. Where the RSX/SPU work is the **runtime** that a
 recompiled game links against, this is the path that turns a game's PowerPC code
 into a native host executable: disassemble → lift to C → load → link with the

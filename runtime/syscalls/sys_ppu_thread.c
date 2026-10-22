@@ -1319,7 +1319,10 @@ void sys_ppu_thread_init(lv2_syscall_table* tbl)
     }
 #endif
 
-    lv2_syscall_register(tbl, SYS_PPU_THREAD_CREATE,              sys_ppu_thread_create);
+    /* RPCS3 maps syscall 41 to _sys_ppu_thread_exit. The public
+     * sys_ppu_thread_create API is handled separately by sysPrxForUser HLE; its
+     * argument list is not the kernel _sys_ppu_thread_create ABI at syscall
+     * 52, so do not install that higher-level handler in the raw syscall table. */
     lv2_syscall_register(tbl, SYS_PPU_THREAD_EXIT,                sys_ppu_thread_exit);
     lv2_syscall_register(tbl, SYS_PPU_THREAD_YIELD,               sys_ppu_thread_yield);
     lv2_syscall_register(tbl, SYS_PPU_THREAD_JOIN,                sys_ppu_thread_join);

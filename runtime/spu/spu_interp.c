@@ -83,6 +83,7 @@ static void spu_decode1(uint32_t insn, uint32_t pc, spu_ins* d) {
     /* RR (11) */
     if ((d->op = spu_dec_rr(op11)) != SPU_word) {
         if (d->op == SPU_stop) d->imm = insn & 0x3FFF;
+        else if (d->op == SPU_dftsv) d->imm = d->rb & 0x7F;
         return;
     }
     /* RI7 (11) rotate/shift/gen-control immediates */
@@ -145,7 +146,7 @@ static int spu_step(spu_context* ctx) {
     case SPU_cg:   DST = spu_cg(A,B); break;
     case SPU_cgx:  DST = spu_cgx(A,B,DST); break;
     case SPU_mpyi: DST = spu_mpyi(A,I); break;
-    case SPU_mpyui: DST = spu_mpyui(A,I); break;
+    case SPU_mpyui:DST = spu_mpyui(A,I); break;
     /* logical */
     case SPU_and: DST = spu_and(A,B); break;
     case SPU_or:  DST = spu_or(A,B); break;
@@ -250,6 +251,20 @@ static int spu_step(spu_context* ctx) {
     case SPU_fma:  DSTC = spu_fma(A,B,T); break;    /* RRR: dest=rc */
     case SPU_fms:  DSTC = spu_fms(A,B,T); break;
     case SPU_fnms: DSTC = spu_fnms(A,B,T); break;
+    /* double precision arithmetic and comparisons (two 64-bit lanes) */
+    case SPU_dfa:    DST = spu_dfa(A,B); break;
+    case SPU_dfs:    DST = spu_dfs(A,B); break;
+    case SPU_dfm:    DST = spu_dfm(A,B); break;
+    case SPU_dfceq:  DST = spu_dfceq(A,B); break;
+    case SPU_dfcmeq: DST = spu_dfcmeq(A,B); break;
+    case SPU_dfcgt:  DST = spu_dfcgt(A,B); break;
+    case SPU_dfcmgt: DST = spu_dfcmgt(A,B); break;
+    case SPU_dftsv:  DST = spu_dftsv(A,I); break;
+    /* DFMA family reads old RT as its third source, then replaces RT. */
+    case SPU_dfma:  DST = spu_dfma(A,B,DST); break;
+    case SPU_dfms:  DST = spu_dfms(A,B,DST); break;
+    case SPU_dfnms: DST = spu_dfnms(A,B,DST); break;
+    case SPU_dfnma: DST = spu_dfnma(A,B,DST); break;
     /* immediate byte/halfword compares */
     case SPU_ceqbi: DST = spu_ceqbi(A,I); break;
     case SPU_cgtbi: DST = spu_cgtbi(A,I); break;
@@ -259,20 +274,20 @@ static int spu_step(spu_context* ctx) {
     case SPU_clgthi:DST = spu_clgthi(A,I); break;
     /* integer / byte extras */
     case SPU_bg:    DST = spu_bg(A,B); break;
-    case SPU_bgx:   DST = spu_bgx(A,B,DST); break;   /* RR: rt is accumulator + dest */
+    case SPU_bgx:   DST = spu_bgx(A,B,DST); break;
     case SPU_absdb: DST = spu_absdb(A,B); break;
     case SPU_avgb:  DST = spu_avgb(A,B); break;
     case SPU_sumb:  DST = spu_sumb(A,B); break;
     case SPU_mpys:  DST = spu_mpys(A,B); break;
     case SPU_mpyhh: DST = spu_mpyhh(A,B); break;
     case SPU_mpyhhu:DST = spu_mpyhhu(A,B); break;
-    case SPU_mpyhha: DST = spu_mpyhha(A,B,DST); break;   /* RR (0x346): rt is accumulator + dest, NOT RRR */
+    case SPU_mpyhha:DST = spu_mpyhha(A,B,DST); break;
     case SPU_mpyhhau:DST = spu_mpyhhau(A,B,DST); break;
     /* rotate / shift extras */
     case SPU_rothm:    DST = spu_rothm(A,B); break;
-    case SPU_rothmi:   DST = spu_rothmi(A,I); break;
+    case SPU_rothmi:   DST = spu_rothmi(A,(int)I); break;
     case SPU_rotmah:   DST = spu_rothma(A,B); break;
-    case SPU_rotmahi:  DST = spu_rotmahi(A,I); break;
+    case SPU_rotmahi:  DST = spu_rotmahi(A,(int)I); break;
     case SPU_rotqmbi:  DST = spu_rotqmbi(A,B); break;
     case SPU_rotqmbii: DST = spu_rotqmbii(A,(int)I); break;
     case SPU_rotqbybi: DST = spu_rotqbybi(A,B); break;
@@ -281,26 +296,20 @@ static int spu_step(spu_context* ctx) {
     /* channels */
     case SPU_wrch: spu_wrch(ctx, d.ch, DST); break;
     case SPU_rdch: DST = spu_rdch(ctx, d.ch); break;
-    case SPU_rchcnt: DST = spu_pref_u32(spu_rchcnt(ctx, d.ch)); break;   /* count in the preferred word, rest zero (as the lifter) */
+    /* Scalar channel counts occupy only the preferred word; keep interpreted
+     * execution identical to the lifted path (and RPCS3's from32r result). */
+    case SPU_rchcnt: DST = spu_pref_u32(spu_rchcnt(ctx, d.ch)); break;
+    /* RPCS3 SPUInterpreter.cpp::MFSPR clears RT because its current model
+     * returns zero for every SPR. Keep interpreted execution consistent with
+     * the existing lifted helper; MTSpr remains ignored in RPCS3 too. */
+    case SPU_mfspr: DST = spu_mfspr(A); break;
+    /* RPCS3's fast SPU interpreter clears the whole RT for FSCRRD and ignores
+     * FSCRWR. The lifted helper already implements the same zero result. */
+    case SPU_fscrrd: DST = spu_zero(); break;
     /* hints / no-ops */
     case SPU_nop: case SPU_lnop: case SPU_sync: case SPU_dsync:
     case SPU_hbr: case SPU_hbra: case SPU_hbrr: case SPU_mtspr:
     case SPU_fscrwr: break;
-    case SPU_mfspr: DST = spu_mfspr(A); break;      /* SPRs read as zero */
-    case SPU_fscrrd: DST = spu_fscrrd(A); break;    /* FPSCR reads as zero */
-    /* double precision */
-    case SPU_dfa:  DST = spu_dfa(A,B); break;
-    case SPU_dfs:  DST = spu_dfs(A,B); break;
-    case SPU_dfm:  DST = spu_dfm(A,B); break;
-    case SPU_dfma: DST = spu_dfma(A,B,DST); break;   /* RR: rt is accumulator + dest */
-    case SPU_dfms: DST = spu_dfms(A,B,DST); break;
-    case SPU_dfnms:DST = spu_dfnms(A,B,DST); break;
-    case SPU_dfnma:DST = spu_dfnma(A,B,DST); break;
-    case SPU_dfceq:  DST = spu_dfceq(A,B); break;
-    case SPU_dfcgt:  DST = spu_dfcgt(A,B); break;
-    case SPU_dfcmeq: DST = spu_dfcmeq(A,B); break;
-    case SPU_dfcmgt: DST = spu_dfcmgt(A,B); break;
-    case SPU_dftsv:  DST = spu_dftsv(A, (int32_t)(d.rb & 0x7F)); break;   /* I7 sits in the rb field */
     /* control flow */
     case SPU_br: case SPU_bra: next = d.tgt; break;
     case SPU_brsl: case SPU_brasl: DST = spu_link((pc + 4) & 0x3FFFC); next = d.tgt;
@@ -309,34 +318,18 @@ static int spu_step(spu_context* ctx) {
     case SPU_brnz: if (PREF(DST) != 0) next = d.tgt; break;
     case SPU_brhz: if ((PREF(DST) & 0xFFFF) == 0) next = d.tgt; break;
     case SPU_brhnz:if ((PREF(DST) & 0xFFFF) != 0) next = d.tgt; break;
-    /* bi/iret carry the interrupt enable/disable bits (E = 0x40000 sets
-     * int_enable, D = 0x80000 clears it), effective when the branch is taken,
-     * exactly as the lifter decodes them. */
-    #define SPU_IED_BITS() do { \
-        if (insn & 0x40000u) ctx->int_enable = 1; \
-        else if (insn & 0x80000u) ctx->int_enable = 0; \
-    } while (0)
-    case SPU_bi:   next = PREF(A) & 0x3FFFC; SPU_IED_BITS(); break;
-    case SPU_bisl: { uint32_t tg = PREF(A) & 0x3FFFC;   /* read ra BEFORE the link write: rt may alias ra */
-        DST = spu_link((pc + 4) & 0x3FFFC); next = tg; break; }
-    case SPU_bisled: { uint32_t tg = PREF(A) & 0x3FFFC;   /* branch when an enabled event is pending */
-        DST = spu_link((pc + 4) & 0x3FFFC);
-        if ((__atomic_load_n(&ctx->event_status, __ATOMIC_ACQUIRE) & ctx->event_mask) != 0) {
-            next = tg;
-            SPU_IED_BITS(); }   /* E/D effective when taken, like the lift */
-        break; }
-    case SPU_iret: next = ctx->srr0 & 0x3FFFC;
-        /* The handler preserves every register: on a return to the point the
-         * interrupt was taken, restore the register file saved there. The
-         * lifted dispatch path does this in spu_irq_regs_maybe_restore; an iret
-         * executed here has to as well, or the snapshot stays armed and later
-         * lands on an unrelated dispatch. */
-        SPU_IED_BITS();
-        if (ctx->irq_saved && next == (ctx->irq_resume_pc & SPU_LS_MASK)) {
-            memcpy(ctx->gpr, ctx->irq_gpr, sizeof ctx->irq_gpr);
-            ctx->irq_saved = 0;
-        }
+    case SPU_bi:   next = PREF(A) & 0x3FFFC; break;
+    case SPU_bisl: DST = spu_link(pc + 4); next = PREF(A) & 0x3FFFC; break;
+    case SPU_bisled: {
+        /* RPCS3's BISLED captures the branch target before writing RT because
+         * RA and RT may alias. It updates the link unconditionally and only
+         * takes the branch while an enabled event is pending. */
+        uint32_t target = PREF(A) & 0x3FFFC;
+        DST = spu_link(pc + 4);
+        if (ctx->event_status & ctx->event_mask) next = target;
         break;
+    }
+    case SPU_iret: next = ctx->srr0 & 0x3FFFC; break;
     case SPU_biz:  if (PREF(DST) == 0) next = PREF(A) & 0x3FFFC; break;
     case SPU_binz: if (PREF(DST) != 0) next = PREF(A) & 0x3FFFC; break;
     case SPU_bihz: if ((PREF(DST) & 0xFFFF) == 0) next = PREF(A) & 0x3FFFC; break;
@@ -352,7 +345,48 @@ static int spu_step(spu_context* ctx) {
         int hit = (d.op==SPU_heq||d.op==SPU_heqi)   ? (a == rhs)
                 : (d.op==SPU_hgt||d.op==SPU_hgti)   ? ((int32_t)a > (int32_t)rhs)
                 :                                     (a > rhs);      /* hlgt/hlgti */
-        if (hit) { extern void spu_trace_dump(uint32_t); spu_trace_dump(pc);
+        if (hit) {
+                   if (getenv("SPU_ASSERT_TRACE"))
+                       fprintf(stderr, "[spu-assert] image=%d spu=0x%X pc=0x%05X op=%s "
+                               "insn=%08X ra=r%u:%08X rb=r%u:%08X imm=%08X r0=%08X r1=%08X\n",
+                               ctx->image_id, ctx->spu_id, pc, spu_op_name[d.op], insn,
+                               d.ra, PREF(A), d.rb, PREF(B), (uint32_t)I,
+                               PREF(ctx->gpr[0]), PREF(ctx->gpr[1]));
+                   if (getenv("SPU_ASSERT_DUMP") && ctx->image_id == 104 &&
+                       pc == 0x1320) {
+                       static int ls_dumped = 0;
+                       static unsigned seen_spus = 0;
+                       if (!ls_dumped && ctx->spu_id == 0x2000) {
+                           ls_dumped = 1;
+                           FILE* f = fopen("gfd-spu-image104-ls.bin", "wb");
+                           if (f) {
+                               fwrite(ctx->ls, 1, SPU_LS_SIZE, f);
+                               fclose(f);
+                           }
+                       }
+                       unsigned sid = ctx->spu_id - 0x2000u;
+                       if (sid < 6 && !(seen_spus & (1u << sid))) {
+                           seen_spus |= 1u << sid;
+                           fprintf(stderr,
+                                   "[spu-assert-regs] spu=0x%X mfc={lsa:%05X eah:%08X eal:%08X} "
+                                   "r11=%08X/%08X/%08X/%08X r13=%08X/%08X/%08X/%08X "
+                                   "r30=%08X/%08X/%08X/%08X r31=%08X/%08X/%08X/%08X "
+                                   "r32=%08X/%08X/%08X/%08X r33=%08X/%08X/%08X/%08X\n",
+                                   ctx->spu_id, ctx->mfc_lsa, ctx->mfc_eah, ctx->mfc_eal,
+                                   ctx->gpr[11]._u32[0], ctx->gpr[11]._u32[1], ctx->gpr[11]._u32[2], ctx->gpr[11]._u32[3],
+                                   ctx->gpr[13]._u32[0], ctx->gpr[13]._u32[1], ctx->gpr[13]._u32[2], ctx->gpr[13]._u32[3],
+                                   ctx->gpr[30]._u32[0], ctx->gpr[30]._u32[1], ctx->gpr[30]._u32[2], ctx->gpr[30]._u32[3],
+                                   ctx->gpr[31]._u32[0], ctx->gpr[31]._u32[1], ctx->gpr[31]._u32[2], ctx->gpr[31]._u32[3],
+                                   ctx->gpr[32]._u32[0], ctx->gpr[32]._u32[1], ctx->gpr[32]._u32[2], ctx->gpr[32]._u32[3],
+                                   ctx->gpr[33]._u32[0], ctx->gpr[33]._u32[1], ctx->gpr[33]._u32[2], ctx->gpr[33]._u32[3]);
+                           for (uint32_t a = 0x2D80; a < 0x2E00; a += 16)
+                               fprintf(stderr, "[spu-assert-line] %05X: %08X %08X %08X %08X\n", a,
+                                       spu_ls_read32(ctx, a), spu_ls_read32(ctx, a+4),
+                                       spu_ls_read32(ctx, a+8), spu_ls_read32(ctx, a+12));
+                           fflush(stderr);
+                       }
+                   }
+                   extern void spu_trace_dump(uint32_t); spu_trace_dump(pc);
                    ctx->pc = pc; ctx->stop_code = 0x1000; ctx->status = SPU_STATUS_STOPPED_BY_HALT; return 1; }
         break; }
     default:
@@ -407,6 +441,16 @@ uint32_t spu_interp_run_until(spu_context* ctx, uint32_t start_lsa, uint32_t sto
     static int _g1in=0;
     uint32_t ring[64]; int rc=0, rn=0;
     for (;;) {
+        /* Cooperate at instruction boundaries, with at most 63 instructions
+         * between checks. Scanning the LV2 group table for every arithmetic
+         * instruction made interpreted codec jobs pay scheduler cost per op.
+         * Channel waits retain their own stop/suspend checks. */
+        if ((steps & 63u) == 0) {
+            extern void spu_group_pause_point(uint32_t group_id);
+            spu_group_pause_point(ctx->spu_group_id);
+            extern void spu_check_group_stop(spu_context* ctx);
+            spu_check_group_stop(ctx);
+        }
         /* Match the lifted path: only synthetic HLE tasks may bypass the
          * resident policy. Real tasksets also store 0xA70 in their API table.
          * Preserve the legacy CRI return convention while invoking the HLE. */

@@ -48,7 +48,10 @@ static int s_open        = 0;
 static int s_started     = 0;
 static u32 s_frame       = 0;
 
-/* PS3_CAMERA=0 reports no camera attached: camera-optional apps (wave) then
+/* RPCS3_REFERENCE_REVIEWED: the optional-camera fallback matches observed
+ * behavior; targeted review did not establish copied code. See
+ * docs/RPCS3_LICENSE_AUDIT.md.
+ * PS3_CAMERA=0 reports no camera attached: camera-optional apps (wave) then
  * fall back to their file-based input, matching RPCS3's no-camera behavior.
  * Default stays attached -- demosaic's whole input is the virtual camera. */
 static int cam_present(void)

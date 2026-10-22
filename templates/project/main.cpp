@@ -61,6 +61,7 @@
  * -----------------------------------------------------------------------*/
 extern "C" {
 uint32_t ppu_load_elf(const char* path);      /* ELF -> guest RAM, returns entry OPD */
+uint32_t ppu_load_elf_image(const uint8_t* image, size_t size, const char* name);
 void     ppu_recomp_register(void);           /* generated: lifted table -> address map */
 void     ppu_hle_init(void);                  /* firmware import NID -> HLE handler */
 void     ppu_sysprx_register(void);           /* boot-critical CRT (sys_initialize_tls, ...) */
@@ -99,6 +100,7 @@ void     cellGcmTickVBlank(void);
 void     cellGcmTickFlip(void);
 int      cellGcm_take_flip_pending(void);
 void     cellGcm_rsx_process_fifo(void);      /* drain get -> put */
+void     cellGcm_fifo_kick_wait(unsigned ms); /* wake immediately for a dry fence queue */
 unsigned cellGcm_flip_request_count(void);
 }
 
@@ -190,7 +192,7 @@ static DWORD WINAPI frame_clock(LPVOID)
     ULONGLONG next_tick = GetTickCount64();
 
     for (;;) {
-        Sleep(4);
+        cellGcm_fifo_kick_wait(4);
         ULONGLONG now = GetTickCount64();
 
         int fired = 0;
@@ -256,6 +258,7 @@ static void derive_vfs_root(const char* eboot)
 {
     const char* env = getenv("PS3_VFS_ROOT");
     if (env && *env) { ppu_vfs_root = env; return; }
+    if (!eboot || !*eboot) { ppu_vfs_root = "."; return; }
 
     strncpy(s_vfs_root, eboot, sizeof s_vfs_root - 1);
     for (char* p = s_vfs_root; *p; p++) if (*p == '\\') *p = '/';
@@ -323,12 +326,38 @@ static void harness_guest_caller(uint32_t opd, uint64_t a0, uint64_t a1,
     ppu_guest_call(opd, a0, a1, a2, a3, a4, a5, a6, a7);
 }
 
+#ifdef PS3RECOMP_EMBED_PPU_ELF
+static uint32_t ppu_load_embedded_elf(void)
+{
+    HRSRC resource = FindResourceA(NULL, "PS3RECOMP_BOOT_PPU_ELF", RT_RCDATA);
+    if (!resource) {
+        fprintf(stderr, "[ppu] embedded boot image resource is missing\n");
+        return 0;
+    }
+    HGLOBAL loaded = LoadResource(NULL, resource);
+    const uint8_t* image = (const uint8_t*)LockResource(loaded);
+    DWORD size = SizeofResource(NULL, resource);
+    if (!image || !size) {
+        fprintf(stderr, "[ppu] embedded boot image resource is empty\n");
+        return 0;
+    }
+    return ppu_load_elf_image(image, (size_t)size, "embedded PPU ELF");
+}
+#endif
+
 int main(int argc, char** argv)
 {
-    if (argc < 2) {
-        printf("usage: %s <PPU ELF>\n", argv[0]);
+    const char* elf_path = (argc >= 2) ? argv[1] : NULL;
+    if (!elf_path || !*elf_path) elf_path = getenv("PS3_PPU_ELF");
+#ifdef PS3RECOMP_DEFAULT_PPU_ELF
+    if (!elf_path || !*elf_path) elf_path = PS3RECOMP_DEFAULT_PPU_ELF;
+#endif
+#if !defined(PS3RECOMP_EMBED_PPU_ELF)
+    if (!elf_path || !*elf_path) {
+        printf("usage: %s [PPU ELF] (or set PS3_PPU_ELF / configure PORT_PPU_ELF)\n", argv[0]);
         return 2;
     }
+#endif
 
 #ifdef _WIN32
 #pragma comment(lib, "winmm.lib")
@@ -346,13 +375,18 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    uint32_t entry = ppu_load_elf(argv[1]);
+    uint32_t entry = 0;
+    if (elf_path && *elf_path) entry = ppu_load_elf(elf_path);
+#ifdef PS3RECOMP_EMBED_PPU_ELF
+    else entry = ppu_load_embedded_elf();
+#endif
     if (!entry) {
-        fprintf(stderr, "ERROR: could not load %s\n", argv[1]);
+        fprintf(stderr, "ERROR: could not load %s\n",
+                (elf_path && *elf_path) ? elf_path : "embedded PPU ELF");
         return 1;
     }
 
-    derive_vfs_root(argv[1]);
+    derive_vfs_root(elf_path);
     printf("[boot] VFS root: %s\n", ppu_vfs_root);
 
     ppu_recomp_register();   /* lifted function table -> address map */

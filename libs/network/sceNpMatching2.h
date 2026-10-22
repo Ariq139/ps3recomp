@@ -52,6 +52,7 @@ s32 sceNpMatching2CreateContext(u32 npId, u32 commId, u32 passPhrase, u32 ctxId,
 s32 sceNpMatching2DestroyContext(u16 ctxId);
 s32 sceNpMatching2ContextStart(u16 ctxId);
 s32 sceNpMatching2ContextStartAsync(u16 ctxId, u32 timeout);
+s32 sceNpMatching2AbortContextStart(u16 ctxId);
 s32 sceNpMatching2ContextStop(u16 ctxId);
 s32 sceNpMatching2ContextStopAsync(u16 ctxId, u32 timeout);
 s32 sceNpMatching2SetDefaultRequestOptParam(u16 ctxId, u32 optParam);
@@ -80,6 +81,7 @@ s32 sceNpMatching2KickoutRoomMember(u16 ctxId, u32 req, u32 opt, u32 reqId);
 s32 sceNpMatching2SetRoomDataExternal(u16 ctxId, u32 req, u32 opt, u32 reqId);
 s32 sceNpMatching2SetRoomDataInternal(u16 ctxId, u32 req, u32 opt, u32 reqId);
 s32 sceNpMatching2SendRoomMessage(u16 ctxId, u32 req, u32 opt, u32 reqId);
+s32 sceNpMatching2SendRoomChatMessage(u16 ctxId, u32 req, u32 opt, u32 reqId);
 s32 sceNpMatching2GetEventData(u16 ctxId, u32 eventKey, u32 buf, u32 bufLen);
 s32 sceNpMatching2AbortRequest(u16 ctxId, u32 reqId);
 

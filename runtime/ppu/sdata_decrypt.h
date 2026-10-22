@@ -7,6 +7,11 @@
  * license. Algorithm verified against RPCS3 Crypto/unedat.cpp and validated by
  * decrypting LBP's data.sdat to its plaintext "FSHb" container.
  *
+ * RPCS3_PROVENANCE_REVIEW_REQUIRED: commit c832ed97 records that this
+ * algorithm and its keys were ported from RPCS3. RPCS3 is GPL-2.0; this
+ * repository declares MIT. This marker records provenance, not license
+ * clearance. See docs/RPCS3_LICENSE_AUDIT.md before redistribution.
+ *
  * Per block n:
  *   crypt_key  = dev_hash ^ SDAT_KEY
  *   b_key      = dev_hash[0:12] || be32(n)

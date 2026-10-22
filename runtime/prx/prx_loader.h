@@ -52,7 +52,15 @@ typedef struct {
 typedef struct {
     uint32_t nid;          /* import/export hash */
     uint32_t vaddr;        /* base-0 OPD vaddr (function) or data vaddr (var) */
+    uint32_t library_index;/* index in prx_module.libraries, or UINT32_MAX */
 } prx_export;
+
+/* One PRX export-library descriptor in the module's export table. vaddr points
+ * at the 0x1c-byte descriptor inside the relocated guest image. */
+typedef struct {
+    uint32_t vaddr;
+    const char* name;
+} prx_library_descriptor;
 
 typedef struct {
     const char*           name;        /* "libsre", "libresc", ... */
@@ -63,6 +71,8 @@ typedef struct {
     uint64_t              func_count;  /* function_table_count */
     const prx_export*     exports;     /* NID -> base-0 vaddr (from elf_parser) */
     uint32_t              export_count;
+    const prx_library_descriptor* libraries; /* export-library descriptors */
+    uint32_t              library_count;
 } prx_module;
 
 /* Host-provided dispatch registrar: bind a guest address to a host function.
@@ -113,6 +123,15 @@ uint32_t prx_resolve_export(uint32_t nid);
 
 /* Number of exports currently registered (diagnostics/tests). */
 uint32_t prx_export_registry_count(void);
+
+/* Associate a guest library descriptor with a loaded PRX export library.
+ * Returns 1 when it matched and retained the RPCS3-style external-loaded flag. */
+int prx_register_library_descriptor(const uint8_t descriptor[0x1C],
+                                    const char** out_library_name);
+
+/* Whether the loaded PRX library associated with this exported NID has been
+ * externally registered. NIDs with no library metadata return 0. */
+int prx_export_library_is_registered(uint32_t nid);
 
 #ifdef __cplusplus
 }

@@ -93,7 +93,8 @@ int64_t sys_ppu_thread_create(ppu_context* ctx)
 ## PPU Thread Management
 
 **File:** `runtime/syscalls/sys_ppu_thread.c`
-**Syscall numbers:** 41–49, 56
+**Raw LV2 syscalls:** 41, 43–49, 52–53, 56. The public
+`sys_ppu_thread_create` entry is a `sysPrxForUser` HLE export, not syscall 41.
 
 ### Implementation Strategy
 
@@ -101,7 +102,7 @@ PS3 PPU threads map 1:1 to host OS threads. Each thread gets its own `ppu_contex
 
 ### Syscalls
 
-#### `sys_ppu_thread_create` (41)
+#### `sys_ppu_thread_create` (`sysPrxForUser` HLE export)
 
 Creates a new PPU thread with its own register context and stack.
 
@@ -125,7 +126,7 @@ Creates a new PPU thread with its own register context and stack.
 
 **Returns:** `CELL_OK` on success, `CELL_EAGAIN` if thread limit reached, `CELL_ENOMEM` if stack allocation fails.
 
-#### `sys_ppu_thread_exit` (42)
+#### `_sys_ppu_thread_exit` (41)
 
 Terminates the calling thread. The exit code is in `r3`.
 
@@ -154,6 +155,13 @@ Get/set thread priority. ps3recomp maps PS3 priority levels to host priority lev
 #### `sys_ppu_thread_get_stack_information` (49)
 
 Returns the stack base address and size for a thread.
+
+#### `_sys_ppu_thread_create` (52) / `sys_ppu_thread_start` (53)
+
+RPCS3 exposes these as separate raw LV2 calls. ps3recomp does not currently
+register handlers for these raw slots: its higher-level HLE create export
+combines thread creation and host-thread start. Do not treat that HLE handler
+as an ABI-compatible implementation of syscall 52.
 
 #### `sys_ppu_thread_rename` (56)
 
@@ -258,6 +266,7 @@ Multiple readers can hold the lock simultaneously. Writers get exclusive access.
 | 124 | `sys_rwlock_runlock` | Release shared lock. |
 | 125 | `sys_rwlock_wlock` | Acquire exclusive (write) lock. |
 | 126 | `sys_rwlock_trywlock` | Try exclusive lock without blocking. |
+| 148 | `_sys_rwlock_trywlock` | Legacy alias of the try-write-lock operation. |
 | 127 | `sys_rwlock_wunlock` | Release exclusive lock. |
 
 ---
@@ -332,7 +341,7 @@ A **producer handle** that connects to a queue. Sending an event through a port 
 ## Event Flags (sys_event_flag)
 
 **File:** `runtime/syscalls/sys_event.c`
-**Syscall numbers:** 139–146
+**Syscall numbers:** 82, 83, 85–87, 118, 132, 139
 
 ### Design
 
@@ -344,14 +353,14 @@ A 64-bit bitmask that threads can wait on. Supports AND/OR wait modes:
 
 | # | Name | Description |
 |---|------|-------------|
-| 139 | `sys_event_flag_create` | Create with initial value and wait mode. |
-| 140 | `sys_event_flag_destroy` | Destroy. |
-| 141 | `sys_event_flag_wait` | Block until condition met. Supports timeout. |
-| 142 | `sys_event_flag_trywait` | Non-blocking wait. |
-| 143 | `sys_event_flag_set` | Set bits (OR them into the current value). |
-| 144 | `sys_event_flag_clear` | Clear bits (AND with complement). |
-| 145 | `sys_event_flag_cancel` | Cancel all waiting threads. |
-| 146 | `sys_event_flag_get` | Read current flag value. |
+| 82 | `sys_event_flag_create` | Create with initial value and wait mode. |
+| 83 | `sys_event_flag_destroy` | Destroy. |
+| 85 | `sys_event_flag_wait` | Block until condition met. Supports timeout. |
+| 86 | `sys_event_flag_trywait` | Non-blocking wait. |
+| 87 | `sys_event_flag_set` | Set bits (OR them into the current value). |
+| 118 | `sys_event_flag_clear` | Clear bits (AND with complement). |
+| 132 | `sys_event_flag_cancel` | Cancel queued waiters with `CELL_ECANCELED`; reports the waiter count and preserves the flag pattern. |
+| 139 | `sys_event_flag_get` | Read current flag value. |
 
 ---
 
@@ -399,7 +408,7 @@ For `sys_time_get_current_time`:
 ## Memory Management (sys_memory)
 
 **File:** `runtime/syscalls/sys_memory.c`
-**Syscall numbers:** 348–355, 358
+**Syscall numbers:** 324, 325, 343, 348–352
 
 ### Implementation
 
@@ -412,11 +421,11 @@ A **bump allocator** within the guest VM's main memory region. Allocations are a
 | 348 | `sys_memory_allocate` | Allocate from main memory. Args: size, flags (1MB/64KB page size). |
 | 349 | `sys_memory_free` | Free a previous allocation. |
 | 350 | `sys_memory_allocate_from_container` | Allocate from a specific container. |
-| 352 | `sys_memory_get_user_memory_size` | Get total/available memory (256 MB total). |
-| 353 | `sys_memory_container_create` | Create a memory container with a size budget. |
-| 354 | `sys_memory_container_destroy` | Destroy container. |
-| 355 | `sys_memory_container_get_size` | Query container's total/used size. |
-| 358 | `sys_memory_get_page_attribute` | Get page attributes (size, protection). |
+| 351 | `sys_memory_get_page_attribute` | Query page attributes. |
+| 352 | `sys_memory_get_user_memory_size` | Query user-memory size values. |
+| 324 | `sys_memory_container_create` | Create a memory container with a size budget. |
+| 325 | `sys_memory_container_destroy` | Destroy container. |
+| 343 | `sys_memory_container_get_size` | Query container size values. |
 
 ### Memory Containers
 
@@ -505,11 +514,15 @@ In a full emulator, interrupts would trigger SPU-to-PPU signaling and preemption
 
 ## SPU Management
 
-**Syscall numbers:** 156–157, 170–194, 229–251
+**Syscall numbers:** 156–159, 165–194, 251 (see `lv2_syscall_table.h`)
 
 ### Status
 
-SPU management syscalls are **defined but minimally implemented**. The full set of syscall numbers is registered for API compatibility:
+SPU management is **partial**. The syscall-number definitions follow LV2, and
+the runtime models selected image, group, thread, queue, and event operations.
+This is not a complete SPU hardware or firmware implementation. In particular,
+group/thread state and synchronization paths are project-specific approximations
+that need title-level validation. The table includes:
 
 - `sys_spu_thread_group_create/destroy/start/stop/join`
 - `sys_spu_initialize`
@@ -523,7 +536,7 @@ Most games use the higher-level `cellSpurs` framework instead of raw SPU syscall
 
 ## PRX Module Management
 
-**Syscall numbers:** 480–494
+**Syscall numbers:** 461, 480–490, 494–496
 
 ### Implementation
 
@@ -535,9 +548,17 @@ PRX management is handled by the HLE module system rather than true LLE module l
 | 481 | `sys_prx_start_module` | Start a loaded module — calls `ps3_module_load()` |
 | 482 | `sys_prx_stop_module` | Stop a module — calls `ps3_module_unload()` |
 | 483 | `sys_prx_unload_module` | Unload a module |
-| 491 | `sys_prx_get_module_list` | List loaded modules |
-| 492 | `sys_prx_get_module_info` | Query module info (name, version) |
-| 493 | `sys_prx_get_module_id_by_name` | Find module ID by name |
+| 484 | `sys_prx_register_module` | Register module metadata |
+| 485 | `sys_prx_query_module` | Query module metadata |
+| 486 | `sys_prx_register_library` | Register library exports |
+| 487 | `sys_prx_unregister_library` | Unregister library exports |
+| 488 | `sys_prx_link_library` | Link library imports |
+| 489 | `sys_prx_unlink_library` | Unlink library imports |
+| 490 | `sys_prx_query_library` | Query library metadata |
+| 494 | `sys_prx_get_module_list` | List loaded modules |
+| 495 | `sys_prx_get_module_info` | Query module info |
+| 496 | `sys_prx_get_module_id_by_name` | Find module ID by name |
+| 461 | `sys_prx_get_module_id_by_address` | Find module containing an address |
 
 ---
 
@@ -550,7 +571,7 @@ Used by the PS3 CRT for debug console output during startup. These are among the
 | # | Name | Description |
 |---|------|-------------|
 | 402 | `sys_tty_read` | Read from TTY input — returns 0 bytes (no input available) |
-| 403 | `sys_tty_write` | Write to TTY output — forwards to host `stderr` via `fwrite` |
+| 403 | `sys_tty_write` | Write to TTY output — the game runner separates it from host diagnostics |
 
 ### sys_tty_write Details
 
@@ -561,7 +582,12 @@ r5 = length in bytes
 r6 = guest address of u32 to receive bytes written
 ```
 
-The implementation reads raw bytes from guest memory (`vm_base + buf_addr`) and writes them to the host's `stderr`. The byte count is written back to the output pointer in big-endian format.
+The implementation reads bytes from guest memory (`vm_base + buf_addr`) and
+writes them to `ps3_tty.log` by default, separate from the host warning/error
+stream. The default CP932 decoder converts Japanese Shift-JIS text to UTF-8;
+set `PS3_TTY_ENCODING=utf8` for titles that emit UTF-8. Set `PS3_TTY_LOG=off`
+to discard TTY output or `PS3_TTY_LOG=<path>` to choose another file. The byte
+count is written back to the output pointer in big-endian format.
 
 **Why this matters:** The PS3 CRT prints diagnostic messages via `sys_tty_write` during initialization. Without this syscall, CRT error messages (like "not enough memory to initialize mutex") are silently lost, making debugging much harder.
 

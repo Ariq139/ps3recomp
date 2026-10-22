@@ -48,3 +48,23 @@ set_tests_properties(lock_line PROPERTIES
     LABELS "runtime;syscalls"
     TIMEOUT 30
 )
+
+# Exercise the debug P5 port's nonstandard sys_memory placement too.
+add_executable(test_lock_line_relocated
+    test_lock_line.c
+    "${PS3RECOMP_ROOT}/runtime/syscalls/lv2_lock_line.c"
+)
+target_include_directories(test_lock_line_relocated PRIVATE
+    "${PS3RECOMP_ROOT}/runtime/syscalls"
+    "${PS3RECOMP_ROOT}/runtime"
+    "${PS3RECOMP_ROOT}/include"
+)
+target_compile_definitions(test_lock_line_relocated PRIVATE
+    PS3RECOMP_SYS_MEM_ALLOC_BASE=0x30200000u
+    PS3RECOMP_SYS_MEM_ALLOC_END=0x40000000u
+)
+add_test(NAME lock_line_relocated COMMAND test_lock_line_relocated)
+set_tests_properties(lock_line_relocated PROPERTIES
+    LABELS "runtime;syscalls"
+    TIMEOUT 30
+)

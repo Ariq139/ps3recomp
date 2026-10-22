@@ -1,7 +1,7 @@
 /* SPU workload-dispatch test — host (PPU-side) harness.
  *
  * Validates runtime/spu/spu_workload.c, the cellSpurs dispatch brick:
- *   - cross-language FINGERPRINT agreement (C FNV-1a == the Python extractor's),
+ *   - cross-language fingerprint agreement (C hash == the Python extractor's),
  *   - the SPU ELF -> local-store LOADER (a marker baked into the image is read
  *     back by the SPU job, proving the LS was loaded and not just zeroed),
  *   - the SPURS task ABI (the job's arg EA propagates into r3),
@@ -55,7 +55,7 @@ int main(void) {
     mfc_engine_init(&g_mfc);
     int ok = 1;
 
-    /* 1) Fingerprint: C FNV-1a must match the Python extractor's value. */
+    /* 1) Fingerprint: C hash must match the Python extractor's value. */
     uint64_t fp = spu_workload_fingerprint(kWorkloadElf, kWorkloadElfSize);
     int fp_ok = (fp == kWorkloadFP);
     printf("  [FINGERPRINT] C=0x%016llX  py=0x%016llX  %s\n",

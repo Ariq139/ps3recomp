@@ -78,6 +78,7 @@ typedef struct rsx_be_render_state {
     u32 blend_enable, sf_rgb, df_rgb, sf_a, df_a, eq_rgb, eq_a;
     u32 depth_test, depth_write, depth_func;
     u32 cull_enable, cull_face, front_face;
+    u32 flat_shading, two_sided_lighting;
     u32 color_mask;
     /* Targets 1..3 of an MRT set: COLOR_MASK_MRT (0x0370), one nibble per
      * target at [4i..4i+3] = A,R,G,B, and BLEND_ENABLE_MRT (0x036C), bit i.

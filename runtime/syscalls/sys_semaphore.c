@@ -15,6 +15,16 @@
  * -----------------------------------------------------------------------*/
 sys_semaphore_info g_sys_semaphores[SYS_SEMAPHORE_MAX];
 
+/* Launch-time diagnostics; avoid the CRT environment lock on every wait/post. */
+static int sem_trace_flags(void)
+{
+    static _Thread_local int flags = -1;
+    if (flags < 0)
+        flags = (getenv("GFD_QUEUE_TRACE") ? 1 : 0) |
+                (getenv("SEMCHAIN") ? 2 : 0);
+    return flags;
+}
+
 #ifdef _WIN32
 static CRITICAL_SECTION s_sem_table_lock;
 static int              s_sem_table_lock_init = 0;
@@ -344,6 +354,31 @@ static int64_t sys_semaphore_wait_impl(ppu_context* ctx)
                   (unsigned long long)ctx->thread_id, 10); } }
     uint32_t sem_id     = LV2_ARG_U32(ctx, 0);
     uint64_t timeout_us = LV2_ARG_U64(ctx, 1);
+    if ((sem_trace_flags() & 1) && sem_id == 20 && ctx->thread_id == 5) {
+        static unsigned visits = 0;
+        if (++visits == 100000) {
+            extern void ppu_dump_guest_stack(ppu_context*, const char*);
+            ppu_dump_guest_stack(ctx, "gfd-queue-worker");
+            uint32_t sp = (uint32_t)ctx->gpr[1];
+            fprintf(stderr, "[gfd-queue-last] packet:");
+            for (unsigned off = 0x70; off < 0x90; off += 4) {
+                const uint8_t* p = vm_base + sp + off;
+                fprintf(stderr, " %08X", (uint32_t)p[0] << 24 |
+                        (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3]);
+            }
+            fprintf(stderr, "\n");
+            const uint8_t* mp = vm_base + sp + 0x74;
+            uint32_t model = (uint32_t)mp[0] << 24 | (uint32_t)mp[1] << 16 |
+                             (uint32_t)mp[2] << 8 | mp[3];
+            fprintf(stderr, "[gfd-model] ea=%08X A0..BC:", model);
+            for (unsigned off = 0xA0; off < 0xC0; off += 4) {
+                const uint8_t* p = vm_base + model + off;
+                fprintf(stderr, " %08X", (uint32_t)p[0] << 24 |
+                        (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3]);
+            }
+            fprintf(stderr, "\n");
+        }
+    }
     /* Per-port hook: an engine job manager may spin on sys_semaphore_wait /
      * trywait waiting for SPU-job completions a lifted policy module never
      * writes, so a port can satisfy them here. Defined weakly below, so this is
@@ -363,7 +398,7 @@ static int64_t sys_semaphore_wait_impl(ppu_context* ctx)
       if(bc){ static long w=0; if((++w % 500)==0){ extern void lbp_breadcrumb_dump(const char*); lbp_breadcrumb_dump("semwait"); } } }
     /* SEMCHAIN: dump the guest call-chain at the main thread's sem=7 poll (the
      * "loading done" wait) to locate its loop -- is it meant to re-post sem=3? */
-    if (getenv("SEMCHAIN") && sem_id == 7 && ctx->thread_id == 0) {
+    if ((sem_trace_flags() & 2) && sem_id == 7 && ctx->thread_id == 0) {
         static int _c = 0;
         if (PS3_LOG_FIRST(_c, 2)) { extern void ppu_log_host_chain(const char*); ppu_log_host_chain("sem7-wait-tid0"); }
     }
@@ -512,7 +547,7 @@ int64_t sys_semaphore_post(ppu_context* ctx)
       _n++; }
     /* SEMCHAIN: dump the guest call-chain at every sem=3 post (the sema the main
      * loading thread starves on) -- reveals which thread/loop produces it. */
-    if (getenv("SEMCHAIN") && sem_id == 3) {
+    if ((sem_trace_flags() & 2) && sem_id == 3) {
         static int _c = 0;
         if (PS3_LOG_FIRST(_c, 3)) { extern void ppu_log_host_chain(const char*);
             fprintf(stderr, "[SEMCHAIN] sem=3 post by tid=%llu\n", (unsigned long long)ctx->thread_id);
@@ -600,6 +635,13 @@ int64_t sys_semaphore_get_value(ppu_context* ctx)
     pthread_mutex_unlock(&s->mtx);
 #endif
 
+    if ((sem_trace_flags() & 1) && sem_id == 21) {
+        static unsigned count = 0;
+        unsigned visit = ++count;
+        if (visit < 8 || (visit <= 400000 && visit % 100000 == 0))
+            fprintf(stderr, "[gfd-free-tokens] visit=%u value=%d max=%d out=%08X\n",
+                    visit, val, s->max_value, out_addr);
+    }
     if (out_addr != 0) {
         write_be32(out_addr, (uint32_t)val);
     }

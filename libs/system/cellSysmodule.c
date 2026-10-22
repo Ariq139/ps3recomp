@@ -1,25 +1,95 @@
 /*
- * ps3recomp - cellSysmodule HLE stub implementation
+ * ps3recomp - cellSysmodule HLE implementation
  */
 
 #include "cellSysmodule.h"
+#include "../../runtime/syscalls/sys_memory.h"
 #include <stdio.h>
+#include <stdatomic.h>
+#include <limits.h>
 
 /* ---------------------------------------------------------------------------
  * Internal state
  * -----------------------------------------------------------------------*/
 
-/* Track which modules have been "loaded". IDs come in two ranges: 0x00xx
- * (core) and 0xF0xx (extended: NP_TROPHY=0xF035, GIFDEC=0xF010, ...). The old
- * `id >= MAX_ID -> ERROR_UNKNOWN` check rejected every 0xF0xx load — LBP's
- * trophy-module load failed at boot. Map both ranges into one table. */
-static int s_module_loaded[2 * CELL_SYSMODULE_MAX_ID];
+/* This runtime has a static HLE surface rather than RPCS3's firmware PRXs.
+ * Track load references so repeated loads and balanced unloads keep the same
+ * visible state, without claiming that the firmware image was dynamically
+ * loaded. */
+#define SYSMODULE_INTERNAL_BASE  0xF000u
+#define SYSMODULE_INTERNAL_COUNT 87u /* IDs 0xF000 through 0xF056 */
+#define SYSMODULE_CORE_COUNT     0x005Du
+#define SYSMODULE_INVALID_ID     0xFFFFu
+
+static atomic_uint s_module_load_count[SYSMODULE_CORE_COUNT + SYSMODULE_INTERNAL_COUNT];
+static atomic_uint s_debug_mode;
+static atomic_uint s_memcontainer_id;
+static atomic_uint s_use_memcontainer;
+
 static int sysmodule_slot(u16 id)
 {
-    if (id < CELL_SYSMODULE_MAX_ID) return (int)id;
-    if ((id & 0xFF00) == 0xF000 && (id & 0xFF) < CELL_SYSMODULE_MAX_ID)
-        return CELL_SYSMODULE_MAX_ID + (id & 0xFF);
+    if (id < SYSMODULE_CORE_COUNT && id != 0x0058u) return (int)id;
+    if ((id & 0xFF00u) == SYSMODULE_INTERNAL_BASE &&
+        (id & 0x00FFu) < SYSMODULE_INTERNAL_COUNT)
+        return (int)(SYSMODULE_CORE_COUNT + (id & 0x00FFu));
     return -1;
+}
+
+static int sysmodule_internal_allowed(u16 id, int extended)
+{
+    static const u16 regular_ids[] = {
+        0xF00A, 0xF010, 0xF019, 0xF01B, 0xF01D, 0xF01E,
+        0xF023, 0xF028, 0xF029, 0xF02A, 0xF02B, 0xF02C,
+        0xF02E, 0xF02F, 0xF030, 0xF034, 0xF035, 0xF044, 0xF054
+    };
+    static const u16 extended_ids[] = {
+        0xF005, 0xF00A, 0xF010, 0xF013, 0xF019, 0xF01B, 0xF01D, 0xF01E,
+        0xF020, 0xF021, 0xF022, 0xF023, 0xF024, 0xF026, 0xF028, 0xF029,
+        0xF02A, 0xF02B, 0xF02C, 0xF02E, 0xF02F, 0xF030, 0xF032, 0xF033,
+        0xF034, 0xF035, 0xF036, 0xF039, 0xF03A, 0xF03D, 0xF03E, 0xF03F,
+        0xF040, 0xF041, 0xF043, 0xF044, 0xF045, 0xF046, 0xF047, 0xF048,
+        0xF049, 0xF04A, 0xF04D, 0xF04E, 0xF04F, 0xF050, 0xF051, 0xF052,
+        0xF054, 0xF055, 0xF056
+    };
+    const u16* ids = extended ? extended_ids : regular_ids;
+    size_t count = extended
+        ? sizeof(extended_ids) / sizeof(extended_ids[0])
+        : sizeof(regular_ids) / sizeof(regular_ids[0]);
+    for (size_t i = 0; i < count; ++i)
+        if (ids[i] == id) return 1;
+    return 0;
+}
+
+static s32 sysmodule_ref(u16 id, int increment)
+{
+    int slot = sysmodule_slot(id);
+    if (slot < 0) return CELL_SYSMODULE_ERROR_UNKNOWN;
+
+    unsigned count = atomic_load_explicit(&s_module_load_count[slot], memory_order_relaxed);
+    if (increment) {
+        do {
+            if (count >= INT_MAX) return CELL_SYSMODULE_ERROR_FATAL;
+        } while (!atomic_compare_exchange_weak_explicit(
+            &s_module_load_count[slot], &count, count + 1,
+            memory_order_relaxed, memory_order_relaxed));
+        return CELL_OK;
+    }
+
+    while (count != 0) {
+        if (atomic_compare_exchange_weak_explicit(
+                &s_module_load_count[slot], &count, count - 1,
+                memory_order_relaxed, memory_order_relaxed))
+            return CELL_OK;
+    }
+    return CELL_SYSMODULE_ERROR_UNLOADED;
+}
+
+static s32 sysmodule_loaded(u16 id)
+{
+    int slot = sysmodule_slot(id);
+    if (slot < 0) return CELL_SYSMODULE_ERROR_UNKNOWN;
+    return atomic_load_explicit(&s_module_load_count[slot], memory_order_relaxed)
+        ? CELL_OK : CELL_SYSMODULE_ERROR_UNLOADED;
 }
 
 static const char* sysmodule_id_to_name(u16 id)
@@ -71,6 +141,8 @@ static const char* sysmodule_id_to_name(u16 id)
     case CELL_SYSMODULE_FONTFT:        return "CELL_SYSMODULE_FONTFT";
     case CELL_SYSMODULE_AVCONF_EXT:    return "CELL_SYSMODULE_AVCONF_EXT";
     case CELL_SYSMODULE_USBPSPCM:      return "CELL_SYSMODULE_USBPSPCM";
+    case CELL_SYSMODULE_SPURS_JQ:      return "CELL_SYSMODULE_SPURS_JQ";
+    case CELL_SYSMODULE_SYSUTIL_NP_TUS: return "CELL_SYSMODULE_SYSUTIL_NP_TUS";
     default:                           return "UNKNOWN";
     }
 }
@@ -89,15 +161,9 @@ s32 cellSysmoduleLoadModule(u16 id)
     printf("[cellSysmodule] LoadModule(id=0x%04X '%s')\n",
            id, sysmodule_id_to_name(id));
 
-    int slot = sysmodule_slot(id);
-    if (slot < 0)
+    if (id >= SYSMODULE_INTERNAL_BASE && !sysmodule_internal_allowed(id, 0))
         return CELL_SYSMODULE_ERROR_UNKNOWN;
-
-    if (s_module_loaded[slot])
-        return CELL_OK;  /* Already loaded — return success (some games treat DUPLICATED as fatal) */
-
-    s_module_loaded[slot] = 1;
-    return CELL_OK;
+    return sysmodule_ref(id, 1);
 }
 
 /* NID: 0x112A5EE9 */
@@ -106,15 +172,9 @@ s32 cellSysmoduleUnloadModule(u16 id)
     printf("[cellSysmodule] UnloadModule(id=0x%04X '%s')\n",
            id, sysmodule_id_to_name(id));
 
-    int slot = sysmodule_slot(id);
-    if (slot < 0)
+    if (id >= SYSMODULE_INTERNAL_BASE && !sysmodule_internal_allowed(id, 0))
         return CELL_SYSMODULE_ERROR_UNKNOWN;
-
-    if (!s_module_loaded[slot])
-        return CELL_SYSMODULE_ERROR_UNLOADED;
-
-    s_module_loaded[slot] = 0;
-    return CELL_OK;
+    return sysmodule_ref(id, 0);
 }
 
 /* NID: 0x5A59E258 */
@@ -123,11 +183,62 @@ s32 cellSysmoduleIsLoaded(u16 id)
     printf("[cellSysmodule] IsLoaded(id=0x%04X '%s')\n",
            id, sysmodule_id_to_name(id));
 
-    int slot = sysmodule_slot(id);
-    if (slot < 0)
+    if (id >= SYSMODULE_INTERNAL_BASE && !sysmodule_internal_allowed(id, 0))
         return CELL_SYSMODULE_ERROR_UNKNOWN;
+    return sysmodule_loaded(id);
+}
 
-    return s_module_loaded[slot] ? CELL_OK : CELL_SYSMODULE_ERROR_UNLOADED;
+/* RPCS3_REFERENCE_REVIEWED: the internal-ID range and loadable sets are ABI
+ * facts transcribed into local tables; state is tracked through the static
+ * HLE model, with no RPCS3 function body copied. */
+s32 cellSysmoduleLoadModuleInternal(u16 id)
+{
+    if (id == SYSMODULE_INVALID_ID || id < SYSMODULE_INTERNAL_BASE ||
+        id >= SYSMODULE_INTERNAL_BASE + SYSMODULE_INTERNAL_COUNT)
+        return CELL_SYSMODULE_ERROR_UNKNOWN;
+    return sysmodule_ref(id, 1);
+}
+
+s32 cellSysmoduleUnloadModuleInternal(u16 id)
+{
+    if (id == SYSMODULE_INVALID_ID || id < SYSMODULE_INTERNAL_BASE ||
+        id >= SYSMODULE_INTERNAL_BASE + SYSMODULE_INTERNAL_COUNT)
+        return CELL_SYSMODULE_ERROR_UNKNOWN;
+    return sysmodule_ref(id, 0);
+}
+
+s32 cellSysmoduleSetMemcontainer(u32 container_id)
+{
+    atomic_store_explicit(&s_use_memcontainer, 0, memory_order_relaxed);
+    atomic_store_explicit(&s_memcontainer_id, UINT32_MAX, memory_order_relaxed);
+    if (container_id == UINT32_MAX) {
+        return CELL_OK;
+    }
+
+    if (container_id == 0 || container_id > SYS_MEMORY_CONTAINER_MAX)
+        return CELL_SYSMODULE_ERROR_INVALID_MEMCONTAINER;
+
+    const sys_mem_container_info* container = &g_sys_mem_containers[container_id - 1];
+    if (!container->active || container->total_size < container->used_size ||
+        container->total_size - container->used_size < 0x60000u) {
+        atomic_store_explicit(&s_use_memcontainer, 0, memory_order_relaxed);
+        return CELL_SYSMODULE_ERROR_INVALID_MEMCONTAINER;
+    }
+
+    atomic_store_explicit(&s_memcontainer_id, container_id, memory_order_relaxed);
+    atomic_store_explicit(&s_use_memcontainer, 1, memory_order_relaxed);
+    return CELL_OK;
+}
+
+s32 cellSysmoduleSetDebugmode(u32 debug_mode)
+{
+    atomic_store_explicit(&s_debug_mode, debug_mode == 1, memory_order_relaxed);
+    return CELL_OK;
+}
+
+s32 cellSysmoduleSetInternalmode(void)
+{
+    return CELL_OK;
 }
 
 /* NID: 0x70E319B5. Extended-ID query only; shares the existing HLE module
@@ -139,7 +250,7 @@ s32 cellSysmoduleIsLoadedEx(u16 id)
 {
     if (id < 0xF000 || id >= 0xF057)
         return CELL_SYSMODULE_ERROR_UNKNOWN;
-    return cellSysmoduleIsLoaded(id);
+    return sysmodule_loaded(id);
 }
 
 /* RPCS3 LOADABLE_INTERNAL_MODULES_EX policy shared by the Ex entry points.
@@ -175,7 +286,7 @@ s32 cellSysmoduleLoadModuleEx(u16 id)
 {
     if (!sysmodule_ex_permitted(id) || id == 0xF020 || id == 0xF024 || id == 0xF03E)
         return CELL_SYSMODULE_ERROR_UNKNOWN;
-    return cellSysmoduleLoadModule(id);
+    return sysmodule_ref(id, 1);
 }
 
 /* NID: 0xFD0E1CAC. One u16 argument; extra PPU GPRs are not output pointers.
@@ -186,5 +297,5 @@ s32 cellSysmoduleUnloadModuleEx(u16 id)
 {
     if (!sysmodule_ex_permitted(id))
         return CELL_SYSMODULE_ERROR_UNKNOWN;
-    return cellSysmoduleUnloadModule(id);
+    return sysmodule_ref(id, 0);
 }

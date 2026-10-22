@@ -91,6 +91,12 @@ typedef struct CellFontHorizontalLayout {
     float effectHeight;
 } CellFontHorizontalLayout;
 
+typedef struct CellFontVerticalLayout {
+    float baseLineX;
+    float lineWidth;
+    float effectWidth;
+} CellFontVerticalLayout;
+
 /* Render surface (destination for glyph rendering) */
 typedef struct CellFontRenderSurface {
     u8*  buffer;        /* pixel buffer */
@@ -98,6 +104,10 @@ typedef struct CellFontRenderSurface {
     s32  pixelSizeByte; /* bytes per pixel (1 for alpha-only) */
     s32  width;         /* surface width in pixels */
     s32  height;        /* surface height in pixels */
+    u32  scissorX0;
+    u32  scissorY0;
+    u32  scissorX1;
+    u32  scissorY1;
 } CellFontRenderSurface;
 
 /* Image glyph output */
@@ -126,10 +136,12 @@ typedef struct CellFontConfig {
 s32 cellFontInit(const CellFontConfig* config);
 s32 cellFontInitializeWithRevision(u64 revisionFlags, const CellFontConfig* config);
 s32 cellFontEnd(void);
+s32 cellFontEndLibrary(CellFontLibrary library);
 
 s32 cellFontOpenFontFile(CellFont* font, const char* fontPath, u32 subNum, s32 uniqueId);
 s32 cellFontOpenFontMemory(CellFont* font, const void* data, u32 dataSize, u32 subNum, s32 uniqueId);
 s32 cellFontOpenFontset(CellFontLibrary lib, CellFontType* fontType, CellFont* font);
+s32 cellFontOpenFontsetOnMemory(CellFontLibrary lib, CellFontType* fontType, CellFont* font);
 s32 cellFontCloseFont(CellFont* font);
 
 s32 cellFontSetFontOpenMode(u32 openMode);
@@ -142,8 +154,15 @@ s32 cellFontUnbindRenderer(CellFont* font);
 s32 cellFontSetScalePixel(CellFont* font, float w, float h);
 s32 cellFontSetEffectWeight(CellFont* font, float weight);
 s32 cellFontSetEffectSlant(CellFont* font, float slant);
+s32 cellFontSetupRenderEffectSlant(CellFont* font, float slant);
+s32 cellFontSetupRenderEffectWeight(CellFont* font, float weight);
 
 s32 cellFontGetHorizontalLayout(CellFont* font, CellFontHorizontalLayout* layout);
+s32 cellFontGetVerticalLayout(CellFont* font, CellFontVerticalLayout* layout);
+s32 cellFontRenderSurfaceInit(CellFontRenderSurface* surface, void* buffer,
+                              s32 bufferWidthByte, s32 pixelSizeByte, s32 w, s32 h);
+s32 cellFontRenderSurfaceSetScissor(CellFontRenderSurface* surface,
+                                    s32 x0, s32 y0, u32 w, u32 h);
 
 s32 cellFontRenderCharGlyphImage(CellFont* font, u32 code,
                                   CellFontRenderSurface* surface,

@@ -298,6 +298,24 @@ SDL_PauseAudioDevice(dev, 0);  // Start playback
 | Windows | XInput | Native Xbox controller support; DS3 via DS3 drivers |
 | Linux/macOS | SDL2 GameController | Supports DualShock 3/4, Xbox, Switch Pro, etc. |
 
+### Keyboard fallback (Windows)
+
+When no physical XInput controller is connected on port 0, `cellPad` synthesizes
+port 0 from keyboard input. It writes directly to the PS3 `cellPad` state; it
+does **not** expose a virtual XInput device to Windows. The fixed layout is:
+
+| Keyboard | PS3 pad input |
+|---|---|
+| Arrow keys | D-pad and left stick |
+| Z / X / A / S | Cross / Circle / Square / Triangle |
+| Q / W | L1 / R1 |
+| 1 / 2 | L2 / R2 |
+| Enter / Tab | Start / Select |
+
+Input is read only while a window owned by the game process is foreground. A
+controller on XInput port 0 takes precedence. Set `PAD_NO_KEYBOARD=1` in the
+process environment before launch to disable the fallback.
+
 ### XInput (Windows)
 
 ```c

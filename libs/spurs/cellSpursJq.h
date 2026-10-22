@@ -2,8 +2,8 @@
  * ps3recomp - cellSpursJq HLE
  *
  * SPURS Job Queue — advanced SPU job dispatch built on cellSpurs.
- * Provides job queue creation, enqueue, dequeue, and synchronization.
- * Stub — management APIs work, no actual SPU execution.
+ * Provides a bounded queue model and runs submitted descriptors through the
+ * runtime's lifted SPU job dispatcher when their binaries are registered.
  */
 
 #ifndef PS3RECOMP_CELL_SPURS_JQ_H
@@ -88,17 +88,17 @@ s32 cellSpursCreateJobQueue(void* spurs, CellSpursJobQueue* jq,
                             const CellSpursJobQueueAttribute* attr,
                             void* buffer, u32 bufferSize);
 s32 cellSpursDestroyJobQueue(CellSpursJobQueue* jq);
+s32 cellSpursShutdownJobQueue(void);
+s32 cellSpursJoinJobQueue(void);
 
 s32 cellSpursJobQueuePush(CellSpursJobQueue* jq, const void* job,
                           u32 jobSize, u32 tag, CellSpursJobId* id);
 s32 cellSpursJobQueuePushJob(CellSpursJobQueue* jq, const CellSpursJob256* job,
                              u32 tag, CellSpursJobId* id);
 
-s32 cellSpursJobQueuePort2Create(CellSpursJobQueue* jq, CellSpursJobQueuePort* port);
+s32 cellSpursJobQueuePort2Create(CellSpursJobQueuePort* port, CellSpursJobQueue* jq);
 s32 cellSpursJobQueuePort2Destroy(CellSpursJobQueuePort* port);
-s32 cellSpursJobQueuePort2PushSync(CellSpursJobQueuePort* port,
-                                   const void* job, u32 jobSize,
-                                   u32 tag, CellSpursJobId* id);
+s32 cellSpursJobQueuePort2PushFlush(void);
 
 s32 cellSpursJobQueueSendSignal(CellSpursJobQueue* jq, CellSpursJobId id);
 s32 cellSpursJobQueueWait(CellSpursJobQueue* jq, CellSpursJobId id);
@@ -106,6 +106,16 @@ s32 cellSpursJobQueueTryWait(CellSpursJobQueue* jq, CellSpursJobId id);
 
 s32 cellSpursJobQueueGetCount(CellSpursJobQueue* jq, u32* count);
 s32 cellSpursJobQueueSemaphoreTryAcquire(CellSpursJobQueue* jq);
+
+/* Port2 import bridges receive saved PPC register slots; see the implementation. */
+u64 cellSpursJobQueuePort2PushSync(
+    u64 a0, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5, u64 a6, u64 a7);
+u64 cellSpursJobQueuePort2Sync(
+    u64 a0, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5, u64 a6, u64 a7);
+u64 _cellSpursJobQueuePort2CopyPushJobBody(
+    u64 a0, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5, u64 a6, u64 a7);
+u64 _cellSpursJobQueuePort2PushJobBody(
+    u64 a0, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5, u64 a6, u64 a7);
 
 #ifdef __cplusplus
 }

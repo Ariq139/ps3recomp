@@ -97,6 +97,8 @@ enum {
     FONT_O_HANDLE = 0,  FONT_O_TYPE = 4,  FONT_O_SCALEX = 8, FONT_O_SCALEY = 12,
     SURF_O_BUFFER = 0,  SURF_O_WIDTHBYTE = 4, SURF_O_PIXELSIZE = 8,
     SURF_O_WIDTH  = 12, SURF_O_HEIGHT = 16,
+    SURF_O_SCISSOR_X0 = 20, SURF_O_SCISSOR_Y0 = 24,
+    SURF_O_SCISSOR_X1 = 28, SURF_O_SCISSOR_Y1 = 32,
     IMG_O_BUFFER  = 0,  IMG_O_WIDTHBYTE = 4,  IMG_O_PIXELSIZE = 8,
     IMG_O_WIDTH   = 12, IMG_O_HEIGHT = 16,
     LAY_O_BASELINEY = 0, LAY_O_LINEHEIGHT = 4, LAY_O_EFFECTHEIGHT = 8
@@ -132,6 +134,10 @@ static void font_surface_load(CellFontRenderSurface* h,
     h->pixelSizeByte = (s32)vm_read32(ea + SURF_O_PIXELSIZE);
     h->width         = (s32)vm_read32(ea + SURF_O_WIDTH);
     h->height        = (s32)vm_read32(ea + SURF_O_HEIGHT);
+    h->scissorX0     = vm_read32(ea + SURF_O_SCISSOR_X0);
+    h->scissorY0     = vm_read32(ea + SURF_O_SCISSOR_Y0);
+    h->scissorX1     = vm_read32(ea + SURF_O_SCISSOR_X1);
+    h->scissorY1     = vm_read32(ea + SURF_O_SCISSOR_Y1);
 }
 
 /* buffer is left as the title set it -- we render into the surface, never
@@ -200,9 +206,6 @@ s32 cellFontInit(const CellFontConfig* config)
     return CELL_OK;
 }
 
-/* cellFontInitializeWithRevision(revisionFlags, config): the entry point titles built with a newer SDK use instead of
- * cellFontInit (NID 0xF03DCC29). Without it every later cellFont call returns CELL_FONT_ERROR_UNINITIALIZED, which
- * a title that ignores the result never notices. */
 s32 cellFontInitializeWithRevision(u64 revisionFlags, const CellFontConfig* config)
 {
     (void)revisionFlags;
@@ -224,6 +227,12 @@ s32 cellFontEnd(void)
 
     s_font_initialized = 0;
     return CELL_OK;
+}
+
+s32 cellFontEndLibrary(CellFontLibrary library)
+{
+    (void)library;
+    return cellFontEnd();
 }
 
 s32 cellFontOpenFontFile(CellFont* font, const char* fontPath, u32 subNum, s32 uniqueId)
@@ -328,6 +337,11 @@ s32 cellFontOpenFontset(CellFontLibrary lib, CellFontType* fontType, CellFont* f
     return CELL_OK;
 }
 
+s32 cellFontOpenFontsetOnMemory(CellFontLibrary lib, CellFontType* fontType, CellFont* font)
+{
+    return cellFontOpenFontset(lib, fontType, font);
+}
+
 s32 cellFontCloseFont(CellFont* font)
 {
     if (!s_font_initialized) return CELL_FONT_ERROR_UNINITIALIZED;
@@ -428,8 +442,20 @@ s32 cellFontSetEffectSlant(CellFont* font, float slant)
 {
     FontSlot* slot = font_get_slot(font);
     if (!slot) return CELL_FONT_ERROR_INVALID_PARAMETER;
+    if (!isfinite(slant) || slant < -1.0f || slant > 1.0f)
+        return CELL_FONT_ERROR_INVALID_PARAMETER;
     slot->effect_slant = slant;
     return CELL_OK;
+}
+
+s32 cellFontSetupRenderEffectSlant(CellFont* font, float slant)
+{
+    return cellFontSetEffectSlant(font, slant);
+}
+
+s32 cellFontSetupRenderEffectWeight(CellFont* font, float weight)
+{
+    return cellFontSetEffectWeight(font, weight);
 }
 
 s32 cellFontGetHorizontalLayout(CellFont* font, CellFontHorizontalLayout* layout)
@@ -458,6 +484,70 @@ s32 cellFontGetHorizontalLayout(CellFont* font, CellFontHorizontalLayout* layout
     vm_write_f32(FONT_EA(layout) + LAY_O_BASELINEY,    slot->scale_y * 0.8f);
     vm_write_f32(FONT_EA(layout) + LAY_O_LINEHEIGHT,   slot->scale_y * 1.2f);
     vm_write_f32(FONT_EA(layout) + LAY_O_EFFECTHEIGHT, slot->scale_y);
+    return CELL_OK;
+}
+
+s32 cellFontGetVerticalLayout(CellFont* font, CellFontVerticalLayout* layout)
+{
+    if (!s_font_initialized) return CELL_FONT_ERROR_UNINITIALIZED;
+    if (!layout) return CELL_FONT_ERROR_INVALID_PARAMETER;
+    FontSlot* slot = font_get_slot(font);
+    if (!slot) return CELL_FONT_ERROR_INVALID_PARAMETER;
+
+    /* The TTF backend has no vertical metrics table; use the font's horizontal
+     * scale as the em width and report the origin at the vertical baseline. */
+    const u32 ea = FONT_EA(layout);
+    vm_write_f32(ea + 0, 0.0f);
+    vm_write_f32(ea + 4, slot->scale_x);
+    vm_write_f32(ea + 8, slot->scale_x);
+    return CELL_OK;
+}
+
+s32 cellFontRenderSurfaceInit(CellFontRenderSurface* surface, void* buffer,
+                              s32 bufferWidthByte, s32 pixelSizeByte, s32 w, s32 h)
+{
+    const u32 ea = FONT_EA(surface);
+    if (!ea) return CELL_FONT_ERROR_INVALID_PARAMETER;
+    const u32 width = w > 0 ? (u32)w : 0;
+    const u32 height = h > 0 ? (u32)h : 0;
+    vm_write32(ea + SURF_O_BUFFER, (u32)(uintptr_t)buffer);
+    vm_write32(ea + SURF_O_WIDTHBYTE, (u32)bufferWidthByte);
+    vm_write32(ea + SURF_O_PIXELSIZE, (u32)pixelSizeByte);
+    vm_write32(ea + SURF_O_WIDTH, width);
+    vm_write32(ea + SURF_O_HEIGHT, height);
+    vm_write32(ea + SURF_O_SCISSOR_X0, 0);
+    vm_write32(ea + SURF_O_SCISSOR_Y0, 0);
+    vm_write32(ea + SURF_O_SCISSOR_X1, width);
+    vm_write32(ea + SURF_O_SCISSOR_Y1, height);
+    return CELL_OK;
+}
+
+static u32 font_clip_axis(s32 origin, u32 extent, u32 limit, u32* end_out)
+{
+    const int64_t start = origin;
+    const int64_t end = start + (int64_t)extent;
+    int64_t clipped_start = start < 0 ? 0 : start;
+    int64_t clipped_end = end > (int64_t)limit ? (int64_t)limit : end;
+    if (clipped_start > (int64_t)limit) clipped_start = limit;
+    if (clipped_end < clipped_start) clipped_end = clipped_start;
+    *end_out = (u32)clipped_end;
+    return (u32)clipped_start;
+}
+
+s32 cellFontRenderSurfaceSetScissor(CellFontRenderSurface* surface,
+                                    s32 x0, s32 y0, u32 w, u32 h)
+{
+    const u32 ea = FONT_EA(surface);
+    if (!ea) return CELL_FONT_ERROR_INVALID_PARAMETER;
+    const u32 width = vm_read32(ea + SURF_O_WIDTH);
+    const u32 height = vm_read32(ea + SURF_O_HEIGHT);
+    u32 x1, y1;
+    const u32 sx0 = font_clip_axis(x0, w, width, &x1);
+    const u32 sy0 = font_clip_axis(y0, h, height, &y1);
+    vm_write32(ea + SURF_O_SCISSOR_X0, sx0);
+    vm_write32(ea + SURF_O_SCISSOR_Y0, sy0);
+    vm_write32(ea + SURF_O_SCISSOR_X1, x1);
+    vm_write32(ea + SURF_O_SCISSOR_Y1, y1);
     return CELL_OK;
 }
 
@@ -577,10 +667,10 @@ s32 cellFontRenderCharGlyphImage(CellFont* font, u32 code,
 
         for (int row = 0; row < bh; row++) {
             int sy = dy + row;
-            if (sy < 0 || sy >= hs.height) continue;
+            if (sy < (int)hs.scissorY0 || sy >= (int)hs.scissorY1) continue;
             for (int col = 0; col < bw; col++) {
                 int sx = dx + col;
-                if (sx < 0 || sx >= hs.width) continue;
+                if (sx < (int)hs.scissorX0 || sx >= (int)hs.scissorX1) continue;
                 u8 alpha = bitmap[row * bw + col];
                 if (alpha > 0) {
                     int offset = sy * hs.widthByte + sx * hs.pixelSizeByte;

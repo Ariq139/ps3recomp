@@ -22,7 +22,8 @@ The pipeline transforms a PS3 ELF binary into native C/C++ source code that can 
 
 ### Stage 1: ELF Loading and Analysis
 
-1. Decrypt the SELF/ESELF container to obtain the raw ELF (`tools/decrypt_self.py`).
+1. Obtain a decrypted ELF from a trusted source. `tools/unfself.py` only unwraps
+   unencrypted debug/fake SELF files; it does not decrypt retail SELF files.
 2. Parse ELF headers, program headers, and section headers.
 3. Extract the `.text` (code), `.data`, `.rodata`, `.bss` segments.
 4. Parse the `.prx` relocation tables and import/export tables (NIDs).
@@ -92,12 +93,14 @@ Register-local computation stays in host-native byte order. Conversion only happ
 
 | Guest Address Range | Region |
 |---|---|
-| `0x00010000 - 0x0FFFFFFF` | User ELF text + data |
-| `0x10000000 - 0x1FFFFFFF` | PRX module space |
-| `0x20000000 - 0x2FFFFFFF` | Stack / TLS |
-| `0x30000000 - 0x3FFFFFFF` | Heap (user malloc) |
-| `0xC0000000 - 0xCFFFFFFF` | RSX local memory (VRAM, mapped) |
-| `0xD0000000 - 0xDFFFFFFF` | RSX IO-mapped main memory |
+| `0x00010000 - 0x0FFFFFFF` | Main guest memory; committed at runtime initialization |
+| `0x10000000 - 0x1FFFFFFF` | Runtime RSX address window; committed on demand |
+| `0x30000000 - 0x301FFFFF` | Eight 256 KiB raw-SPU local-store windows |
+| `0xD0000000 - 0xDFFFFFFF` | Runtime PPU stack region |
+
+These are the runtime's current virtual-memory constants, not a full PS3
+hardware map. A game project can reserve subranges or select a custom allocator
+base; see `runtime/memory/vm.h` and the project's CMake definitions.
 
 ## SPU Handling Strategy
 
@@ -127,7 +130,8 @@ The same static recompilation approach applied to SPU programs found in the ELF.
 PS3 executables do not link against shared libraries by name. Instead, each exported/imported function has a unique 32-bit **NID (Name Identifier)** derived by:
 
 ```
-NID = SHA-1(function_name)[:4]  (first 4 bytes, big-endian u32)
+NID = little-endian uint32(first 4 bytes of
+      SHA-1(UTF-8(function_name) + 16-byte suffix))
 ```
 
 The ELF's import table lists: `(module_name, NID)` pairs. At load time, the PS3 OS resolves each NID to a function pointer from the loaded PRX modules.
@@ -137,7 +141,8 @@ The ELF's import table lists: `(module_name, NID)` pairs. At load time, the PS3 
 1. Parse the ELF's import stubs to extract `(module, NID)` pairs.
 2. Look up each NID in a database (`tools/nid_db.json`) to get the human-readable function name.
 3. Replace the import stub with a call to our HLE implementation (e.g., `cellFsOpen`).
-4. Unresolved NIDs log a warning and return `CELL_ENOSYS`.
+4. Unresolved imports reach the runtime fallback, which currently logs the NID
+   and returns `CELL_OK` unless a port provides a more specific handler.
 
 The NID database is derived from the RPCS3 project's function tables and Sony SDK headers.
 
@@ -157,9 +162,12 @@ cellGcmSys (HLE)  →  RSX Command Processor  →  Graphics Backend
 2. **RSX Command Processor** (`rsx_commands.c`) parses the NV47xx FIFO command buffer and tracks GPU state: surfaces, viewport, blend, depth/stencil, textures (16 units), vertex attributes (16), shader programs, draw commands.
 
 3. **Graphics Backend** receives state changes and draw calls through the `rsx_backend` callback interface. Current backends:
-   - **Null**: Win32 window showing clear color (debugging)
-   - **D3D12**: Real GPU rendering — device, swap chain, clear, present (Phase 1)
-   - **Vulkan**: Planned
+   - **Null**: command-path/debug backend.
+   - **D3D12**: Windows renderer with guest-program, texture, and render-target
+     paths; unsupported RSX features remain.
+   - **Metal**: macOS renderer; shader translation depends on optional tools.
+   - **Vulkan**: optional Linux renderer; guest programs require glslang and
+     overall feature coverage remains partial.
 
 See [RSX_GRAPHICS.md](RSX_GRAPHICS.md) for the complete graphics architecture, shader translation strategy, and primitive type mapping.
 
@@ -179,7 +187,10 @@ See [RSX_GRAPHICS.md](RSX_GRAPHICS.md) for the complete graphics architecture, s
 | **HLE modules** | ~100 modules, varying completion | Most modules complete, a few partial (see [MODULE_STATUS.md](MODULE_STATUS.md)), full runtime |
 | **Use case** | General-purpose emulator | Targeted game ports and mods |
 
-The key tradeoff: RPCS3 aims for broad compatibility across the PS3 library. ps3recomp trades that breadth for potentially higher performance and easier game-specific customization (modding, patching, porting to new platforms).
+RPCS3 is the behavior and compatibility reference in this repository, not proof
+that a feature is complete here. ps3recomp currently covers only a subset of
+PPU, SPU, LV2/HLE, and RSX behavior; consult the subsystem docs and target logs
+before treating a game path as supported.
 
 ---
 

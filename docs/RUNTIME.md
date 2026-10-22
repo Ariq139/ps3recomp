@@ -27,7 +27,10 @@ The runtime is the bridge between recompiled PS3 PowerPC code and the host opera
 - **LV2 syscall dispatch** translating PS3 kernel calls into host OS equivalents
 - **DMA engine** for SPU local store ↔ main memory transfers
 
-All runtime components are header-only with `static inline` functions, meaning zero link-time overhead — the compiler inlines everything directly into recompiled code.
+The runtime combines headers with inline helpers and compiled C/C++ translation
+units. The VM and shared data types are exposed through headers; syscall, PPU,
+SPU, HLE, and graphics behavior is implemented in compiled sources linked into
+the runtime library or game runner.
 
 **Key files:**
 
@@ -62,9 +65,9 @@ On Windows, `VirtualAlloc` with `MEM_RESERVE` reserves the 4 GB range without co
 
 | Guest Address Range | Size | Region | Committed At |
 |---|---|---|---|
-| `0x00010000 – 0x0FFFFFFF` | 256 MB | User ELF text + data (main memory) | `vm_init()` |
-| `0x10000000 – 0x1FFFFFFF` | 256 MB | RSX mapped memory / PRX module space | On demand via `vm_commit()` |
-| `0x30000000 – 0x3001FFFF` | 8 × 256 KB | SPU local store windows (raw SPU) | `vm_spu_ls_map()` |
+| `0x00010000 – 0x0FFFFFFF` | 256 MB | Main guest memory (mapped interval is 64 KiB smaller than 256 MiB) | `vm_init()` |
+| `0x10000000 – 0x1FFFFFFF` | 256 MB | RSX virtual address window | On demand via `vm_commit()` |
+| `0x30000000 – 0x301FFFFF` | 2 MB | Eight 256 KiB SPU local-store windows | `vm_spu_ls_map()` |
 | `0xD0000000 – 0xDFFFFFFF` | 256 MB | Stack region | `vm_init()` |
 
 ### Key Constants

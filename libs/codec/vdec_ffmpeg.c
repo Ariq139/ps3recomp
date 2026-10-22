@@ -112,11 +112,11 @@ VdecFf* vdec_ff_open(u32 codec_type)
     d->ctx = ff->avcodec_alloc_context3(codec);
     d->pkt = ff->av_packet_alloc();
     d->frame = ff->av_frame_alloc();
-    if (d->ctx) {
-        /* One thread: pictures come out of the call that decoded them (or
-         * the next ones, for reordering) rather than a frame-thread later. */
-        d->ctx->thread_count = 1;
-    }
+    /* Keep libavcodec's default thread_count (0), which lets it choose the
+     * codec's frame/slice threading for large H.264 and MPEG-2 streams. The
+     * HLE feeds packets synchronously, so forcing one decoder thread made
+     * opening movies needlessly slow. RPCS3 likewise leaves this choice to
+     * libavcodec and performs AU work on its decoder worker. */
     if (!d->ctx || !d->pkt || !d->frame || ff->avcodec_open2(d->ctx, codec, NULL) < 0) {
         printf("[cellVdec] could not open the libavcodec decoder\n");
         vdec_ff_close(d);

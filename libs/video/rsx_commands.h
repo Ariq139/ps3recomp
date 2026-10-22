@@ -59,6 +59,7 @@ extern "C" {
 #define NV4097_SET_CONTEXT_DMA_ZETA            0x00000198
 #define CELL_GCM_CONTEXT_DMA_MEMORY_FRAME_BUFFER 0xFEED0000
 #define CELL_GCM_CONTEXT_DMA_MEMORY_HOST_BUFFER  0xFEED0001
+#define NV4097_SET_CONTEXT_DMA_REPORT           0x000001A8
 
 #define NV4097_SET_SURFACE_CLIP_HORIZONTAL     0x00000200
 #define NV4097_SET_SURFACE_CLIP_VERTICAL       0x00000204
@@ -94,6 +95,42 @@ extern "C" {
 #define NV4097_SET_SCISSOR_HORIZONTAL          0x000008C0
 #define NV4097_SET_SCISSOR_VERTICAL            0x000008C4
 
+/* RPCS3 behavior reference (GPL-2.0): gcm_enums.h / NV47/HW/nv4097.cpp.
+ * Register/value facts only; the local method handler is independently written. */
+#define NV4097_NOTIFY                           0x00000104
+#define CELL_GCM_CONTEXT_DMA_NOTIFY_MAIN_0      0x6660420Fu
+#define NV4097_WAIT_FOR_IDLE                    0x00000110
+#define NV406E_SET_REFERENCE                    0x00000050
+#define NV406E_SEMAPHORE_OFFSET                0x00000064
+#define NV406E_SEMAPHORE_ACQUIRE               0x00000068
+#define NV406E_SEMAPHORE_RELEASE               0x0000006C
+#define NV4097_SET_WINDOW_OFFSET               0x000002B8
+#define NV4097_SET_CONTEXT_DMA_COLOR_C         0x000001B4
+#define NV4097_SET_CONTEXT_DMA_COLOR_D         0x000001B8
+#define NV4097_CLEAR_ZCULL_SURFACE             0x00001438
+#define NV4097_CLEAR_REPORT_VALUE              0x000017C8
+#define NV4097_SET_ZPASS_PIXEL_COUNT_ENABLE    0x000017CC
+#define NV4097_GET_REPORT                      0x00001800
+#define NV4097_SET_ZCULL_STATS_ENABLE          0x00001804
+#define NV4097_SET_SEMAPHORE_OFFSET             0x00001D6C
+#define NV4097_BACK_END_WRITE_SEMAPHORE_RELEASE 0x00001D70
+#define NV4097_TEXTURE_READ_SEMAPHORE_RELEASE  0x00001D74
+#define NV4097_SET_ZCULL_EN                    0x00001D84
+#define NV4097_SET_RENDER_ENABLE               0x00001E98
+#define CELL_GCM_ZPASS_PIXEL_CNT                1u
+#define CELL_GCM_ZCULL_STATS                    2u
+#define CELL_GCM_ZCULL_STATS1                   3u
+#define CELL_GCM_ZCULL_STATS2                   4u
+#define CELL_GCM_ZCULL_STATS3                   5u
+
+/* RPCS3 behavior reference (GPL-2.0): gcm_enums.h / rsx_methods.h.
+ * Register facts only; implementation below is independently written. */
+#define NV4097_SET_TEX_COORD_CONTROL           0x00000B40
+#define NV4097_INVALIDATE_VERTEX_CACHE_FILE    0x00001710
+#define NV4097_INVALIDATE_VERTEX_FILE          0x00001714
+#define NV4097_SET_ANTI_ALIASING_CONTROL       0x00001D7C
+#define NV4097_SET_TRANSFORM_TIMEOUT           0x00001EF8
+
 /* Clear */
 #define NV4097_SET_COLOR_CLEAR_VALUE           0x00001D90
 #define NV4097_SET_ZSTENCIL_CLEAR_VALUE        0x00001D8C
@@ -101,7 +138,10 @@ extern "C" {
 
 /* Draw commands */
 #define NV4097_SET_BEGIN_END                    0x00001808
+#define NV4097_ARRAY_ELEMENT16                  0x0000180C
+#define NV4097_ARRAY_ELEMENT32                  0x00001810
 #define NV4097_DRAW_ARRAYS                     0x00001814
+#define NV4097_INLINE_ARRAY                    0x00001818
 #define NV4097_SET_INDEX_ARRAY_ADDRESS         0x0000181C
 #define NV4097_SET_INDEX_ARRAY_DMA             0x00001820
 #define NV4097_DRAW_INDEX_ARRAY                0x00001824
@@ -109,8 +149,19 @@ extern "C" {
 /* Vertex attributes */
 #define NV4097_SET_VERTEX_DATA_ARRAY_FORMAT     0x00001740
 #define NV4097_SET_VERTEX_DATA_ARRAY_OFFSET     0x00001680
+#define NV4097_SET_VERTEX_DATA_BASE_OFFSET      0x00001738
+#define NV4097_SET_VERTEX_DATA_BASE_INDEX       0x0000173C
+#define NV4097_SET_VERTEX_DATA3F_M              0x00001500
+#define NV4097_SET_VERTEX_DATA2F_M              0x00001880
+#define NV4097_SET_VERTEX_DATA2S_M              0x00001900
+#define NV4097_SET_VERTEX_DATA4UB_M             0x00001940
+#define NV4097_SET_VERTEX_DATA4S_M              0x00001980
+#define NV4097_SET_VERTEX_DATA_SCALED4S_M       0x00000A80
+#define NV4097_SET_VERTEX_DATA4F_M              0x00001C00
+#define NV4097_SET_VERTEX_DATA1F_M              0x00001E40
 
 /* Texture */
+#define NV4097_SET_TEXTURE_CONTROL2             0x00000B00 /* 16 units, 4 bytes each */
 #define NV4097_SET_TEXTURE_OFFSET               0x00001A00
 #define NV4097_SET_TEXTURE_FORMAT               0x00001A04
 #define NV4097_SET_TEXTURE_ADDRESS              0x00001A08
@@ -141,6 +192,7 @@ extern "C" {
 /* Shader programs */
 #define NV4097_SET_SHADER_PROGRAM               0x000008E4
 #define NV4097_SET_SHADER_CONTROL               0x00001D60
+#define NV4097_SET_SHADER_PACKER                0x00001FEC
 /* shader_control bit: fragment colour exports come from r0/r2/r3/r4 (32-bit)
  * instead of h0/h4/h6/h8 (half). */
 #define CELL_GCM_SHADER_CONTROL_32_BITS_EXPORTS 0x00000040
@@ -167,30 +219,49 @@ extern "C" {
 
 /* Color mask */
 #define NV4097_SET_COLOR_MASK                   0x00000324
+#define NV4097_SET_COLOR_MASK_MRT               0x00000370
 
 /* Alpha test */
 #define NV4097_SET_ALPHA_TEST_ENABLE            0x00000304
 #define NV4097_SET_ALPHA_FUNC                   0x00000308
 #define NV4097_SET_ALPHA_REF                    0x0000030C
 
+/* Flat shading applies to the front/back diffuse and specular vertex outputs. */
+#define NV4097_SET_SHADE_MODE                   0x00000368
+#define CELL_GCM_FLAT                           0x00001D00
+#define CELL_GCM_SMOOTH                         0x00001D01
+#define NV4097_SET_TWO_SIDE_LIGHT_EN            0x0000142C
+
 /* Blending */
 #define NV4097_SET_BLEND_ENABLE                 0x00000310
+#define NV4097_SET_BLEND_ENABLE_MRT             0x0000036C
 #define NV4097_SET_BLEND_FUNC_SFACTOR           0x00000314
 #define NV4097_SET_BLEND_FUNC_DFACTOR           0x00000318
 #define NV4097_SET_BLEND_EQUATION               0x00000320
 #define NV4097_SET_BLEND_COLOR                  0x0000031C
+#define NV4097_SET_BLEND_COLOR2                 0x0000037C
 
 /* Depth / stencil */
 #define NV4097_SET_DEPTH_TEST_ENABLE            0x00000A74
 #define NV4097_SET_DEPTH_FUNC                   0x00000A6C
 #define NV4097_SET_DEPTH_MASK                   0x00000A70
+#define NV4097_SET_ZMIN_MAX_CONTROL              0x00001D78
 #define NV4097_SET_STENCIL_TEST_ENABLE          0x00000328
+#define NV4097_SET_STENCIL_MASK                 0x0000032C
 #define NV4097_SET_STENCIL_FUNC                 0x00000330
 #define NV4097_SET_STENCIL_FUNC_REF             0x00000334
 #define NV4097_SET_STENCIL_FUNC_MASK            0x00000338
 #define NV4097_SET_STENCIL_OP_FAIL              0x0000033C
 #define NV4097_SET_STENCIL_OP_ZFAIL             0x00000340
 #define NV4097_SET_STENCIL_OP_ZPASS             0x00000344
+#define NV4097_SET_TWO_SIDED_STENCIL_TEST_ENABLE 0x00000348
+#define NV4097_SET_BACK_STENCIL_MASK            0x0000034C
+#define NV4097_SET_BACK_STENCIL_FUNC            0x00000350
+#define NV4097_SET_BACK_STENCIL_FUNC_REF        0x00000354
+#define NV4097_SET_BACK_STENCIL_FUNC_MASK       0x00000358
+#define NV4097_SET_BACK_STENCIL_OP_FAIL         0x0000035C
+#define NV4097_SET_BACK_STENCIL_OP_ZFAIL        0x00000360
+#define NV4097_SET_BACK_STENCIL_OP_ZPASS        0x00000364
 #define NV4097_SET_DEPTH_BOUNDS_TEST_ENABLE     0x00000380
 #define NV4097_SET_DEPTH_BOUNDS_MIN             0x00000384  /* float */
 #define NV4097_SET_DEPTH_BOUNDS_MAX             0x00000388  /* float */
@@ -220,6 +291,7 @@ extern "C" {
 #define RSX_MAX_VERTEX_TEXTURES    4
 #define RSX_MAX_VERTEX_ATTRIBS    16
 #define RSX_MAX_RENDER_TARGETS     4
+#define RSX_MAX_INLINE_INDEX_ELEMENTS 16384u
 
 typedef struct rsx_texture_state {
     u32 offset;
@@ -227,6 +299,7 @@ typedef struct rsx_texture_state {
     u32 address;
     u32 control0;
     u32 control1;
+    u32 control2;    /* separate contiguous block at 0x0B00 + unit*4 */
     u32 filter;
     u32 image_rect;
     u32 border_color;
@@ -259,6 +332,19 @@ typedef struct rsx_state {
     u32 viewport_x, viewport_y, viewport_w, viewport_h;
     float clip_min, clip_max;
 
+    /* Additional NV4097 render state used by RSX fragment processing. */
+    u32 window_offset;
+    u32 shader_window;
+    u32 fog_mode;
+    float fog_params[2];
+    int poly_offset_point, poly_offset_line, poly_offset_fill;
+    float poly_offset_scale, poly_offset_bias;
+    u32 control0, zcull_enable, zcull_stats_enable, zcull_control1;
+    int zpass_pixel_count_enable;
+    u32 zmin_max_control; /* depth clip/clamp/ignore-W control */
+    u32 dma_context[15]; /* NV4097 context DMA registers 0x0180..0x01B8 */
+    u32 restart_index_enable, restart_index;
+
     /* Scissor */
     u32 scissor_x, scissor_y, scissor_w, scissor_h;
 
@@ -271,6 +357,7 @@ typedef struct rsx_state {
     u32 blend_sfactor, blend_dfactor;
     u32 blend_equation;
     u32 blend_color;
+    u32 blend_color2;
 
     /* Depth */
     int depth_test_enable;
@@ -279,17 +366,29 @@ typedef struct rsx_state {
 
     /* Stencil */
     int stencil_test_enable;
-    u32 stencil_func, stencil_ref, stencil_mask;
+    int stencil_two_sided_enable;
+    u32 stencil_func, stencil_ref, stencil_func_mask, stencil_write_mask;
     u32 stencil_op_fail, stencil_op_zfail, stencil_op_zpass;
+    u32 back_stencil_func, back_stencil_ref, back_stencil_func_mask, back_stencil_write_mask;
+    u32 back_stencil_op_fail, back_stencil_op_zfail, back_stencil_op_zpass;
 
     /* Culling */
     int cull_face_enable;
     u32 cull_face;
     u32 front_face;
 
+    /* Vertex colour interpretation. Flat mode selects the last vertex in
+     * each RSX primitive; two-sided lighting selects o1/o2 vs o3/o4 by face. */
+    u32 shade_mode;
+    int two_sided_lighting;
+
     /* Color mask — bits: [0] B, [8] G, [16] R, [24] A */
     u32 color_mask;
+    /* MRT1..3 write masks, four bits per target (A,R,G,B). */
+    u32 color_mask_mrt;
     int color_mask_dirty;
+    /* MRT1..3 blend-enable bits are bits 1..3. */
+    u32 blend_enable_mrt;
 
     /* Alpha test */
     int alpha_test_enable;
@@ -318,10 +417,19 @@ typedef struct rsx_state {
      * (index = vertex % freq, repeats a mesh), clear = DIVIDE (index =
      * vertex / freq, advances once per instance). Instancing needs both. */
     u32 frequency_divider_op;
+    /* NV4097 vertex array address modifiers. Base offset is added to each
+     * enabled attribute offset in the 28-bit RSX address domain; base index
+     * is added only to indexed draw elements in the 20-bit index domain. */
+    u32 vertex_data_base_offset;
+    /* NV4097_SET_VERTEX_DATA_BASE_INDEX: added to indexed draw elements in
+     * the RSX's 20-bit vertex-index domain before vertex fetch. */
+    u32 vertex_data_base_index;
 
     /* Current draw state */
     u32 primitive_type;
     int in_begin_end;  /* between BEGIN_END(type) and BEGIN_END(0) */
+    int conditional_render_enabled;
+    u32 conditional_render_offset;
 
     /* Index array (SET_INDEX_ARRAY_ADDRESS/_DMA): offset is a raw RSX offset;
      * dma bits [3:0] = location context (0=local 1=main via CELL_GCM_DMA ids),
@@ -341,6 +449,7 @@ typedef struct rsx_state {
     float viewport_scale[4];
     u32 shader_program;       /* fragment program address (offset | location in bits [0:1]) */
     u32 shader_control;       /* SET_SHADER_CONTROL (0x40 = 32-bit colour exports) */
+    u32 shader_packer;        /* SET_SHADER_PACKER: nonzero enables integer sRGB output */
     u32 fragment_program_addr;
     u32 vertex_attrib_output_mask;
     u32 vertex_attrib_input_mask;      /* 0x1FF0 */
@@ -349,6 +458,9 @@ typedef struct rsx_state {
     u32 transform_program_start; /* vertex program load slot index */
     u32 transform_constant_load;
     int shader_dirty;
+    u32 tex_coord_control[10]; /* bit 0: force texture coordinate z=0, w=clip W */
+    u32 anti_aliasing_control; /* enable[0], A2C[4], alpha-one[8], mask[31:16] */
+    u32 transform_timeout;    /* hardware scheduling hint; no host watchdog */
 
     /* Vertex transform constants — written by NV4097_SET_TRANSFORM_CONSTANT.
      * Each constant is a vec4 (4 floats). Games typically place the MVP
@@ -378,6 +490,13 @@ typedef struct rsx_state {
     int stencil_dirty;
     int texture_dirty;
     int vertex_dirty;
+    /* Immediate ARRAY_ELEMENT16/32 words for one BEGIN_END group. RPCS3's
+     * immediate-index path stages both methods as u32 indices. */
+    u32 inline_index_values[RSX_MAX_INLINE_INDEX_ELEMENTS];
+    u32 inline_index_count;
+    u32 inline_index_dropped;
+    int inline_index_overflow;
+    int explicit_draw_command;
 } rsx_state;
 
 /* ---------------------------------------------------------------------------
@@ -392,6 +511,8 @@ void rsx_state_init(rsx_state* state);
  * data:   32-bit value to write
  * Returns 0 on success, -1 if method is unrecognized. */
 int rsx_process_method(rsx_state* state, u32 method, u32 data);
+/* Replay sync methods found while recovering a skipped FIFO range. */
+int rsx_replay_skipped_sync_method(u32 subchannel, u32 method, u32 data);
 
 /* Process a command buffer segment.
  * buf:  pointer to command buffer data (host memory)
@@ -431,9 +552,15 @@ typedef struct rsx_backend {
     /* Draw */
     void (*draw_arrays)(void* userdata, u32 primitive, u32 first, u32 count);
     void (*draw_indexed)(void* userdata, u32 primitive, u32 index_offset, u32 count);
+    void (*wait_idle)(void* userdata); /* NV4097_WAIT_FOR_IDLE */
 
     /* Texture */
     void (*bind_texture)(void* userdata, u32 unit, const rsx_texture_state* tex);
+
+    /* Immediate indexed draw from ARRAY_ELEMENT16/32. Optional; called at
+     * END with a temporary stream valid for the duration of the call. */
+    void (*draw_indexed_immediate)(void* userdata, u32 primitive,
+                                   const u32* indices, u32 count);
 } rsx_backend;
 
 /* Register a backend. Call before any RSX processing. */

@@ -58,10 +58,9 @@ float rsx_rd_half_be(const u8* p);  /* 2-byte IEEE half -> float  */
 
 /* Fetch attribute `idx` (0..15) of vertex `vi` as a float4 into `out`.
  *
- * `out` is always fully written: when the attribute's array is disabled or
- * has a zero stride, it receives the constant vertex attribute register for
- * that slot, which is what the hardware feeds. Components the attribute does
- * not supply (size < 4) keep that register's value.
+ * `out` is always fully written: disabled arrays use the constant vertex
+ * attribute register. Enabled arrays supply (0,0,0,1) for absent components;
+ * a zero stride repeats the array's first element for every vertex.
  *
  * Handles the frequency divisor (instancing) and resolves the array offset
  * through the correct context DMA. Reads guest memory; requires vm_base.

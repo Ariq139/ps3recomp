@@ -17,20 +17,25 @@ short version:
 # 1. load the title (function table, imports, TOC, segment manifest)
 python /path/to/ps3recomp/tools/ppu_loader.py game/EBOOT.ELF -o out/
 
-# 2. lift it (writes src/recomp/ppu_recomp*.cpp and ppu_recomp.h)
+# 2. lift it (writes recompiled/ppu_recomp*.cpp and ppu_recomp.h)
 python /path/to/ps3recomp/tools/ppu_lifter.py game/EBOOT.ELF \
     --functions out/EBOOT.functions.json \
     --hle-stubs out/EBOOT.imports.json \
-    --output src/recomp/
+    --output recompiled/
 
 # 3. now configure and build -- CMakeLists generates the NID -> HLE handler
-#    table itself unless src/recomp/ppu_hle_nids.cpp already exists
-cmake -B build -G Ninja -DPS3RECOMP_DIR=/path/to/ps3recomp
+#    table itself unless recompiled/ppu_hle_nids.cpp already exists
+cmake -S . -B build -G Ninja -DPS3RECOMP_DIR=/path/to/ps3recomp
 cmake --build build
 ```
 
-`CMakeLists.txt` globs `src/recomp/*.cpp`, so re-run CMake after a fresh lift so
-the new files are picked up.
+`config.toml` documents port settings; the commands above pass the ELF and
+output paths directly. On Windows, run CMake from Developer PowerShell for VS
+2022 so it can find the compiler and Windows SDK. `clang-cl` is commonly used
+for game projects; pass both `-DCMAKE_C_COMPILER=clang-cl` and
+`-DCMAKE_CXX_COMPILER=clang-cl` and use a fresh build directory when selecting
+it. `CMakeLists.txt` reads `RECOMP_DIR` (default `recompiled/`) and rescans that
+directory when lifted files are added.
 
 ## What the template gives you
 
@@ -43,12 +48,20 @@ the new files are picked up.
 
 ## Running
 
-The executable takes the decrypted ELF as its first argument, and optionally the
-directory the guest filesystem should resolve against:
+On Windows, CMake embeds the configured PPU ELF into the executable as a resource,
+so the launch command needs no EBOOT file. By default it uses
+`game/EBOOT.ELF`; set `-DPORT_PPU_ELF=...` when configuring to select another
+image. The bytes are loaded through the same ELF segment loader as an external
+image. Game data files still come from the directory set by `PS3_VFS_ROOT`.
 
-```bash
-./build/MyGameRecomp path/to/EBOOT.elf [vfs-root]
+```powershell
+$env:PS3_VFS_ROOT = 'path/to/game-root'
+.\build\MyGameRecomp.exe
 ```
+
+An explicit ELF argument and the `PS3_PPU_ELF` environment variable remain
+available as overrides. Non-Windows builds use the configured ELF path at
+runtime rather than embedding it.
 
 Graphics come up on Direct3D 12 on Windows and Metal on macOS with no extra
 configuration; see [docs/BUILDING.md](../../docs/BUILDING.md#graphics-backends).

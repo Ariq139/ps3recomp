@@ -73,6 +73,9 @@ typedef struct CellFontFTGlyphImage {
 } CellFontFTGlyphImage;
 
 /* Functions */
+s32 cellFontInitLibraryFreeTypeWithRevision(u64 revisionFlags,
+                                             const void* config,
+                                             void** libraryOut);
 s32 cellFontFTInit(const CellFontFTConfig* config, CellFontFTLibrary* lib);
 s32 cellFontFTEnd(CellFontFTLibrary lib);
 

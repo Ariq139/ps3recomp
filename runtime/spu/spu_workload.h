@@ -12,7 +12,8 @@
  * Flow:
  *   1) At init, the title's generated registration code calls
  *      spu_workload_register(fingerprint, lifted_entry, "name") once per lifted
- *      SPU binary. The fingerprint is FNV-1a-64 over the exact ELF image bytes
+ *      SPU binary. The fingerprint uses the project's 64-bit FNV-1a-style hash
+ *      over the exact ELF image bytes
  *      (the same bytes the title later hands to cellSpurs), computed identically
  *      here and by the offline extractor (so a manifest can be emitted).
  *   2) cellSpursAddWorkload / cellSpursCreateTask call spu_workload_dispatch()
@@ -34,9 +35,9 @@ extern "C" {
 
 typedef void (*spu_lifted_entry_fn)(spu_context*);
 
-/* FNV-1a 64-bit over a byte range. The canonical workload fingerprint; the
- * offline extractor computes the same value so registrations and the images a
- * title passes to cellSpurs line up. */
+/* Project-specific 64-bit FNV-1a-style hash over a byte range. Its legacy seed
+ * is 1469598103934665603 (not the standard FNV-1a-64 offset basis); offline
+ * tools use the same seed so registrations and runtime images line up. */
 uint64_t spu_workload_fingerprint(const void* data, size_t n);
 
 /* Register one lifted SPU binary under its image fingerprint. `name` is borrowed
@@ -51,6 +52,18 @@ void spu_workload_register(uint64_t fingerprint, spu_lifted_entry_fn fn,
  * resolves within the correct image when several share LS addresses. */
 void spu_workload_register_img(uint64_t fingerprint, spu_lifted_entry_fn fn,
                                int image_id, const char* name);
+
+/* Set before job dispatch. Standard jobs receive DMA tag 20; custom job
+ * runtimes can use this context word as a worker-slot selector instead.
+ * Key overrides by the registered image fingerprint, not a global title mode. */
+void spu_workload_set_job_context_tag(uint64_t fingerprint, uint32_t value);
+uint32_t spu_workload_job_context_tag(int image_id);
+
+/* Immutable, pre-scanned raw job region. Its exact initialized length may be
+ * unknown. Dispatch requires every submitted image byte to match the region. */
+void spu_workload_register_raw_region(const uint8_t* bytes, uint32_t size,
+                                     spu_lifted_entry_fn fn, int image_id,
+                                     const char* name);
 
 /* Look up a lifted entry by fingerprint; NULL if none registered. */
 spu_lifted_entry_fn spu_workload_find(uint64_t fingerprint);

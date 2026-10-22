@@ -6,12 +6,17 @@
  *
  * The host input layer (SDL2 event loop, etc.) should call cellKb_keyEvent()
  * whenever a key is pressed or released.
+ *
+ * RPCS3_REFERENCE_REVIEWED (RPCS3 commit 2ba2f75bc, cellKb.cpp): CellKb data
+ * layout and status behavior were checked; event storage and host-key mapping
+ * are local implementations, with no RPCS3 function body copied.
  */
 
 #include "cellKb.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#include "../../runtime/platform/win32_compat.h"
 
 /* HLE args are GUEST effective addresses; guest structs are BIG-ENDIAN. Write
  * through the vm accessors (cellPad.c idiom) -- dereferencing the "pointer"
@@ -42,6 +47,10 @@ typedef struct {
 static int         s_kb_initialized = 0;
 static u32         s_kb_max_connect = 0;
 static KbPortState s_kb_ports[CELL_KB_MAX_KEYBOARDS];
+static SRWLOCK     s_kb_lock = SRWLOCK_INIT;
+
+#define KB_UNLOCK_RETURN(value) do { ReleaseSRWLockExclusive(&s_kb_lock); return (value); } while (0)
+#define KB_UNLOCK_VOID()        do { ReleaseSRWLockExclusive(&s_kb_lock); return; } while (0)
 
 /* ---------------------------------------------------------------------------
  * Host key event injection
@@ -49,8 +58,9 @@ static KbPortState s_kb_ports[CELL_KB_MAX_KEYBOARDS];
 
 void cellKb_keyEvent(u32 port, u16 keycode, int pressed)
 {
+    AcquireSRWLockExclusive(&s_kb_lock);
     if (!s_kb_initialized || port >= CELL_KB_MAX_KEYBOARDS)
-        return;
+        KB_UNLOCK_VOID();
 
     KbPortState* kb = &s_kb_ports[port];
     if (!kb->connected)
@@ -82,6 +92,7 @@ void cellKb_keyEvent(u32 port, u16 keycode, int pressed)
             kb->event_buf[kb->event_count++] = keycode;
         }
     }
+    ReleaseSRWLockExclusive(&s_kb_lock);
 }
 
 /* ---------------------------------------------------------------------------
@@ -123,12 +134,13 @@ static u16 kb_raw_to_ascii(u16 raw, u32 mkey)
 s32 cellKbInit(u32 max_connect)
 {
     printf("[cellKb] Init(max_connect=%u)\n", max_connect);
+    AcquireSRWLockExclusive(&s_kb_lock);
 
     if (s_kb_initialized)
-        return CELL_KB_ERROR_ALREADY_INITIALIZED;
+        KB_UNLOCK_RETURN(CELL_KB_ERROR_ALREADY_INITIALIZED);
 
     if (max_connect == 0 || max_connect > CELL_KB_MAX_KEYBOARDS)
-        return CELL_KB_ERROR_INVALID_PARAMETER;
+        KB_UNLOCK_RETURN(CELL_KB_ERROR_INVALID_PARAMETER);
 
     s_kb_initialized = 1;
     s_kb_max_connect = max_connect;
@@ -139,18 +151,19 @@ s32 cellKbInit(u32 max_connect)
     s_kb_ports[0].rmode = CELL_KB_RMODE_INPUTCHAR;
     s_kb_ports[0].codetype = CELL_KB_CODETYPE_ASCII;
 
-    return CELL_OK;
+    KB_UNLOCK_RETURN(CELL_OK);
 }
 
 s32 cellKbEnd(void)
 {
     printf("[cellKb] End()\n");
+    AcquireSRWLockExclusive(&s_kb_lock);
 
     if (!s_kb_initialized)
-        return CELL_KB_ERROR_UNINITIALIZED;
+        KB_UNLOCK_RETURN(CELL_KB_ERROR_UNINITIALIZED);
 
     s_kb_initialized = 0;
-    return CELL_OK;
+    KB_UNLOCK_RETURN(CELL_OK);
 }
 
 /* Guest CellKbData layout (big-endian): +0x00 led u32, +0x04 mkey u32,
@@ -158,12 +171,13 @@ s32 cellKbEnd(void)
 s32 cellKbGetData(u32 port_no, CellKbData* data)
 {
     unsigned long long ea = (unsigned int)(uintptr_t)data;
+    AcquireSRWLockExclusive(&s_kb_lock);
 
     if (!s_kb_initialized)
-        return CELL_KB_ERROR_UNINITIALIZED;
+        KB_UNLOCK_RETURN(CELL_KB_ERROR_UNINITIALIZED);
 
     if (port_no >= s_kb_max_connect || !data)
-        return CELL_KB_ERROR_INVALID_PARAMETER;
+        KB_UNLOCK_RETURN(CELL_KB_ERROR_INVALID_PARAMETER);
 
     KbPortState* kb = &s_kb_ports[port_no];
 
@@ -171,7 +185,7 @@ s32 cellKbGetData(u32 port_no, CellKbData* data)
         vm_write32(ea + 0x00, 0);
         vm_write32(ea + 0x04, 0);
         vm_write32(ea + 0x08, 0);
-        return CELL_KB_ERROR_NO_DEVICE;
+        KB_UNLOCK_RETURN(CELL_KB_ERROR_NO_DEVICE);
     }
 
     vm_write32(ea + 0x00, kb->led);
@@ -203,7 +217,7 @@ s32 cellKbGetData(u32 port_no, CellKbData* data)
         vm_write32(ea + 0x08, (u32)count);
     }
 
-    return CELL_OK;
+    KB_UNLOCK_RETURN(CELL_OK);
 }
 
 /* Guest CellKbInfo layout (big-endian): +0x00 max_connect u32, +0x04
@@ -212,12 +226,13 @@ s32 cellKbGetData(u32 port_no, CellKbData* data)
 s32 cellKbGetInfo(CellKbInfo* info)
 {
     unsigned long long ea = (unsigned int)(uintptr_t)info;
+    AcquireSRWLockExclusive(&s_kb_lock);
 
     if (!s_kb_initialized)
-        return CELL_KB_ERROR_UNINITIALIZED;
+        KB_UNLOCK_RETURN(CELL_KB_ERROR_UNINITIALIZED);
 
     if (!info)
-        return CELL_KB_ERROR_INVALID_PARAMETER;
+        KB_UNLOCK_RETURN(CELL_KB_ERROR_INVALID_PARAMETER);
 
     vm_write32(ea + 0x00, s_kb_max_connect);
     vm_write32(ea + 0x08, 0);                      /* system info flags */
@@ -230,52 +245,55 @@ s32 cellKbGetInfo(CellKbInfo* info)
     }
     vm_write32(ea + 0x04, connected);              /* now_connect */
 
-    return CELL_OK;
+    KB_UNLOCK_RETURN(CELL_OK);
 }
 
 s32 cellKbSetReadMode(u32 port_no, u32 rmode)
 {
     printf("[cellKb] SetReadMode(port=%u, rmode=%u)\n", port_no, rmode);
+    AcquireSRWLockExclusive(&s_kb_lock);
 
     if (!s_kb_initialized)
-        return CELL_KB_ERROR_UNINITIALIZED;
+        KB_UNLOCK_RETURN(CELL_KB_ERROR_UNINITIALIZED);
 
     if (port_no >= CELL_KB_MAX_KEYBOARDS)
-        return CELL_KB_ERROR_INVALID_PARAMETER;
+        KB_UNLOCK_RETURN(CELL_KB_ERROR_INVALID_PARAMETER);
 
     if (rmode != CELL_KB_RMODE_INPUTCHAR && rmode != CELL_KB_RMODE_PACKET)
-        return CELL_KB_ERROR_INVALID_PARAMETER;
+        KB_UNLOCK_RETURN(CELL_KB_ERROR_INVALID_PARAMETER);
 
     s_kb_ports[port_no].rmode = rmode;
-    return CELL_OK;
+    KB_UNLOCK_RETURN(CELL_OK);
 }
 
 s32 cellKbSetCodeType(u32 port_no, u32 codetype)
 {
     printf("[cellKb] SetCodeType(port=%u, codetype=%u)\n", port_no, codetype);
+    AcquireSRWLockExclusive(&s_kb_lock);
 
     if (!s_kb_initialized)
-        return CELL_KB_ERROR_UNINITIALIZED;
+        KB_UNLOCK_RETURN(CELL_KB_ERROR_UNINITIALIZED);
 
     if (port_no >= CELL_KB_MAX_KEYBOARDS)
-        return CELL_KB_ERROR_INVALID_PARAMETER;
+        KB_UNLOCK_RETURN(CELL_KB_ERROR_INVALID_PARAMETER);
 
     if (codetype != CELL_KB_CODETYPE_RAW && codetype != CELL_KB_CODETYPE_ASCII)
-        return CELL_KB_ERROR_INVALID_PARAMETER;
+        KB_UNLOCK_RETURN(CELL_KB_ERROR_INVALID_PARAMETER);
 
     s_kb_ports[port_no].codetype = codetype;
-    return CELL_OK;
+    KB_UNLOCK_RETURN(CELL_OK);
 }
 
 s32 cellKbClearBuf(u32 port_no)
 {
+    AcquireSRWLockExclusive(&s_kb_lock);
     if (!s_kb_initialized)
-        return CELL_KB_ERROR_UNINITIALIZED;
+        KB_UNLOCK_RETURN(CELL_KB_ERROR_UNINITIALIZED);
 
     if (port_no >= CELL_KB_MAX_KEYBOARDS)
-        return CELL_KB_ERROR_INVALID_PARAMETER;
+        KB_UNLOCK_RETURN(CELL_KB_ERROR_INVALID_PARAMETER);
 
     memset(s_kb_ports[port_no].key_state, 0, sizeof(s_kb_ports[port_no].key_state));
     s_kb_ports[port_no].event_count = 0;
-    return CELL_OK;
+    KB_UNLOCK_RETURN(CELL_OK);
 }

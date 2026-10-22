@@ -57,6 +57,9 @@ typedef u32 CellMsgDialogType;
 
 /* Callback: called when dialog closes */
 typedef void (*CellMsgDialogCallback)(s32 buttonType, void* userdata);
+/* Host-side callback for HLE services that own a dialog lifecycle. This is an
+ * internal runtime hook, not a guest export. */
+typedef void (*CellMsgDialogHostCallback)(s32 buttonType, void* userdata);
 
 /* ---------------------------------------------------------------------------
  * Functions
@@ -68,6 +71,8 @@ s32 cellMsgDialogOpen(CellMsgDialogType type, const char* msgString,
 s32 cellMsgDialogOpen2(CellMsgDialogType type, const char* msgString,
                         CellMsgDialogCallback callback, void* userdata,
                         void* extParam);
+s32 cellMsgDialogOpenErrorCode(u32 errorCode, CellMsgDialogCallback callback,
+                               void* userdata, void* extParam);
 
 s32 cellMsgDialogClose(float delayMs);
 
@@ -78,6 +83,14 @@ s32 cellMsgDialogProgressBarSetMsg(u32 progressBarIndex, const char* msgString);
 s32 cellMsgDialogProgressBarReset(u32 progressBarIndex);
 
 s32 cellMsgDialogProgressBarInc(u32 progressBarIndex, u32 delta);
+
+/* Internal helper used by HLE modules to show host-formatted text and observe
+ * the result without pretending a host function pointer is a guest OPD.
+ * forceNoButtonWait keeps a no-button prompt open until close/abort or the
+ * configured headless auto-dismiss deadline. */
+s32 ps3_cell_msg_dialog_open_host(CellMsgDialogType type, const char* message,
+                                  CellMsgDialogHostCallback callback,
+                                  void* userdata, int forceNoButtonWait);
 
 #ifdef __cplusplus
 }

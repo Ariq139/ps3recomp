@@ -15,7 +15,9 @@
  */
 
 #include "rsx_commands.h"
+#include "cellGcmSys.h"
 #include "ps3emu/milestone.h"   /* ps3_ms -- boot milestone log */
+#include "../../runtime/ppu/ppu_memory.h" /* vm_read32 for label-watch diagnostics */
 #include <stdio.h>
 #include <stdlib.h>   /* getenv -- an implicit decl returns int, truncating the pointer */
 #include <string.h>
@@ -27,6 +29,20 @@
  * -----------------------------------------------------------------------*/
 
 static rsx_backend* s_backend = NULL;
+/* NV4097 semaphore offset persists across command-buffer packets. */
+static u32 s_rsx_semaphore_offset = 0;
+
+static u32 rsx_label_watch_offset(void)
+{
+    static int initialized = 0;
+    static u32 offset = 0xFFFFFFFFu;
+    if (!initialized) {
+        const char* e = getenv("GCM_LABEL_WATCH");
+        if (e && *e) offset = (u32)strtoul(e, NULL, 0);
+        initialized = 1;
+    }
+    return offset;
+}
 
 /* Last NV406E_SET_REFERENCE value seen in the FIFO. The title writes a
  * reference then spins on the GCM control register's `ref` field until the RSX
@@ -44,6 +60,51 @@ rsx_backend* rsx_get_backend(void)
     return s_backend;
 }
 
+/* Flush the register file before a GPU operation.  BEGIN_END and explicit
+ * DRAW_* methods share the same RSX state, so both must propagate dirty shader,
+ * surface, and texture registers to the backend before submitting work. */
+static void rsx_flush_dirty_state(rsx_state* state)
+{
+    if (!state || !s_backend) return;
+
+    if (state->surface_dirty && s_backend->set_render_target)
+        s_backend->set_render_target(s_backend->userdata, state);
+    if (state->viewport_dirty && s_backend->set_viewport)
+        s_backend->set_viewport(s_backend->userdata, state);
+    if (state->blend_dirty && s_backend->set_blend)
+        s_backend->set_blend(s_backend->userdata, state);
+    if ((state->depth_dirty || state->stencil_dirty) &&
+        s_backend->set_depth_stencil)
+        s_backend->set_depth_stencil(s_backend->userdata, state);
+    if (state->color_mask_dirty && s_backend->set_color_mask)
+        s_backend->set_color_mask(s_backend->userdata, state);
+    if (state->alpha_dirty && s_backend->set_alpha_test)
+        s_backend->set_alpha_test(s_backend->userdata, state);
+    if (state->shader_dirty && s_backend->set_shader)
+        s_backend->set_shader(s_backend->userdata, state);
+    if (state->vertex_dirty && s_backend->set_vertex_attribs)
+        s_backend->set_vertex_attribs(s_backend->userdata, state);
+
+    if (state->texture_dirty && s_backend->bind_texture) {
+        for (u32 i = 0; i < RSX_MAX_TEXTURES; i++) {
+            if (!state->textures[i].dirty) continue;
+            s_backend->bind_texture(s_backend->userdata, i, &state->textures[i]);
+            state->textures[i].dirty = 0;
+        }
+    }
+
+    state->surface_dirty = 0;
+    state->viewport_dirty = 0;
+    state->blend_dirty = 0;
+    state->depth_dirty = 0;
+    state->stencil_dirty = 0;
+    state->color_mask_dirty = 0;
+    state->alpha_dirty = 0;
+    state->shader_dirty = 0;
+    state->vertex_dirty = 0;
+    state->texture_dirty = 0;
+}
+
 /* ---------------------------------------------------------------------------
  * State initialization
  * -----------------------------------------------------------------------*/
@@ -55,35 +116,77 @@ void rsx_state_init(rsx_state* state)
      * struct would leave w at 0. */
     for (int _i = 0; _i < RSX_MAX_VERTEX_ATTRIBS; _i++)
         state->vertex_data4f[_i][3] = 1.0f;
+    /* NV4097 reset value for each fragment unit's CONTROL2 register (RPCS3
+     * rsx_methods.cpp reset image). This block is separate from the 0x1A00
+     * texture-unit register blocks and contains one dword per unit. */
+    for (int _i = 0; _i < RSX_MAX_TEXTURES; _i++)
+        state->textures[_i].control2 = 0x2DC8u;
 
     /* Default viewport */
     state->viewport_w = 1280;
     state->viewport_h = 720;
     state->clip_min = 0.0f;
     state->clip_max = 1.0f;
+    state->window_offset = 0;
+    state->shader_window = 0x1000;
+    state->fog_mode = 0x0800;
+    state->fog_params[0] = state->fog_params[1] = 0.0f;
+    state->poly_offset_scale = state->poly_offset_bias = 0.0f;
+    state->control0 = 0x00100000;
+    state->zcull_enable = 0x3;
+    state->zcull_control1 = 0x01000100;
+    state->zmin_max_control = 0x1; /* RPCS3 reset image: depth clip enabled */
+    state->restart_index = 0xFFFFFFFFu;
+    state->dma_context[0] = 0x66604200u; /* notifies */
+    state->dma_context[1] = 0xFEED0000u; /* A */
+    state->dma_context[2] = 0xFEED0001u; /* B */
+    state->dma_context[3] = 0xFEED0000u; /* color B */
+    state->dma_context[4] = 0;           /* state */
+    state->dma_context[5] = 0xFEED0000u; /* color A */
+    state->dma_context[6] = 0xFEED0000u; /* zeta */
+    state->dma_context[7] = 0xFEED0000u; /* vertex A */
+    state->dma_context[8] = 0xFEED0001u; /* vertex B */
+    state->dma_context[9] = 0x66606660u; /* semaphore */
+    state->dma_context[10] = 0x66626660u; /* report */
+    state->dma_context[11] = 0;          /* clip ID */
+    state->dma_context[12] = 0;          /* cull data */
+    state->dma_context[13] = 0xFEED0000u; /* color C */
+    state->dma_context[14] = 0xFEED0000u; /* color D */
 
     /* Default scissor */
     state->scissor_w = 4096;
     state->scissor_h = 4096;
 
     /* Default depth */
-    state->depth_func = 1; /* LESS */
+    state->depth_func = 0x0201; /* NV4097 reset value: GL_LESS */
     state->depth_mask = 1;
 
-    /* Default cull */
+    /* Default cull state follows the NV40 reset image: culling is disabled
+     * until enabled, and the default front winding is counter-clockwise. */
     state->cull_face = 1; /* BACK */
-    state->front_face = 0; /* CW */
+    state->front_face = 0x0901u; /* CELL_GCM_CCW */
+    state->shade_mode = CELL_GCM_SMOOTH;
 
     /* Default color mask: all channels writable (A|R|G|B) */
     state->color_mask = 0x01010101;
+    state->color_mask_mrt = 0;
+    state->blend_enable_mrt = 0;
 
     /* Default stencil: sensible initial values */
     state->stencil_func = 0x0207; /* ALWAYS */
     state->stencil_ref = 0;
-    state->stencil_mask = 0xFF;
+    state->stencil_func_mask = 0xFF;
+    state->stencil_write_mask = 0xFF;
     state->stencil_op_fail = 0x1E00;  /* KEEP */
     state->stencil_op_zfail = 0x1E00; /* KEEP */
     state->stencil_op_zpass = 0x1E00; /* KEEP */
+    state->back_stencil_func = 0x0207; /* ALWAYS */
+    state->back_stencil_ref = 0;
+    state->back_stencil_func_mask = 0xFF;
+    state->back_stencil_write_mask = 0xFF;
+    state->back_stencil_op_fail = 0x1E00;  /* KEEP */
+    state->back_stencil_op_zfail = 0x1E00; /* KEEP */
+    state->back_stencil_op_zpass = 0x1E00; /* KEEP */
 
     /* Default alpha test */
     state->alpha_func = 0x0207; /* ALWAYS */
@@ -92,6 +195,8 @@ void rsx_state_init(rsx_state* state)
     /* Default shader control: 32-bit colour exports (r0..) -- matches every
      * title that never programs the register. */
     state->shader_control = CELL_GCM_SHADER_CONTROL_32_BITS_EXPORTS;
+    state->shader_packer = 0;
+    state->anti_aliasing_control = 0xFFFF0000u;
 
     /* Mark everything dirty */
     state->surface_dirty = 1;
@@ -281,6 +386,20 @@ static int process_texture_control3(rsx_state* state, u32 method, u32 data)
     return 0;
 }
 
+/* SET_TEXTURE_CONTROL2 is a separate, contiguous 16-word block at 0x0B00;
+ * unlike the other fragment-texture fields, unit N is at base + N*4. RPCS3
+ * treats writes as texture-state changes and invalidates that unit. */
+static int process_texture_control2(rsx_state* state, u32 method, u32 data)
+{
+    u32 unit = (method - NV4097_SET_TEXTURE_CONTROL2) / 4;
+    if (unit >= RSX_MAX_TEXTURES)
+        return -1;
+    state->textures[unit].control2 = data;
+    state->textures[unit].dirty = 1;
+    state->texture_dirty = 1;
+    return 0;
+}
+
 /* ---------------------------------------------------------------------------
  * Vertex attribute method processing
  *
@@ -333,6 +452,104 @@ static int process_vertex_attrib_method(rsx_state* state, u32 method, u32 data)
  * Main method dispatch
  * -----------------------------------------------------------------------*/
 
+typedef enum rsx_vertex_constant_encoding {
+    RSX_VERTEX_CONSTANT_FLOAT,
+    RSX_VERTEX_CONSTANT_S16,
+    RSX_VERTEX_CONSTANT_SNORM16,
+    RSX_VERTEX_CONSTANT_UNORM8
+} rsx_vertex_constant_encoding;
+
+typedef struct rsx_vertex_constant_method_range {
+    u32 base;
+    u8 words_per_attribute;
+    u8 components_per_word;
+    u8 component_count;
+    rsx_vertex_constant_encoding encoding;
+} rsx_vertex_constant_method_range;
+
+/* Current vertex registers supply attributes whose arrays are disabled.
+ * Decode the typed method files into the shared float4 register image, matching
+ * RPCS3's NV4097 method handlers without importing their implementation. */
+static int process_vertex_constant_method(rsx_state* state, u32 method, u32 data)
+{
+    static const rsx_vertex_constant_method_range ranges[] = {
+        { NV4097_SET_VERTEX_DATA_SCALED4S_M, 2, 2, 4, RSX_VERTEX_CONSTANT_SNORM16 },
+        { NV4097_SET_VERTEX_DATA3F_M,       4, 1, 3, RSX_VERTEX_CONSTANT_FLOAT },
+        { NV4097_SET_VERTEX_DATA2F_M,       2, 1, 2, RSX_VERTEX_CONSTANT_FLOAT },
+        { NV4097_SET_VERTEX_DATA2S_M,       1, 2, 2, RSX_VERTEX_CONSTANT_S16 },
+        { NV4097_SET_VERTEX_DATA4UB_M,      1, 4, 4, RSX_VERTEX_CONSTANT_UNORM8 },
+        { NV4097_SET_VERTEX_DATA4S_M,       2, 2, 4, RSX_VERTEX_CONSTANT_S16 },
+        { NV4097_SET_VERTEX_DATA4F_M,       4, 1, 4, RSX_VERTEX_CONSTANT_FLOAT },
+        { NV4097_SET_VERTEX_DATA1F_M,       1, 1, 1, RSX_VERTEX_CONSTANT_FLOAT },
+    };
+
+    for (u32 r = 0; r < sizeof(ranges) / sizeof(ranges[0]); r++) {
+        const rsx_vertex_constant_method_range* range = &ranges[r];
+        const u32 words = (u32)range->words_per_attribute * RSX_MAX_VERTEX_ATTRIBS;
+        if (method < range->base || method >= range->base + words * 4u ||
+            ((method - range->base) & 3u))
+            continue;
+
+        const u32 word = (method - range->base) >> 2;
+        const u32 attribute = word / range->words_per_attribute;
+        const u32 word_lane = word % range->words_per_attribute;
+        for (u32 packed = 0; packed < range->components_per_word; packed++) {
+            const u32 component = word_lane * range->components_per_word + packed;
+            if (component >= range->component_count)
+                continue; /* 3F reserves a fourth dword for register alignment. */
+
+            float value;
+            switch (range->encoding) {
+            case RSX_VERTEX_CONSTANT_FLOAT:
+                memcpy(&value, &data, sizeof(value));
+                break;
+            case RSX_VERTEX_CONSTANT_S16: {
+                /* The RSX low half/byte is attribute component zero. */
+                const u32 shift = packed ? 16u : 0u;
+                value = (float)(int16_t)((data >> shift) & 0xFFFFu);
+                break;
+            }
+            case RSX_VERTEX_CONSTANT_SNORM16: {
+                const u32 shift = packed ? 16u : 0u;
+                const int16_t signed_value = (int16_t)((data >> shift) & 0xFFFFu);
+                value = (float)signed_value / 32767.0f;
+                if (value < -1.0f) value = -1.0f;
+                break;
+            }
+            case RSX_VERTEX_CONSTANT_UNORM8: {
+                const u32 shift = packed * 8u;
+                value = (float)((data >> shift) & 0xFFu) / 255.0f;
+                break;
+            }
+            default:
+                return 0;
+            }
+            state->vertex_data4f[attribute][component] = value;
+        }
+        /* OpenGL-style 1/2-component current attributes have conventional
+         * missing lanes. Set them when the first word of the method vector
+         * arrives; 3F similarly forces w to one. */
+        if (range->encoding == RSX_VERTEX_CONSTANT_FLOAT && word_lane == 0) {
+            if (range->component_count == 1) {
+                state->vertex_data4f[attribute][1] = 0.0f;
+                state->vertex_data4f[attribute][2] = 0.0f;
+                state->vertex_data4f[attribute][3] = 1.0f;
+            } else if (range->component_count == 2) {
+                state->vertex_data4f[attribute][2] = 0.0f;
+                state->vertex_data4f[attribute][3] = 1.0f;
+            } else if (range->component_count == 3) {
+                state->vertex_data4f[attribute][3] = 1.0f;
+            }
+        } else if (range->encoding == RSX_VERTEX_CONSTANT_S16 &&
+                   range->component_count == 2) {
+            state->vertex_data4f[attribute][2] = 0.0f;
+            state->vertex_data4f[attribute][3] = 1.0f;
+        }
+        return 1;
+    }
+    return 0;
+}
+
 int rsx_process_method(rsx_state* state, u32 method, u32 data)
 {
     /* RSX_TRACE=<N>: trace the first N methods (bare "1" keeps the old 250).
@@ -352,6 +569,14 @@ int rsx_process_method(rsx_state* state, u32 method, u32 data)
     /* NV4097_SET_FREQUENCY_DIVIDER_OPERATION: per-attribute modulo/divide mask
      * for the frequency divisor (instancing). Captured for read_vp_vertex. */
     if (method == 0x00001FC0) { state->frequency_divider_op = data; return 0; }
+    if (method == NV4097_SET_VERTEX_DATA_BASE_OFFSET) {
+        state->vertex_data_base_offset = data;
+        return 0;
+    }
+    if (method == NV4097_SET_VERTEX_DATA_BASE_INDEX) {
+        state->vertex_data_base_index = data;
+        return 0;
+    }
 
     /* NV4097_SET_CONTEXT_DMA_SEMAPHORE (0x01A4) picks where the semaphore
      * offset points. CELL_GCM_CONTEXT_DMA_MEMORY_HOST_BUFFER (0xFEED0001) is
@@ -380,17 +605,17 @@ int rsx_process_method(rsx_state* state, u32 method, u32 data)
           }
           return 0;
       } }
-    { static u32 s_sem_off = 0, s_sem_ctx = 0;
+    { static u32 s_sem_ctx = 0;
       if (method == 0x01A4) {
           if (data != s_sem_ctx) { static int _l = 0; if (_l++ < 8)
               fprintf(stderr, "[RSX] semaphore context dma = 0x%08X\n", data); }
           s_sem_ctx = data;
       }
-      if (method == 0x1D6C) { s_sem_off = data; return 0; }
+      if (method == 0x1D6C) { s_rsx_semaphore_offset = data; return 0; }
       if ((method == 0x1D70 || method == 0x1D74) && s_sem_ctx == 0xFEED0001u) {
         extern void vm_write32(uint32_t a, uint32_t v);
         extern u32 gcm_io_offset_to_ea(u32 io);
-        u32 ea = gcm_io_offset_to_ea(s_sem_off);
+        u32 ea = gcm_io_offset_to_ea(s_rsx_semaphore_offset);
         u32 val = method == 0x1D74 ? data
                 : (data & 0xff00ff00u) | ((data >> 16) & 0xffu) | ((data & 0xffu) << 16);
         if (ea) vm_write32(ea, val);
@@ -406,19 +631,34 @@ int rsx_process_method(rsx_state* state, u32 method, u32 data)
          * 0x00010000 != 1 and spun forever (gcm/cube sample hang after init).
          * Apply the same swap the hardware does so the pre-swap cancels out. */
         u32 val = (data & 0xff00ff00u) | ((data >> 16) & 0xffu) | ((data & 0xffu) << 16);
-        vm_write32(VM_HLE_INJECT_BASE + (s_sem_off & 0x00FFFFFFu), val);
+        vm_write32(VM_HLE_INJECT_BASE + (s_rsx_semaphore_offset & 0x00FFFFFFu), val);
         { static u32 seen[64]; static int ns = 0; int k = 0;   /* TEMP: distinct release offsets */
-          for (; k < ns; k++) if (seen[k] == s_sem_off) break;
-          if (k == ns && ns < 64) { seen[ns++] = s_sem_off;
-              fprintf(stderr, "[RSX] first back-end release @off 0x%X val 0x%08X\n", s_sem_off, val); } }
-        { static int _l=0; if(PS3_LOG_FIRST(_l, 8)) fprintf(stderr,"[RSX] label write @0x%08X = 0x%08X (sync fence, raw 0x%08X)\n", VM_HLE_INJECT_BASE+(s_sem_off&0xFFFFFF), val, data); }
+          for (; k < ns; k++) if (seen[k] == s_rsx_semaphore_offset) break;
+          if (k == ns && ns < 64) { seen[ns++] = s_rsx_semaphore_offset;
+              fprintf(stderr, "[RSX] first back-end release @off 0x%X val 0x%08X\n", s_rsx_semaphore_offset, val); } }
+        { static int _l=0; if(PS3_LOG_FIRST(_l, 8)) fprintf(stderr,"[RSX] label write @0x%08X = 0x%08X (sync fence, raw 0x%08X)\n", VM_HLE_INJECT_BASE+(s_rsx_semaphore_offset&0xFFFFFF), val, data); }
         return 0;
       }
-      if (method == 0x1D74) {
+      if (method == NV4097_TEXTURE_READ_SEMAPHORE_RELEASE) {
         extern void vm_write32(uint32_t a, uint32_t v);
-        vm_write32(VM_HLE_INJECT_BASE + (s_sem_off & 0x00FFFFFFu), data);
+        const u32 label_ea = VM_HLE_INJECT_BASE + (s_rsx_semaphore_offset & 0x00FFFFFFu);
+        /* This is a lightweight texture-read release, not WAIT_FOR_IDLE. In
+         * particular, do not drain/render the deferred draw queue here: games
+         * use reserved labels at high frequency, and flushing those batches
+         * mid-frame can stall the guest and present incomplete frames. The VM
+         * is coherent, so publish the label directly; the D3D12 renderer will
+         * submit its recorded draws at the normal frame boundary. */
+        if (rsx_label_watch_offset() == s_rsx_semaphore_offset) {
+            static unsigned watch_n = 0;
+            const unsigned n = ++watch_n;
+            if (n <= 128 || (n % 1000u) == 0)
+                fprintf(stderr, "[GCM-LABEL] NV4097 texture-release off=0x%X value=0x%08X before=0x%08X sample=%u\n",
+                        s_rsx_semaphore_offset, data, vm_read32(label_ea), n);
+        }
+        vm_write32(label_ea, data);
         return 0;
-      } }
+      }
+    }
     if ((method >= 0x200 && method <= 0x23C) ||
         (method >= 0x280 && method <= 0x28C))
         return process_surface_method(state, method, data);
@@ -431,6 +671,10 @@ int rsx_process_method(rsx_state* state, u32 method, u32 data)
     if (method >= NV4097_SET_TEXTURE_CONTROL3 &&
         method < NV4097_SET_TEXTURE_CONTROL3 + RSX_MAX_TEXTURES * 4)
         return process_texture_control3(state, method, data);
+
+    if (method >= NV4097_SET_TEXTURE_CONTROL2 &&
+        method < NV4097_SET_TEXTURE_CONTROL2 + RSX_MAX_TEXTURES * 4)
+        return process_texture_control2(state, method, data);
 
     /* Vertex texture units: 0x0900..0x097C */
     if (method >= NV4097_SET_VERTEX_TEXTURE_OFFSET &&
@@ -445,7 +689,87 @@ int rsx_process_method(rsx_state* state, u32 method, u32 data)
     if (method >= 0x1680 && method < 0x1680 + RSX_MAX_VERTEX_ATTRIBS * 4)
         return process_vertex_attrib_method(state, method, data);
 
+    /* RPCS3_REFERENCE_REVIEWED: NV4097 register semantics checked against
+     * RPCS3 gcm_enums.h / rsx_methods.h; local state handling, no function body
+     * copied. See docs/RPCS3_LICENSE_AUDIT.md. */
     /* Viewport */
+    if (method == 0x0394 || method == 0x0398) {
+        float v; memcpy(&v, &data, sizeof(v));
+        if (method == 0x0394) state->clip_min = v;
+        else state->clip_max = v;
+        return 0;
+    }
+    if (method == NV4097_SET_WINDOW_OFFSET) { state->window_offset = data; return 0; }
+    if (method == 0x1D88) { state->shader_window = data; return 0; }
+    if (method == 0x03B0) { state->control0 = data; return 0; }
+    if (method == 0x08CC) { state->fog_mode = data; state->shader_dirty = 1; return 0; }
+    if (method == 0x08D0 || method == 0x08D4) {
+        float v; memcpy(&v, &data, sizeof(v));
+        state->fog_params[(method - 0x08D0) >> 2] = v;
+        state->shader_dirty = 1;
+        return 0;
+    }
+    if (method == 0x0A60) { state->poly_offset_point = data != 0; return 0; }
+    if (method == 0x0A64) { state->poly_offset_line = data != 0; return 0; }
+    if (method == 0x0A68) { state->poly_offset_fill = data != 0; return 0; }
+    if (method == 0x0A78 || method == 0x0A7C) {
+        float v; memcpy(&v, &data, sizeof(v));
+        if (method == 0x0A78) state->poly_offset_scale = v;
+        else state->poly_offset_bias = v;
+        return 0;
+    }
+    if (method == NV4097_SET_ZCULL_STATS_ENABLE) { state->zcull_stats_enable = data; return 0; }
+    if (method == NV4097_SET_ZPASS_PIXEL_COUNT_ENABLE) {
+        state->zpass_pixel_count_enable = data != 0;
+        return 0;
+    }
+    if (method == NV4097_SET_ZCULL_EN) { state->zcull_enable = data; return 0; }
+    /* RPCS3's handler only records this method for frame capture; it has no
+     * rendering side effect. Recognize it so valid command streams do not
+     * fall through as unknown methods. */
+    if (method == NV4097_CLEAR_ZCULL_SURFACE) return 0;
+    if (method == 0x1EA8) { state->zcull_control1 = data; return 0; }
+    if (method == NV4097_SET_ZMIN_MAX_CONTROL) {
+        state->zmin_max_control = data;
+        return 0;
+    }
+    /* Context DMA registers select the GCM address spaces. This runtime
+     * resolves guest offsets centrally, so retain the register values while
+     * the existing resolver performs the actual mapping. */
+    if (method >= 0x0180 && method <= 0x01B8 && (method & 3u) == 0) {
+        state->dma_context[(method - 0x0180) >> 2] = data;
+        return 0;
+    }
+    if (method == 0x1DAC) { state->restart_index_enable = data != 0; return 0; }
+    if (method == 0x1DB0) { state->restart_index = data; return 0; }
+    if (method == 0x0100) return 0; /* NOP */
+    /* RPCS3 behavior reference (GPL-2.0): NV47/HW/nv4097.cpp::set_notify.
+     * Validate the active notify DMA object, strongly order prior RSX work,
+     * then publish the timestamp/value record in the mapped notify page. */
+    if (method == NV4097_NOTIFY) {
+        const u32 dma = state->dma_context[0];
+        if ((dma & ~7u) !=
+            (CELL_GCM_CONTEXT_DMA_NOTIFY_MAIN_0 & ~7u))
+            return 0;
+        const u32 index = (dma & 7u) ^ 7u;
+        if (s_backend && s_backend->wait_idle)
+            s_backend->wait_idle(s_backend->userdata);
+        if (!cellGcmWriteNotifyData(index)) {
+            static int _missing = 0;
+            if (_missing++ < 8)
+                fprintf(stderr, "[RSX] NV4097_NOTIFY index=%u has no mapped notify slot\n",
+                        index);
+        }
+        return 0;
+    }
+    if (method == 0x0110) {
+        if (s_backend && s_backend->wait_idle)
+            s_backend->wait_idle(s_backend->userdata);
+        return 0;
+    }
+    /* These methods are executed by the FIFO owner, which owns report RAM. */
+    if (method == NV4097_CLEAR_REPORT_VALUE || method == NV4097_GET_REPORT) return 0;
+
     /* Viewport transform: window = ndc*scale + offset. The z lane is the
      * GL->[0,1] depth remap (offset.z=0.5/scale.z=0.5); without honoring it,
      * GL-convention projections (SDK gcm samples) get their near-camera
@@ -477,6 +801,11 @@ int rsx_process_method(rsx_state* state, u32 method, u32 data)
     /* Color mask */
     if (method == NV4097_SET_COLOR_MASK) {
         state->color_mask = data;
+        state->color_mask_dirty = 1;
+        return 0;
+    }
+    if (method == NV4097_SET_COLOR_MASK_MRT) {
+        state->color_mask_mrt = data;
         state->color_mask_dirty = 1;
         return 0;
     }
@@ -517,6 +846,7 @@ int rsx_process_method(rsx_state* state, u32 method, u32 data)
               if (!_first) fprintf(stderr, "[RSX] CLEAR_SURFACE new mask=0x%X color=0x%08X\n",
                                    data, state->color_clear_value); } }
         if (s_backend && s_backend->clear) {
+            rsx_flush_dirty_state(state);
             float depth = (float)(state->zstencil_clear_value >> 8) / (float)0xFFFFFF;
             u8 stencil = state->zstencil_clear_value & 0xFF;
             s_backend->clear(s_backend->userdata, data,
@@ -528,6 +858,11 @@ int rsx_process_method(rsx_state* state, u32 method, u32 data)
     /* Blend */
     if (method == NV4097_SET_BLEND_ENABLE) {
         state->blend_enable = data ? 1 : 0;
+        state->blend_dirty = 1;
+        return 0;
+    }
+    if (method == NV4097_SET_BLEND_ENABLE_MRT) {
+        state->blend_enable_mrt = data & 0x0Eu;
         state->blend_dirty = 1;
         return 0;
     }
@@ -544,6 +879,14 @@ int rsx_process_method(rsx_state* state, u32 method, u32 data)
     if (method == NV4097_SET_BLEND_EQUATION) {
         state->blend_equation = data;
         state->blend_dirty = 1;
+        return 0;
+    }
+    if (method == NV4097_SET_BLEND_COLOR) {
+        state->blend_color = data;
+        return 0;
+    }
+    if (method == NV4097_SET_BLEND_COLOR2) {
+        state->blend_color2 = data;
         return 0;
     }
 
@@ -564,9 +907,17 @@ int rsx_process_method(rsx_state* state, u32 method, u32 data)
         return 0;
     }
 
+    /* RPCS3_REFERENCE_REVIEWED: NV4097 front/back stencil register meanings,
+     * reset values, and GL enum payloads checked against RPCS3 gcm_enums.h and
+     * its GL/Vulkan draw-state setup. This is local register decoding. */
     /* Stencil */
     if (method == NV4097_SET_STENCIL_TEST_ENABLE) {
         state->stencil_test_enable = data ? 1 : 0;
+        state->stencil_dirty = 1;
+        return 0;
+    }
+    if (method == NV4097_SET_STENCIL_MASK) {
+        state->stencil_write_mask = data;
         state->stencil_dirty = 1;
         return 0;
     }
@@ -581,7 +932,7 @@ int rsx_process_method(rsx_state* state, u32 method, u32 data)
         return 0;
     }
     if (method == NV4097_SET_STENCIL_FUNC_MASK) {
-        state->stencil_mask = data;
+        state->stencil_func_mask = data;
         state->stencil_dirty = 1;
         return 0;
     }
@@ -600,6 +951,46 @@ int rsx_process_method(rsx_state* state, u32 method, u32 data)
         state->stencil_dirty = 1;
         return 0;
     }
+    if (method == NV4097_SET_TWO_SIDED_STENCIL_TEST_ENABLE) {
+        state->stencil_two_sided_enable = data ? 1 : 0;
+        state->stencil_dirty = 1;
+        return 0;
+    }
+    if (method == NV4097_SET_BACK_STENCIL_MASK) {
+        state->back_stencil_write_mask = data;
+        state->stencil_dirty = 1;
+        return 0;
+    }
+    if (method == NV4097_SET_BACK_STENCIL_FUNC) {
+        state->back_stencil_func = data;
+        state->stencil_dirty = 1;
+        return 0;
+    }
+    if (method == NV4097_SET_BACK_STENCIL_FUNC_REF) {
+        state->back_stencil_ref = data;
+        state->stencil_dirty = 1;
+        return 0;
+    }
+    if (method == NV4097_SET_BACK_STENCIL_FUNC_MASK) {
+        state->back_stencil_func_mask = data;
+        state->stencil_dirty = 1;
+        return 0;
+    }
+    if (method == NV4097_SET_BACK_STENCIL_OP_FAIL) {
+        state->back_stencil_op_fail = data;
+        state->stencil_dirty = 1;
+        return 0;
+    }
+    if (method == NV4097_SET_BACK_STENCIL_OP_ZFAIL) {
+        state->back_stencil_op_zfail = data;
+        state->stencil_dirty = 1;
+        return 0;
+    }
+    if (method == NV4097_SET_BACK_STENCIL_OP_ZPASS) {
+        state->back_stencil_op_zpass = data;
+        state->stencil_dirty = 1;
+        return 0;
+    }
 
     /* Culling */
     if (method == NV4097_SET_CULL_FACE_ENABLE) {
@@ -612,6 +1003,15 @@ int rsx_process_method(rsx_state* state, u32 method, u32 data)
     }
     if (method == NV4097_SET_FRONT_FACE) {
         state->front_face = data;
+        return 0;
+    }
+    if (method == NV4097_SET_SHADE_MODE) {
+        if (data == CELL_GCM_FLAT || data == CELL_GCM_SMOOTH)
+            state->shade_mode = data;
+        return 0;
+    }
+    if (method == NV4097_SET_TWO_SIDE_LIGHT_EN) {
+        state->two_sided_lighting = data != 0;
         return 0;
     }
 
@@ -665,27 +1065,11 @@ int rsx_process_method(rsx_state* state, u32 method, u32 data)
         state->vertex_attrib_output_mask = data;
         return 0;
     }
-    /* NV4097_SET_VERTEX_DATA4F_M (0x1C00): the constant/"current" value for each
-     * vertex attribute, 16 attributes x 4 floats. The hardware feeds this to
-     * every vertex when the attribute's ARRAY is disabled -- it is not zero.
-     *
-     * Rubber Ducky leaves attribute 3 (diffuse colour) disabled and sets it here
-     * instead; its duck shader computes (lighting * col0) * texture + spec, so a
-     * zero col0 multiplies the texture away and the ducks rendered as a dim grey
-     * specular term only -- present in the framebuffer, invisible on screen.
-     * SET_VERTEX_DATA2F/4UB/2S/4S are the other encodings of the same register
-     * file; add them if a title needs them. */
-    if (method >= 0x1C00u && method < 0x1C00u + RSX_MAX_VERTEX_ATTRIBS * 16u) {
-        u32 idx  = (method - 0x1C00u) >> 4;         /* attribute */
-        u32 lane = ((method - 0x1C00u) >> 2) & 3;   /* x/y/z/w   */
-        float f; memcpy(&f, &data, 4);
-        state->vertex_data4f[idx][lane] = f;
-        { static int _d = -1; if (_d < 0) _d = getenv("VDATA_DBG") ? 1 : 0;
-          static int _n = 0;
-          if (_d && _n < 400) { _n++;
-            fprintf(stderr, "[VDATA4F] attr=%u lane=%u = %.4f%c", idx, lane, f, 10); } }
+    /* NV4097_SET_VERTEX_DATA* methods update the current-attribute register
+     * files. Disabled attribute arrays feed these values to the vertex shader;
+     * decode each typed format into the shared float4 state. */
+    if (process_vertex_constant_method(state, method, data))
         return 0;
-    }
 
     if (method == NV4097_SET_TRANSFORM_CONSTANT_LOAD) {
         { static int _n=0, _e=-1; if (_e < 0) _e = getenv("LOAD_DBG") ? 1 : 0; if (_e && PS3_LOG_FIRST(_n, 200))
@@ -702,6 +1086,28 @@ int rsx_process_method(rsx_state* state, u32 method, u32 data)
     }
     if (method == NV4097_SET_TRANSFORM_BRANCH_BITS) {
         state->transform_branch_bits = data;
+        return 0;
+    }
+    /* RPCS3 behavior reference (GPL-2.0): rsx_methods.cpp / rsx_decode.h.
+     * No source copied. The host refetches vertex memory on every draw. */
+    if (method >= NV4097_SET_TEX_COORD_CONTROL &&
+        method < NV4097_SET_TEX_COORD_CONTROL + 10 * 4 && !(method & 3)) {
+        state->tex_coord_control[(method - NV4097_SET_TEX_COORD_CONTROL) / 4] = data;
+        state->shader_dirty = 1;
+        return 0;
+    }
+    if (method == NV4097_SET_ANTI_ALIASING_CONTROL) {
+        state->anti_aliasing_control = data;
+        state->shader_dirty = state->blend_dirty = 1;
+        return 0;
+    }
+    if (method == NV4097_SET_TRANSFORM_TIMEOUT) {
+        state->transform_timeout = data;
+        return 0;
+    }
+    if (method == NV4097_INVALIDATE_VERTEX_CACHE_FILE ||
+        method == NV4097_INVALIDATE_VERTEX_FILE) {
+        state->vertex_dirty = 1;
         return 0;
     }
     if (method == NV4097_INVALIDATE_L2) {
@@ -746,59 +1152,98 @@ int rsx_process_method(rsx_state* state, u32 method, u32 data)
     }
 
     /* Draw */
-    if (method == NV4097_SET_BEGIN_END) {
-        if (data != 0) {
-            state->primitive_type = data;
-            state->in_begin_end = 1;
-            state->begin_epoch++;
-
-            /* Flush dirty state to backend before drawing */
-            if (s_backend) {
-                if (state->surface_dirty && s_backend->set_render_target)
-                    s_backend->set_render_target(s_backend->userdata, state);
-                if (state->viewport_dirty && s_backend->set_viewport)
-                    s_backend->set_viewport(s_backend->userdata, state);
-                if (state->blend_dirty && s_backend->set_blend)
-                    s_backend->set_blend(s_backend->userdata, state);
-                if ((state->depth_dirty || state->stencil_dirty) && s_backend->set_depth_stencil)
-                    s_backend->set_depth_stencil(s_backend->userdata, state);
-                if (state->color_mask_dirty && s_backend->set_color_mask)
-                    s_backend->set_color_mask(s_backend->userdata, state);
-                if (state->alpha_dirty && s_backend->set_alpha_test)
-                    s_backend->set_alpha_test(s_backend->userdata, state);
-                if (state->shader_dirty && s_backend->set_shader)
-                    s_backend->set_shader(s_backend->userdata, state);
-                if (state->vertex_dirty && s_backend->set_vertex_attribs)
-                    s_backend->set_vertex_attribs(s_backend->userdata, state);
-
-                /* Bind dirty textures */
-                if (state->texture_dirty && s_backend->bind_texture) {
-                    for (u32 i = 0; i < RSX_MAX_TEXTURES; i++) {
-                        if (state->textures[i].dirty) {
-                            s_backend->bind_texture(s_backend->userdata, i, &state->textures[i]);
-                            state->textures[i].dirty = 0;
-                        }
-                    }
-                }
-
-                state->surface_dirty = 0;
-                state->viewport_dirty = 0;
-                state->blend_dirty = 0;
-                state->depth_dirty = 0;
-                state->stencil_dirty = 0;
-                state->color_mask_dirty = 0;
-                state->alpha_dirty = 0;
-                state->shader_dirty = 0;
-                state->vertex_dirty = 0;
-                state->texture_dirty = 0;
+    /* RPCS3_REFERENCE_REVIEWED: array-element writes form an immediate index
+     * stream inside BEGIN_END; the u32 index path is selected at END when no
+     * explicit draw method chose another source. No RPCS3 body was copied. */
+    if (method == NV4097_ARRAY_ELEMENT16) {
+        if (state->in_begin_end && !state->inline_index_overflow) {
+            if (state->inline_index_count + 2u <=
+                RSX_MAX_INLINE_INDEX_ELEMENTS) {
+                state->inline_index_values[state->inline_index_count++] = data & 0xFFFFu;
+                state->inline_index_values[state->inline_index_count++] = data >> 16;
+            } else {
+                state->inline_index_count = 0;
+                state->inline_index_overflow = 1;
+                state->inline_index_dropped++;
             }
-        } else {
-            state->in_begin_end = 0;
+        }
+        return 0;
+    }
+    if (method == NV4097_ARRAY_ELEMENT32) {
+        if (state->in_begin_end && !state->inline_index_overflow) {
+            if (state->inline_index_count <
+                RSX_MAX_INLINE_INDEX_ELEMENTS) {
+                state->inline_index_values[state->inline_index_count++] = data;
+            } else {
+                state->inline_index_count = 0;
+                state->inline_index_overflow = 1;
+                state->inline_index_dropped++;
+            }
         }
         return 0;
     }
 
+    if (method == NV4097_SET_BEGIN_END) {
+        /* RPCS3 decodes SET_BEGIN_END from the low byte. Upper bits are not
+         * part of the primitive enum; retaining them turns otherwise valid
+         * values into unsupported backend primitives (and lets malformed
+         * FIFO words such as 0x00041830 leak through as a draw type). */
+        const u32 primitive = data & 0xFFu;
+        if (primitive != 0) {
+            if (primitive < RSX_PRIMITIVE_POINTS ||
+                primitive > RSX_PRIMITIVE_POLYGON) {
+                static unsigned invalid_begin_end_count = 0;
+                if (invalid_begin_end_count++ < 4)
+                    fprintf(stderr,
+                            "[RSX] invalid SET_BEGIN_END value=0x%08X (primitive=0x%02X)\n",
+                            data, primitive);
+                state->primitive_type = 0; /* invalid primitive: do not draw */
+            } else {
+                state->primitive_type = primitive;
+            }
+            state->in_begin_end = 1;
+            state->begin_epoch++;
+            state->inline_index_count = 0;
+            state->inline_index_overflow = 0;
+            state->explicit_draw_command = 0;
+
+            /* Flush before every draw method, not only BEGIN_END. */
+            rsx_flush_dirty_state(state);
+        } else {
+            state->in_begin_end = 0;
+            if (state->inline_index_count && !state->inline_index_overflow &&
+                !state->explicit_draw_command && s_backend &&
+                s_backend->draw_indexed_immediate) {
+                u32 report = 0;
+                if (!state->conditional_render_enabled ||
+                    !cellGcmGetReportValueAtOffset(
+                        state->conditional_render_offset, &report) || report != 0) {
+                    ps3_ms("rsx:draw_indexed_immediate");
+                    rsx_flush_dirty_state(state);
+                    s_backend->draw_indexed_immediate(
+                        s_backend->userdata, state->primitive_type,
+                        state->inline_index_values,
+                        state->inline_index_count);
+                }
+            }
+            state->inline_index_count = 0;
+            state->inline_index_overflow = 0;
+            state->explicit_draw_command = 0;
+        }
+        return 0;
+    }
+
+    /* This legacy renderer has no INLINE_ARRAY vertex source. Remember that
+     * the method selected its own source so staged ARRAY_ELEMENT values are
+     * not misinterpreted as the draw. The dispatcher-backed renderers support
+     * the inline vertex stream. */
+    if (method == NV4097_INLINE_ARRAY) {
+        state->explicit_draw_command = 1;
+        return -1;
+    }
+
     if (method == NV4097_DRAW_ARRAYS) {
+        state->explicit_draw_command = 1;
         u32 first = data & 0xFFFFFF;
         u32 count = ((data >> 24) & 0xFF) + 1;
         { static int _d=0; if (PS3_LOG_FIRST(_d, 32)) fprintf(stderr, "[RSX] DRAW_ARRAYS prim=%u first=%u count=%u\n", state->primitive_type, first, count); }
@@ -821,9 +1266,16 @@ int rsx_process_method(rsx_state* state, u32 method, u32 data)
                 }
             }
         }
+        { u32 report = 0;
+          if (state->conditional_render_enabled &&
+              cellGcmGetReportValueAtOffset(state->conditional_render_offset, &report) &&
+              report == 0)
+              return 0; }
         ps3_ms("rsx:draw_arrays");
-        if (s_backend && s_backend->draw_arrays)
+        if (s_backend && s_backend->draw_arrays) {
+            rsx_flush_dirty_state(state);
             s_backend->draw_arrays(s_backend->userdata, state->primitive_type, first, count);
+        }
         return 0;
     }
 
@@ -831,6 +1283,11 @@ int rsx_process_method(rsx_state* state, u32 method, u32 data)
         { static int _sc=0; if (PS3_LOG_FIRST(_sc, 12) && getenv("RTT_DUMP"))
             fprintf(stderr, "[RSXSC] shader_control=0x%X\n", data); }
         state->shader_control = data;
+        state->shader_dirty = 1;
+        return 0;
+    }
+    if (method == NV4097_SET_SHADER_PACKER) {
+        state->shader_packer = data;
         state->shader_dirty = 1;
         return 0;
     }
@@ -843,14 +1300,17 @@ int rsx_process_method(rsx_state* state, u32 method, u32 data)
         return 0;
     }
     if (method == NV4097_DRAW_INDEX_ARRAY) {
+        state->explicit_draw_command = 1;
         /* [23:0] first index, [31:24] count-1 (same packing as DRAW_ARRAYS). */
         u32 first = data & 0xFFFFFF;
         u32 count = ((data >> 24) & 0xFF) + 1;
         { static int _d=0; if (PS3_LOG_FIRST(_d, 8)) fprintf(stderr, "[RSX] DRAW_INDEX_ARRAY prim=%u first=%u count=%u idxoff=0x%X dma=0x%X\n", state->primitive_type, first, count, state->index_array_offset, state->index_array_dma); }
         ps3_ms("rsx:draw_indexed");
-        if (s_backend && s_backend->draw_indexed)
+        if (s_backend && s_backend->draw_indexed) {
+            rsx_flush_dirty_state(state);
             s_backend->draw_indexed(s_backend->userdata, state->primitive_type,
                                     first, count);
+        }
         return 0;
     }
 
@@ -870,7 +1330,7 @@ int rsx_process_method(rsx_state* state, u32 method, u32 data)
      * spins on (cellGcmFinish / cellGcmSetWaitLabel). Record the latest so the
      * GCM control register can report completion back to the guest and unblock
      * the spin. Class 0 (software) method, no subchannel state needed here. */
-    if (method == 0x0050) {
+    if (method == NV406E_SET_REFERENCE) {
         g_rsx_last_reference = data;
         return 0;
     }
@@ -889,6 +1349,39 @@ int rsx_process_method(rsx_state* state, u32 method, u32 data)
 #endif
 
     return -1;
+}
+
+/* A FIFO recovery may skip a segment that contains a semaphore release. Keep
+ * the CPU-visible label state coherent while replaying only these sync methods;
+ * replaying arbitrary draws from a malformed range would be unsafe. */
+int rsx_replay_skipped_sync_method(u32 subchannel, u32 method, u32 data)
+{
+    if (subchannel != 0) return 0;
+    if (method == NV4097_SET_SEMAPHORE_OFFSET) {
+        s_rsx_semaphore_offset = data;
+        return 1;
+    }
+
+    if (method != NV4097_BACK_END_WRITE_SEMAPHORE_RELEASE &&
+        method != NV4097_TEXTURE_READ_SEMAPHORE_RELEASE)
+        return 0;
+
+    /* Label offsets index the 256-entry, 16-byte-spaced GCM label region. */
+    if (s_rsx_semaphore_offset >= 0x1000u || (s_rsx_semaphore_offset & 3u))
+        return 0;
+
+    const u32 value = method == NV4097_BACK_END_WRITE_SEMAPHORE_RELEASE
+        ? ((data & 0xff00ff00u) | ((data >> 16) & 0xffu) | ((data & 0xffu) << 16))
+        : data;
+    const u32 ea = VM_HLE_INJECT_BASE + s_rsx_semaphore_offset;
+    vm_write32(ea, value);
+    if (rsx_label_watch_offset() == s_rsx_semaphore_offset) {
+        static unsigned recovered = 0;
+        if (++recovered <= 32)
+            fprintf(stderr, "[GCM-LABEL] recovered NV4097 method=0x%04X off=0x%X value=0x%08X\n",
+                    method, s_rsx_semaphore_offset, value);
+    }
+    return 1;
 }
 
 /* ---------------------------------------------------------------------------

@@ -21,6 +21,10 @@
  * lwmutex exclusion) and the POSIX shims elsewhere -- Sleep, DWORD, QPC. */
 #include "../platform/win32_compat.h"
 #include "../memory/vm.h"   /* VM_HLE_INJECT_BASE -- not platform-specific */
+#include "../../libs/audio/cellAudio.h"
+#include "../../libs/font/cellFont.h"
+#include "../../libs/font/cellL10n.h"
+#include "../../libs/misc/cellAvconfExt.h"
 #include "ps3emu/log_first.h"
 
 extern "C" uint8_t* vm_base;
@@ -329,9 +333,8 @@ static void sys_lwmutex_unlock(ppu_context* ctx)
  * EAs (the generic adapter would pass them raw and the C sysPrxForUser impl
  * deref'd them as host pointers -> AV during cellSpurs init). A no-op wait is
  * adequate here: the CRT/SPURS paths that reach us use these for one-shot init
- * handshakes, not long-term blocking. sys_lwcond_t is 8 bytes: +0x00 u32
- * lwmutex EA, +0x04 u32 lwcond queue id. Titles read +0x00 themselves (an
- * lwcond whose lwmutex reads 0 is treated as invalid). */
+ * handshakes, not long-term blocking. sys_lwcond_t stores a 32-bit lwmutex
+ * EA at +0x00 and the lwcond_queue id at +0x04. */
 static void sys_lwcond_create(ppu_context* ctx)
 {
     static uint32_t s_lwcond_id = 0x4C000000u;
@@ -353,6 +356,7 @@ static void sys_lwcond_wait(ppu_context* ctx)
 {
     uint32_t lwcond  = (uint32_t)ctx->gpr[3];
     uint32_t lwmutex = vm_read32(lwcond + 0x00);
+#ifdef _WIN32
     HANDLE s = lwm_sem(lwmutex);
     if (s) {
         uint32_t own = vm_read32(lwmutex + LWM_OWNER);
@@ -365,6 +369,7 @@ static void sys_lwcond_wait(ppu_context* ctx)
         vm_write32(lwmutex + LWM_OWNER, own);
         vm_write32(lwmutex + LWM_RECUR, rc ? rc : 1);
     }
+#endif
     ctx->gpr[3] = 0;
 }
 
@@ -430,6 +435,114 @@ static void sys_mmapper_allocate_memory_from_container(ppu_context* ctx)
 
 /* A handful of CRT helpers the early boot tends to hit; accept and continue. */
 static void crt_ok(ppu_context* ctx) { ctx->gpr[3] = 0; }
+
+/* These HLE APIs carry floating-point parameters in PPC FPRs. The generated
+ * generic adapter only forwards GPR arguments, so use the actual guest ABI. */
+static void hle_cellAudioAddData(ppu_context* ctx)
+{
+    const s32 rc = cellAudioAddData((u32)ctx->gpr[3],
+        (const float*)(uintptr_t)(u32)ctx->gpr[4], (u32)ctx->gpr[5],
+        (float)ctx->fpr[1]);
+    ctx->gpr[3] = (u64)(int64_t)rc;
+}
+
+static void hle_cellAudioAdd2chData(ppu_context* ctx)
+{
+    const s32 rc = cellAudioAdd2chData((u32)ctx->gpr[3],
+        (const float*)(uintptr_t)(u32)ctx->gpr[4], (u32)ctx->gpr[5],
+        (float)ctx->fpr[1]);
+    ctx->gpr[3] = (u64)(int64_t)rc;
+}
+
+static void hle_cellAudioAdd6chData(ppu_context* ctx)
+{
+    const s32 rc = cellAudioAdd6chData((u32)ctx->gpr[3],
+        (const float*)(uintptr_t)(u32)ctx->gpr[4], (float)ctx->fpr[1]);
+    ctx->gpr[3] = (u64)(int64_t)rc;
+}
+
+static void hle_cellAudioSetPortLevel(ppu_context* ctx)
+{
+    const s32 rc = cellAudioSetPortLevel((u32)ctx->gpr[3], (float)ctx->fpr[1]);
+    ctx->gpr[3] = (u64)(int64_t)rc;
+}
+
+static void hle_cellAudioMiscSetAccessoryVolume(ppu_context* ctx)
+{
+    const s32 rc = cellAudioMiscSetAccessoryVolume((u32)ctx->gpr[3],
+                                                   (float)ctx->fpr[1]);
+    ctx->gpr[3] = (u64)(int64_t)rc;
+}
+
+static void hle_cellFontSetScalePixel(ppu_context* ctx)
+{
+    const s32 rc = cellFontSetScalePixel((CellFont*)(uintptr_t)(u32)ctx->gpr[3],
+                                          (float)ctx->fpr[1], (float)ctx->fpr[2]);
+    ctx->gpr[3] = (u64)(int64_t)rc;
+}
+
+static void hle_cellFontSetupRenderScalePixel(ppu_context* ctx)
+{
+    const s32 rc = cellFontSetupRenderScalePixel((CellFont*)(uintptr_t)(u32)ctx->gpr[3],
+                                                  (float)ctx->fpr[1], (float)ctx->fpr[2]);
+    ctx->gpr[3] = (u64)(int64_t)rc;
+}
+
+static void hle_cellFontSetupRenderEffectSlant(ppu_context* ctx)
+{
+    const s32 rc = cellFontSetupRenderEffectSlant((CellFont*)(uintptr_t)(u32)ctx->gpr[3],
+                                                   (float)ctx->fpr[1]);
+    ctx->gpr[3] = (u64)(int64_t)rc;
+}
+
+static void hle_cellFontSetupRenderEffectWeight(ppu_context* ctx)
+{
+    const s32 rc = cellFontSetupRenderEffectWeight((CellFont*)(uintptr_t)(u32)ctx->gpr[3],
+                                                    (float)ctx->fpr[1]);
+    ctx->gpr[3] = (u64)(int64_t)rc;
+}
+
+static void hle_cellFontRenderCharGlyphImage(ppu_context* ctx)
+{
+    const s32 rc = cellFontRenderCharGlyphImage(
+        (CellFont*)(uintptr_t)(u32)ctx->gpr[3], (u32)ctx->gpr[4],
+        (CellFontRenderSurface*)(uintptr_t)(u32)ctx->gpr[5],
+        (float)ctx->fpr[1], (float)ctx->fpr[2],
+        (CellFontGlyphMetrics*)(uintptr_t)(u32)ctx->gpr[6],
+        (CellFontGlyphImage*)(uintptr_t)(u32)ctx->gpr[7]);
+    ctx->gpr[3] = (u64)(int64_t)rc;
+}
+
+/* cellL10n exports historical names that do not carry a cell or sce prefix,
+ * so the generic table generator cannot discover them. Keep their actual
+ * pointer/scalar ABI explicit here. */
+static void hle_UCS2stoUTF8s(ppu_context* ctx)
+{
+    const s32 rc = UCS2stoUTF8s((const u16*)(uintptr_t)(u32)ctx->gpr[3],
+        (u32*)(uintptr_t)(u32)ctx->gpr[4], (u8*)(uintptr_t)(u32)ctx->gpr[5],
+        (u32*)(uintptr_t)(u32)ctx->gpr[6]);
+    ctx->gpr[3] = (u64)(int64_t)rc;
+}
+
+static void hle_UCS2toUTF8(ppu_context* ctx)
+{
+    const s32 rc = UCS2toUTF8((u16)ctx->gpr[3], (u8*)(uintptr_t)(u32)ctx->gpr[4]);
+    ctx->gpr[3] = (u64)(int64_t)rc;
+}
+
+static void hle_SJIStoUCS2(ppu_context* ctx)
+{
+    const s32 rc = SJIStoUCS2((const u8*)(uintptr_t)(u32)ctx->gpr[3],
+                               (u16*)(uintptr_t)(u32)ctx->gpr[4]);
+    ctx->gpr[3] = (u64)(int64_t)rc;
+}
+
+static void hle_UTF8toSJIS(ppu_context* ctx)
+{
+    const s32 rc = UTF8toSJIS((u8)ctx->gpr[3], (u8*)(uintptr_t)(u32)ctx->gpr[4],
+                               (u32*)(uintptr_t)(u32)ctx->gpr[5]);
+    ctx->gpr[3] = (u64)(int64_t)rc;
+}
 static void sys_lwmutex_destroy_counted(ppu_context* ctx)
 {
     { static long long _n=0; _n++;
@@ -846,10 +959,43 @@ static void sys_spinlock_unlock(ppu_context* ctx)
     _InterlockedExchange(spin_word(ea), 0);
 }
 
+/* Floating-point arguments live in f1, not the generic integer ABI slots. */
+static void hle_cellVideoOutSetGamma(ppu_context* ctx)
+{
+    ctx->gpr[3] = (uint64_t)(int64_t)cellVideoOutSetGamma(
+        (uint32_t)ctx->gpr[3], (float)ctx->fpr[1]);
+}
+
+extern "C" int32_t cellGcmInitSystemMode(uint64_t mode);
+static void hle_cellGcmInitSystemMode(ppu_context* ctx)
+{
+    ctx->gpr[3] = (uint64_t)(int64_t)cellGcmInitSystemMode(ctx->gpr[3]);
+}
+
 extern "C" void ppu_sysprx_register(void)
 {
+    ps3_hle_register_ctx(0xC7020F62u, "cellVideoOutSetGamma", hle_cellVideoOutSetGamma);
     ps3_hle_register_ctx(0x15BAE46Bu, "_cellGcmInitBody", hle_cellGcmInitBody);
+    ps3_hle_register_ctx(ps3_compute_nid("cellGcmInitSystemMode"),
+                         "cellGcmInitSystemMode", hle_cellGcmInitSystemMode);
     ps3_hle_register_ctx(0xEBE5F72Fu, "_sys_spu_image_import", hle_sys_spu_image_import);
+
+    /* Audio and font APIs with float parameters use FPR1/FPR2, outside the
+     * generic integer-argument bridge. */
+    ps3_hle_register_ctx(0xDAB029AAu, "cellAudioAddData", hle_cellAudioAddData);
+    ps3_hle_register_ctx(0x9E4B1DB8u, "cellAudioAdd2chData", hle_cellAudioAdd2chData);
+    ps3_hle_register_ctx(0x832DF17Eu, "cellAudioAdd6chData", hle_cellAudioAdd6chData);
+    ps3_hle_register_ctx(0x56DFE179u, "cellAudioSetPortLevel", hle_cellAudioSetPortLevel);
+    ps3_hle_register_ctx(0x31211F6Bu, "cellAudioMiscSetAccessoryVolume", hle_cellAudioMiscSetAccessoryVolume);
+    ps3_hle_register_ctx(0x297F0E93u, "cellFontSetScalePixel", hle_cellFontSetScalePixel);
+    ps3_hle_register_ctx(0x227E1E3Cu, "cellFontSetupRenderScalePixel", hle_cellFontSetupRenderScalePixel);
+    ps3_hle_register_ctx(0x78D05E08u, "cellFontSetupRenderEffectSlant", hle_cellFontSetupRenderEffectSlant);
+    ps3_hle_register_ctx(0xA6DC25D1u, "cellFontSetupRenderEffectWeight", hle_cellFontSetupRenderEffectWeight);
+    ps3_hle_register_ctx(0x88BE4799u, "cellFontRenderCharGlyphImage", hle_cellFontRenderCharGlyphImage);
+    ps3_hle_register_ctx(0x2AD091C6u, "UCS2stoUTF8s", hle_UCS2stoUTF8s);
+    ps3_hle_register_ctx(0xA9A76FB8u, "UCS2toUTF8", hle_UCS2toUTF8);
+    ps3_hle_register_ctx(0xBDD44EE3u, "SJIStoUCS2", hle_SJIStoUCS2);
+    ps3_hle_register_ctx(0xEB3DC670u, "UTF8toSJIS", hle_UTF8toSJIS);
 
     /* PS3_NET_ONLINE: real host sockets (libs/network/sysNet.c). Registered
      * first because the first registration of a NID wins, so these shadow the

@@ -237,7 +237,10 @@ static inline int32_t spu_run_lifted_job_abi(spu_lifted_entry_fn entry,
             ctx.gpr[3]._u32[0] = 0x00400000u;   /* >>16 == 64 -> cri real decode path */
             ctx.gpr[3]._u32[1] = args_ea;       /* eaContext -> r3.word1 */
         } else if (taskset_ctx) {
-            /* Generic SPURS task (RPCS3 spursTasksetStartTask): r3 = the task's
+            /* RPCS3_REFERENCE_REVIEWED: this task-argument setup follows the
+             * cited SPURS ABI behavior; targeted review did not establish
+             * copied code. See docs/RPCS3_LICENSE_AUDIT.md.
+             * Generic SPURS task (RPCS3 spursTasksetStartTask): r3 = the task's
              * 16-byte CellSpursTaskArgument (TaskInfo.args, DMA'd to LS 0x2780 by
              * spurs_pm_build_context), passed by value -- NOT the cri 0x40 marker. */
             ctx.gpr[3]._u32[0] = _LB(0x2780);

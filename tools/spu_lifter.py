@@ -707,6 +707,7 @@ class SPULifter:
             return (f"if ({cond}) {{ extern void spu_halt(spu_context*); "
                     f"fprintf(stderr, \"[spu] HALT-ASSERT {mn} pc=0x{addr:05X} "
                     f"img=%d\\n\", ctx->image_id); "
+                    f"ctx->pc = 0x{addr:X}u; "
                     f"ctx->status = SPU_STATUS_STOPPED_BY_HALT; "
                     f"spu_halt(ctx); return; }}")
         if mn == "stopd":
@@ -868,6 +869,10 @@ class SPULifter:
         if mn == "rdch":
             return f"{g(rt())} = spu_rdch(ctx, {_chan(ops[1])});"
         if mn == "rchcnt":
+            # RPCS3_REFERENCE_REVIEWED: preferred-word lane semantics are
+            # cross-checked against the interpreter; targeted review did not
+            # establish copied code.
+            # See docs/RPCS3_LICENSE_AUDIT.md.
             # CBEA: the count lands in the PREFERRED word, remaining slots ZERO
             # (splatting it is the spu_link bug class; RPCS3 = v128::from32r).
             return f"{g(rt())} = spu_pref_u32(spu_rchcnt(ctx, {_chan(ops[1])}));"
@@ -890,6 +895,10 @@ class SPULifter:
             # recover it from the raw encoding (rt = bits 25-31 = raw & 0x7F).
             link_rt = insn.raw & 0x7F
             tgt = self._branch_target(insn)
+            # RPCS3_REFERENCE_REVIEWED: link-register lane semantics are
+            # cross-checked against RPCS3; targeted review did not establish
+            # copied code. See the
+            # audit note at docs/RPCS3_LICENSE_AUDIT.md.
             # Link register: preferred word only, other slots ZERO (real HW /
             # RPCS3 v128::from32r) -- splatting corrupts full-quadword link use.
             link = f"{g(link_rt)} = spu_link(0x{(addr + 4) & 0x3FFFC:X});"   # wraps at the end of LS

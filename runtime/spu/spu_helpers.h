@@ -8,6 +8,11 @@
  *
  * Each helper is `static inline u128 spu_<mnemonic>(...)`. Naming, lane
  * widths and big-endian conventions match runtime/spu/spu_context.h.
+ *
+ * RPCS3_PROVENANCE_REVIEW_REQUIRED: the reciprocal-estimate lookup data and
+ * some instruction semantics below were taken from or checked against
+ * RPCS3's SPU interpreter. This marks provenance for review; it is not license
+ * clearance. See docs/RPCS3_LICENSE_AUDIT.md.
  */
 
 #ifndef SPU_HELPERS_H
@@ -1143,23 +1148,36 @@ static inline u128 spu_mpyhhau_ref(u128 a, u128 b, u128 t) { u128 r; for(int i=0
 /* double compare greater (RPCS3 stubs these; sane impl) -> per-lane mask. */
 static inline u128 spu_dfcgt(u128 a, u128 b)  { u128 r; for(int i=0;i<2;i++){ uint64_t m=(spu__dget(a,i)>spu__dget(b,i))?~0ull:0ull; r._u32[i*2]=(uint32_t)(m>>32); r._u32[i*2+1]=(uint32_t)m; } return r; }
 static inline u128 spu_dfcmgt(u128 a, u128 b) { u128 r; for(int i=0;i<2;i++){ double x=spu__dget(a,i),y=spu__dget(b,i); if(x<0)x=-x; if(y<0)y=-y; uint64_t m=(x>y)?~0ull:0ull; r._u32[i*2]=(uint32_t)(m>>32); r._u32[i*2+1]=(uint32_t)m; } return r; }
-/* dftsv rt,ra,I7: double test special value (Cell BE SPU ISA). Each
- * doubleword becomes all ones if it is in any class I7 selects:
- * 0x40 NaN, 0x20 +inf, 0x10 -inf, 0x08 +0, 0x04 -0, 0x02 +denorm, 0x01 -denorm.
- * (RPCS3 stubs it as fatal; this is the ISA definition.) */
-static inline uint64_t spu__dftsv1(uint64_t v, uint32_t i7) {
-    uint64_t e = (v >> 52) & 0x7FF, f = v & 0xFFFFFFFFFFFFFull; int neg = (int)(v >> 63);
-    int t = 0;
-    if (e == 0x7FF && f) t |= i7 & 0x40;
-    if (e == 0x7FF && !f) t |= i7 & (neg ? 0x10 : 0x20);
-    if (e == 0 && !f) t |= i7 & (neg ? 0x04 : 0x08);
-    if (e == 0 && f) t |= i7 & (neg ? 0x01 : 0x02);
-    return t ? ~0ull : 0ull;
+/* dftsv: per-doubleword special-value test. I7 selects NaN, +inf, -inf,
+ * +0, -0, +denormal, and -denormal in bits 6..0 (SPU ISA v1.2, p.230).
+ * Bit classification avoids host floating-point exceptions and distinguishes
+ * signed zero and denormal values exactly. */
+static inline u128 spu_dftsv(u128 a, int32_t imm)
+{
+    const uint32_t tests = (uint32_t)imm & 0x7Fu;
+    const uint64_t exp_mask = UINT64_C(0x7FF0000000000000);
+    const uint64_t frac_mask = UINT64_C(0x000FFFFFFFFFFFFF);
+    u128 r;
+    memset(&r, 0, sizeof r);
+    for (int i = 0; i < 2; i++) {
+        const uint64_t bits = ((uint64_t)a._u32[i * 2] << 32) | a._u32[i * 2 + 1];
+        const uint64_t exp = bits & exp_mask;
+        const uint64_t frac = bits & frac_mask;
+        const int neg = (int)(bits >> 63);
+        const int match =
+            (((tests & 0x40u) != 0) && exp == exp_mask && frac != 0) ||
+            (((tests & 0x20u) != 0) && exp == exp_mask && frac == 0 && !neg) ||
+            (((tests & 0x10u) != 0) && exp == exp_mask && frac == 0 &&  neg) ||
+            (((tests & 0x08u) != 0) && exp == 0 && frac == 0 && !neg) ||
+            (((tests & 0x04u) != 0) && exp == 0 && frac == 0 &&  neg) ||
+            (((tests & 0x02u) != 0) && exp == 0 && frac != 0 && !neg) ||
+            (((tests & 0x01u) != 0) && exp == 0 && frac != 0 &&  neg);
+        const uint32_t word = match ? UINT32_MAX : 0u;
+        r._u32[i * 2] = word;
+        r._u32[i * 2 + 1] = word;
+    }
+    return r;
 }
-static inline u128 spu_dftsv(u128 a, int32_t imm){ u128 r;
-    for (int i = 0; i < 2; i++) { uint64_t v = (uint64_t)a._u32[2*i] << 32 | a._u32[2*i+1];
-        uint64_t m = spu__dftsv1(v, (uint32_t)imm & 0x7F); r._u32[2*i] = (uint32_t)(m >> 32); r._u32[2*i+1] = (uint32_t)m; }
-    return r; }
 
 /* ---- Phase 2: register-variable shifts/rotates ---- */
 static inline u128 spu_shl_ref(u128 a, u128 b)   { u128 r; for(int i=0;i<4;i++){ uint32_t sh=b._u32[i]&0x3F; r._u32[i]=(sh>31)?0:(a._u32[i]<<sh); } return r; }
@@ -1482,7 +1500,9 @@ static inline u128 spu_bgx_ref(u128 a, u128 b, u128 t) {
     return r;
 }
 
-/* ---- Phase 3: mfspr stub ---- */
+/* RPCS3 SPUInterpreter.cpp::MFSPR currently clears RT because it models every
+ * SPR read as zero. Keep this helper aligned until the local SPU context
+ * models special-purpose registers. */
 static inline u128 spu_mfspr(u128 a) { (void)a; return spu_zero(); }
 
 /* ---- immediate loaders ---- */

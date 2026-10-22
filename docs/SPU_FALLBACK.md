@@ -157,3 +157,9 @@ The buffer is freed when `sys_spu_thread_group_destroy` runs.
   the dispatch site in `sys_spu_thread_group_start_handler`.
 - `include/ps3emu/spu_fallback.h` — public header.
 - `runtime/syscalls/spu_fallback.c` — registry implementation.
+# Historical/manual fallback path
+
+This document describes the per-job fallback mechanism. The repository also
+has a SPU interpreter/lifter and can execute fingerprint-registered lifted
+images or jobs; this fallback is not the runtime's only SPU execution path. See
+[`SPU_LIFTER.md`](SPU_LIFTER.md) for current lift/dispatch boundaries.

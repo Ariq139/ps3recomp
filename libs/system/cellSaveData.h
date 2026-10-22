@@ -262,6 +262,11 @@ typedef struct CellSaveDataSetBuf {
  * Functions
  * -----------------------------------------------------------------------*/
 
+s32 cellSaveDataGetListItem(const char* dirName,
+                            CellSaveDataDirStat* dir,
+                            CellSaveDataSystemFileParam* sysFileParam,
+                            u32* bind, u32* sizeKB, u32 userId);
+
 /* pre-3.00 entry points; forwarders to the "2" forms with userdata = NULL. */
 s32 cellSaveDataListSave(u32 version, CellSaveDataSetList* setList,
                          CellSaveDataSetBuf* setBuf, CellSaveDataListCallback funcList,

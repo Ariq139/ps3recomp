@@ -38,6 +38,11 @@ int edat_is_npd(const char* host_path);
 /* Decrypt in_path -> out_path. 0 on success, negative on failure (reason logged). */
 int edat_decrypt_file(const char* in_path, const char* out_path);
 
+/* As above, using a caller-supplied 16-byte KLicensee when it is valid for
+ * this EDAT. Licensed EDATs still require the matching local RIF key. */
+int edat_decrypt_file_with_klicensee(const char* in_path, const char* out_path,
+                                     const uint8_t klicensee[16]);
+
 /* The path the FS layer should actually open for `host_path`.
  *
  * Returns host_path unchanged when it is not an EDAT, or when decryption fails (the

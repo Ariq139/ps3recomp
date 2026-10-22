@@ -128,6 +128,9 @@ void     vm_write64(uint64_t addr, uint64_t val);
  * threads -- a plain conditional write races and corrupts under real concurrency. */
 int      ppu_stwcx32(uint64_t addr, uint32_t expected, uint32_t val);
 int      ppu_stdcx64(uint64_t addr, uint64_t expected, uint64_t val);
+void     ps3_ppu_unimplemented_instruction(uint32_t guest_pc,
+         const char* source_file, const char* function_name,
+         uint32_t source_line, const char* operation);
 #ifdef __cplusplus
 }
 #endif
@@ -952,7 +955,7 @@ class PPULifter:
         internal_targets: set[int] = set()
         for insn in range_insns:
             if insn.mnemonic.startswith("b") and insn.mnemonic not in (
-                    "blr", "bctr", "bctrl", "bl", "blrl"):
+                    "blr", "bctr", "bctrl", "bl", "bla", "blrl"):
                 ops = _parse_operands(insn.operands)
                 for op in ops:
                     if op.startswith("0x"):
@@ -1079,7 +1082,12 @@ class PPULifter:
         # and the reload became the register's value at entry.
         _first_def = {}
         for _i, _l in enumerate(func.body_lines):
-            for _dm in _CS_ANY_DEF_RE.finditer(_l):
+            # Carry-setting arithmetic is emitted inside a compound C block.
+            # It still defines the destination register. Anchoring this search
+            # at the beginning of the line missed e.g. addic r24,r23,0x10C;
+            # a later temporary spill of r24 was then mistaken for a prologue
+            # save and its reload replaced with the caller's entry r24.
+            for _dm in re.finditer(r'ctx->gpr\[(\d+)\]\s*=(?!=)', _l):
                 _r = int(_dm.group(1))
                 if _r not in _first_def:
                     _first_def[_r] = _i
@@ -1328,7 +1336,17 @@ class PPULifter:
     def _translate(self, insn: Instruction, func: LiftedFunction) -> str:
         code = self._oe_wrap(insn, self._translate_xo_base(insn, func))
         mn = insn.mnemonic
-        if (mn.endswith(".") and code and not code.startswith("/*")
+        unimplemented = False
+        if code.startswith("/*") and mn.lower() != ".word":
+            marker = code.lower()
+            unimplemented = any(word in marker for word in
+                                ("todo:", "unhandled", "unsupported", "unmodeled",
+                                 "unmodelled", "not implemented"))
+            if unimplemented:
+                operation = json.dumps(f"{mn} {insn.operands}")
+                code = (f"ps3_ppu_unimplemented_instruction(0x{insn.addr:08X}u, "
+                        f"__FILE__, __func__, __LINE__, {operation});")
+        if (mn.endswith(".") and code and not unimplemented and not code.startswith("/*")
                 and mn not in self._CR0_SELF_HANDLED
                 and not mn.startswith(("f", "v", "mt", "mf"))):
             ops = _parse_operands(insn.operands)
@@ -1881,7 +1899,7 @@ class PPULifter:
         if mn == "blrl":
             return "ctx->ctr = (uint32_t)ctx->lr; ps3_indirect_call(ctx); DRAIN_TRAMPOLINE(ctx);"
 
-        if mn == "b":
+        if mn in ("b", "ba"):
             target = ops[0]
             try:
                 tgt = int(target, 16)
@@ -1909,15 +1927,10 @@ class PPULifter:
             except ValueError:
                 return f"goto {target}; /* branch */"
 
-        # The get-PC idiom: bl $+4 / bcl 20,31,$+4 only sets LR to the next
-        # instruction. Lifted as a call it would run the rest of the function
-        # as a "callee" and then run it again on return.
-        if insn.raw is not None and (insn.raw & 1) and (
-                (insn.raw >> 26) == 18 and (insn.raw & 0x3FFFFFE) == 4 or
-                (insn.raw >> 26) == 16 and (insn.raw & 0xFFFE) == 4 and ((insn.raw >> 21) & 0x14) == 0x14):
-            return f"ctx->lr = 0x{insn.addr + 4:08X};  /* get-PC: bl $+4 */"
-
-        if mn == "bl":
+        if mn in ("bl", "bla"):
+            # AA changes how the decoder resolves the target, not whether the
+            # instruction is a call. Treating bla as a generic bc decoded BO/BI
+            # from an I-form displacement and returned early from archive setup.
             target = ops[0]
             try:
                 tgt = int(target, 16)
@@ -1949,10 +1962,8 @@ class PPULifter:
         # of b<cond>ctrl below. Dispatch via LR, then CONTINUE (link = call).
         if (mn.endswith("lrl") and mn != "blrl" and mn.startswith("b")):
             cond = self._branch_condition(mn, ops, insn.raw)
-            # Target is the OLD LR; LR becomes the return address whether or not
-            # the branch is taken; CTR is not touched (it used to be clobbered).
-            return (f"{{ const uint32_t _t = (uint32_t)ctx->lr; ctx->lr = 0x{insn.addr + 4:08X}; "
-                    f"if ({cond}) {{ ps3_indirect_call_to(ctx, _t); DRAIN_TRAMPOLINE(ctx); }} }}")
+            return (f"if ({cond}) {{ ctx->ctr = (uint32_t)ctx->lr; "
+                    f"ps3_indirect_call(ctx); DRAIN_TRAMPOLINE(ctx); }}")
 
         # Indirect call/jump through CTR in any conditional or named form:
         #   b<cond>ctr / bcctr  (no link) -> tail jump: dispatch, then return
@@ -1971,7 +1982,12 @@ class PPULifter:
             return f"if ({cond}) {{ ps3_indirect_call(ctx); DRAIN_TRAMPOLINE(ctx); return; }}"
 
         # Conditional branches
-        if mn.startswith("b") and mn not in ("bl", "b", "blr", "bctr", "bctrl"):
+        if mn.startswith("b") and mn not in ("bl", "bla", "b", "ba", "blr", "bctr", "bctrl"):
+            # A bc instruction with LK=1 updates LR even when its predicate is
+            # false. Direct calls through this form are used in real title code;
+            # dropping the update makes later mflr/return paths use a stale PC.
+            link_prefix = (f"ctx->lr = 0x{insn.addr + 4:08X}; "
+                           if (insn.raw & 1) else "")
             # Try to extract target from last operand
             target_str = ops[-1] if ops else ""
             try:
@@ -1983,20 +1999,20 @@ class PPULifter:
                     # (merged) range -- trampoline, don't goto (see the `b` case).
                     cond = self._branch_condition(mn, ops, insn.raw)
                     self.branch_targets.add(tgt)
-                    return (f"if ({cond}) {{ g_trampoline_fn = "
+                    return (f"{link_prefix}if ({cond}) {{ g_trampoline_fn = "
                             f"(void(*)(void*)){self.prefix}func_{tgt:08X}; return; }}")
                 if func.start_addr <= tgt < func.end_addr:
                     cond = self._branch_condition(mn, ops, insn.raw)
-                    return f"if ({cond}) goto loc_{tgt:08X};"
+                    return f"{link_prefix}if ({cond}) goto loc_{tgt:08X};"
                 elif self._outside_code(tgt):
                     # Conditional branch to non-code: data misread as code.
                     cond = self._branch_condition(mn, ops, insn.raw)
-                    return f"if ({cond}) return; /* bc -> non-code 0x{tgt:08X} */"
+                    return f"{link_prefix}if ({cond}) return; /* bc -> non-code 0x{tgt:08X} */"
                 else:
                     cond = self._branch_condition(mn, ops, insn.raw)
                     # Use trampoline for cross-fragment conditional branches
                     self.branch_targets.add(tgt)
-                    return f"if ({cond}) {{ g_trampoline_fn = (void(*)(void*)){self.prefix}func_{tgt:08X}; return; }}"
+                    return f"{link_prefix}if ({cond}) {{ g_trampoline_fn = (void(*)(void*)){self.prefix}func_{tgt:08X}; return; }}"
             except ValueError:
                 return f"/* {mn} {insn.operands} */;"
 
@@ -2767,6 +2783,26 @@ class PPULifter:
             rb = _reg_idx(ops[2])
             return (f"{{ uint64_t ea = ({_xea(ra,rb)}) & ~0xFULL; "
                     f"vm_raw_st16(ea, &ctx->vr[{vs}]); }}")
+
+        # RPCS3 PPUInterpreter STVLX/STVRX semantics were checked as a
+        # reference (GPL-2.0; behavior reference only, no source body copied).
+        # The XL forms differ only by a cache hint, so share the same writes.
+        if mn in ("stvlx", "stvlxl"):
+            vs = int(ops[0][1:]) if ops[0].startswith("v") else _reg_idx(ops[0])
+            ra = _reg_idx(ops[1])
+            rb = _reg_idx(ops[2])
+            return (f"{{ uint64_t ea = {_xea(ra,rb)}; "
+                    f"uint32_t n = 16u - (uint32_t)(ea & 0xF); "
+                    f"memcpy(vm_base + (uint32_t)ea, &ctx->vr[{vs}], n); }}")
+
+        if mn in ("stvrx", "stvrxl"):
+            vs = int(ops[0][1:]) if ops[0].startswith("v") else _reg_idx(ops[0])
+            ra = _reg_idx(ops[1])
+            rb = _reg_idx(ops[2])
+            return (f"{{ uint64_t ea = {_xea(ra,rb)}; "
+                    f"uint32_t n = (uint32_t)(ea & 0xF); "
+                    f"if (n) memcpy(vm_base + (uint32_t)(ea - n), "
+                    f"(const uint8_t*)&ctx->vr[{vs}] + (16u - n), n); }}")
 
         # Cell unaligned vector loads (CBEA / AltiVec): lvlx loads bytes
         # [EA&15 .. 15] of the aligned quadword left-justified into vD and
@@ -3586,55 +3622,31 @@ class PPULifter:
         # ------- Default: emit as comment -------
         return f"/* TODO: {mn} {insn.operands} */;"
 
-    def _branch_condition(self, mnemonic: str, ops: list[str], raw: int | None = None) -> str:
-        """Generate a C condition expression for a conditional branch.
+    def _branch_condition(self, mnemonic: str, ops: list[str], raw: int) -> str:
+        """Generate the exact BO/BI predicate for a PPC conditional branch."""
+        # Decode the instruction fields instead of inferring them from the
+        # disassembler's alias. This covers combined conditions and generic
+        # encodings such as bcla, whose BO=31/BI=31 form is unconditional.
+        bo = (raw >> 21) & 0x1F
+        bi = (raw >> 16) & 0x1F
+        predicates = []
 
-        With the raw word (bc/bclr/bcctr) the condition is decoded from BO/BI
-        exactly as PowerISA defines it: a BO without 0x04 decrements the full
-        64-bit CTR (and tests it for != 0, or == 0 with 0x02), a BO without
-        0x10 tests CR bit BI against BO 0x08. Both tests must pass. Mnemonic
-        decoding is the fallback for callers without the word; it knew no
-        combined forms (bdnzt/bdnzf/bdzt/bdzf), which fell through to "1"."""
-        if raw is not None and (raw >> 26) in (16, 19):
-            bo, bi = (raw >> 21) & 31, (raw >> 16) & 31
-            parts = []
-            if not bo & 0x04:
-                parts.append("(--ctx->ctr == 0)" if bo & 0x02 else "(--ctx->ctr != 0)")
-            if not bo & 0x10:
-                bit = f"((ctx->cr >> {31 - bi}) & 1)"
-                parts.append(bit if bo & 0x08 else f"(!{bit})")
-            return " && ".join(parts) if parts else "1"
-        mn = mnemonic.rstrip("la")  # strip link and absolute bits
-        if mn.startswith("b"):
-            mn = mn[1:]  # strip leading 'b'
+        # BO[2] clear requests CTR decrement/test. BO[3] selects whether the
+        # branch is taken when the decremented CTR is zero or nonzero.
+        if not (bo & 0x04):
+            ctr = "(ctx->ctr = (uint64_t)(ctx->ctr - 1))"
+            if bo & 0x02:
+                predicates.append(f"({ctr} == 0)")
+            else:
+                predicates.append(f"({ctr} != 0)")
 
-        # strip trailing 'lr', 'ctr'
-        mn = mn.replace("lr", "").replace("ctr", "")
+        # BO[0] clear requests a CR bit test; BO[1] is its expected value.
+        if not (bo & 0x10):
+            cr_shift = 31 - bi
+            expected = 1 if (bo & 0x08) else 0
+            predicates.append(f"(((ctx->cr >> {cr_shift}) & 1) == {expected})")
 
-        cr_field = 0
-        # Check if first operand is a CR field
-        if ops and ops[0].startswith("cr"):
-            try:
-                cr_field = int(ops[0][2:])
-            except ValueError:
-                pass
-
-        shift = (7 - cr_field) * 4
-
-        cond_map = {
-            "eq": f"((ctx->cr >> {shift}) & 2)",
-            "ne": f"(!((ctx->cr >> {shift}) & 2))",
-            "lt": f"((ctx->cr >> {shift}) & 8)",
-            "ge": f"(!((ctx->cr >> {shift}) & 8))",
-            "gt": f"((ctx->cr >> {shift}) & 4)",
-            "le": f"(!((ctx->cr >> {shift}) & 4))",
-            "so": f"((ctx->cr >> {shift}) & 1)",
-            "ns": f"(!((ctx->cr >> {shift}) & 1))",
-            "dnz": "(--ctx->ctr != 0)",
-            "dz": "(--ctx->ctr == 0)",
-        }
-
-        return cond_map.get(mn, f"/* cond: {mnemonic} */ 1")
+        return " && ".join(predicates) if predicates else "1"
 
     # ------------------------------------------------------------------ #
     # Mid-function entry point resolution

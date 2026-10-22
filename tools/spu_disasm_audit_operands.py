@@ -106,6 +106,9 @@ PF_X = 0x1
 # Python side can invert "lr"/"sp"/"r2"/"MFC_Cmd"/etc back to an index for
 # canonicalization; see SPUDisAsm.h line ~9 spu_reg_name[128] and line ~49
 # spu_ch_name[128]).
+# RPCS3_PROVENANCE_REVIEW_REQUIRED: these table contents are reproduced from
+# RPCS3. This flag is for source/license review, not a legal conclusion; see
+# docs/RPCS3_LICENSE_AUDIT.md.
 # ---------------------------------------------------------------------------
 ORACLE_REG_NAMES = ["lr", "sp"] + [f"r{i}" for i in range(2, 128)]
 ORACLE_REG_INDEX = {name: i for i, name in enumerate(ORACLE_REG_NAMES)}

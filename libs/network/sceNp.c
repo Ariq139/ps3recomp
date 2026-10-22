@@ -8,11 +8,22 @@
 #include "sceNp.h"
 #include <stdio.h>
 #include <string.h>
+
+/* RPCS3 sceNpPlus reports true for this PS3 mode query (the ABI is inferred
+ * there to be a one-byte boolean; the PPU return register carries 1). */
+s32 sceNpManagerIsSP(void)
+{
+    return 1;
+}
 #include <stdint.h>
 #include "../../runtime/ppu/ppu_memory.h"   /* vm_write*: guest EA -> host, byte-swapped */
 #include "np_psnr.h"
 #include "../system/cellSysutil.h"
+#include "../system/cellRtc.h"
+#include "../filesystem/cellFs.h"
 #include "../filesystem/edat.h"
+#include "../guest_struct.h"   /* GUEST_EA */
+#include "../../runtime/memory/vm.h" /* VM_READY, ppu_vm_size */
 
 
 /* ---------------------------------------------------------------------------
@@ -22,6 +33,74 @@
 static int  s_np_initialized = 0;
 static int  s_score_initialized = 0;
 static char s_fake_username[SCE_NP_ONLINEID_MAX_LENGTH + 1] = "PS3Player";
+extern u32 ppu_vm_size;
+
+static int np_guest_string(u32 ea, char* out, size_t cap)
+{
+    if (!VM_READY || !ea || !out || cap < 2)
+        return 0;
+    for (size_t i = 0; i < cap; ++i) {
+        const u64 addr = (u64)ea + i;
+        if (addr > UINT32_MAX || (ppu_vm_size && addr >= ppu_vm_size))
+            return 0;
+        out[i] = (char)vm_read8((u32)addr);
+        if (!out[i])
+            return 1;
+    }
+    out[cap - 1] = '\0';
+    return 0;
+}
+
+/* RPCS3_REFERENCE_REVIEWED: the guest signature/error contract was checked;
+ * the local VFS and EDAT decoder are used directly, with no RPCS3 body copied. */
+s32 sceNpDrmIsAvailable2(const u8* klicensee, const char* drmPath)
+{
+    const u32 path_ea = GUEST_EA(drmPath);
+    const u32 key_ea = GUEST_EA(klicensee);
+    char guest_path[0x100];
+    char host_path[CELL_FS_MAX_FS_PATH_LENGTH];
+    char decrypted_path[CELL_FS_MAX_FS_PATH_LENGTH + 8];
+
+    if (!path_ea || !np_guest_string(path_ea, guest_path, sizeof(guest_path)) ||
+        (key_ea && (key_ea > UINT32_MAX - 16u ||
+                    (ppu_vm_size && (u64)key_ea + 16u > ppu_vm_size))))
+        return (s32)SCE_NP_DRM_ERROR_INVALID_PARAM;
+    if (cellfs_translate_path(guest_path, host_path, sizeof(host_path)) != 0)
+        return (s32)CELL_ENOENT;
+
+    FILE* file = fopen(host_path, "rb");
+    if (!file)
+        return (s32)CELL_ENOENT;
+    u8 magic[4] = {0};
+    const size_t read = fread(magic, 1, sizeof(magic), file);
+    fclose(file);
+    if (read != sizeof(magic) || memcmp(magic, "NPD\0", 4) != 0) {
+        /* RPCS3 treats non-NPD files as unencrypted. SELF verification is not
+         * modeled here, so reject its distinct SCE header rather than claim
+         * that an encrypted executable passed license verification. */
+        if (read == sizeof(magic) && memcmp(magic, "SCE\0", 4) == 0)
+            return (s32)SCE_NP_DRM_ERROR_NO_ENTITLEMENT;
+        return CELL_OK;
+    }
+
+    const int n = snprintf(decrypted_path, sizeof(decrypted_path), "%s.dec", host_path);
+    if (n < 0 || (size_t)n >= sizeof(decrypted_path))
+        return (s32)SCE_NP_DRM_ERROR_INVALID_PARAM;
+    const u8* guest_key = key_ea
+        ? GUEST_PTR((void*)(uintptr_t)key_ea, const u8*) : NULL;
+    const int rc = edat_decrypt_file_with_klicensee(host_path, decrypted_path, guest_key);
+    if (rc == 0) {
+        if (guest_key) edat_add_klicensee(guest_key);
+        return CELL_OK;
+    }
+    if (rc == -1)
+        return (s32)CELL_ENOENT;
+    if (rc == -6)
+        return (s32)SCE_NP_DRM_ERROR_LICENSE_NOT_FOUND;
+    if (rc == -2 || rc == -3 || rc == -4)
+        return (s32)SCE_NP_DRM_ERROR_BAD_FORMAT;
+    return (s32)SCE_NP_DRM_ERROR_NO_ENTITLEMENT;
+}
 
 /* ---------------------------------------------------------------------------
  * Configuration
@@ -268,6 +347,58 @@ s32 sceNpManagerUnregisterCallback(void)
     return CELL_OK;
 }
 
+/* RPCS3_REFERENCE_REVIEWED: NP argument and error contracts were checked
+ * against the SDK-facing module declarations. No Sony NP ticket/time/
+ * entitlement service is connected to the local
+ * profile. Report that service boundary explicitly instead of returning
+ * CELL_OK with a fabricated ticket or network timestamp. */
+s32 sceNpManagerGetNetworkTime(CellRtcTick* tick)
+{
+    if (!s_np_initialized)
+        return SCE_NP_ERROR_NOT_INITIALIZED;
+    if (!tick)
+        return SCE_NP_ERROR_INVALID_ARGUMENT;
+    return SCE_NP_ERROR_OFFLINE;
+}
+
+s32 sceNpManagerRequestTicket2(const SceNpId* npId, const void* version,
+                                const char* serviceId, const void* cookie,
+                                u32 cookieSize, const char* entitlementId,
+                                u32 consumedCount)
+{
+    (void)version; (void)entitlementId; (void)consumedCount;
+    if (!s_np_initialized)
+        return SCE_NP_ERROR_NOT_INITIALIZED;
+    if (!npId || !serviceId || cookieSize > 1024 || (cookieSize && !cookie))
+        return SCE_NP_ERROR_INVALID_ARGUMENT;
+    return SCE_NP_ERROR_OFFLINE;
+}
+
+s32 sceNpManagerGetEntitlementById(const char* entitlementId, void* entitlement)
+{
+    (void)entitlement;
+    if (!s_np_initialized)
+        return SCE_NP_ERROR_NOT_INITIALIZED;
+    if (!entitlementId)
+        return SCE_NP_ERROR_INVALID_ARGUMENT;
+    /* This local runtime has no entitlement catalog. */
+    return SCE_NP_ERROR_ID_NOT_FOUND;
+}
+
+s32 sceNpManagerGetEntitlementIdList(void* entitlementIds, u32 count)
+{
+    if (!s_np_initialized)
+        return SCE_NP_ERROR_NOT_INITIALIZED;
+    if (count && !entitlementIds)
+        return SCE_NP_ERROR_INVALID_ARGUMENT;
+    if (count > (UINT32_MAX / SCE_NP_ENTITLEMENT_ID_SIZE))
+        return SCE_NP_ERROR_INVALID_ARGUMENT;
+    if (entitlementIds)
+        memset(GUEST_PTR(entitlementIds, void*), 0,
+               (size_t)count * SCE_NP_ENTITLEMENT_ID_SIZE);
+    return CELL_OK; /* empty local entitlement list */
+}
+
 /* Identity getters: reuse the fake-profile implementations (offline-with-account). */
 s32 sceNpManagerGetNpId(SceNpId* npId)               { return sceNpGetNpId(0, npId); }
 s32 sceNpManagerGetOnlineId(SceNpOnlineId* onlineId) { return sceNpGetOnlineId(0, onlineId); }
@@ -340,7 +471,3 @@ s32 sceNpDrmIsAvailable(const u8* k_licensee, const char* drm_path)
     return np_drm_is_available(k_licensee, drm_path);
 }
 
-s32 sceNpDrmIsAvailable2(const u8* k_licensee, const char* drm_path)
-{
-    return np_drm_is_available(k_licensee, drm_path);
-}

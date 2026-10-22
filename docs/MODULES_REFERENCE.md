@@ -1,5 +1,9 @@
 # HLE Modules — Complete Reference
 
+> Examples in this reference illustrate module registration and guest ABI
+> bridging. A sample `CELL_OK` return is not a substitute for implementing
+> required output buffers, state changes, callbacks, or synchronization.
+
 Detailed documentation for every HLE (High-Level Emulation) module in ps3recomp. This goes beyond the status table to explain what each module does, how it's implemented, and what platform backends it uses.
 
 ---
@@ -221,6 +225,17 @@ All filesystem operations translate PS3 paths (e.g., `/dev_hdd0/game/NPUA80001/`
 - **Windows**: XInput (Xbox controller API — maps naturally to DS3)
 - **Cross-platform**: SDL2 GameController API
 
+The Windows backend loads `xinput1_3.dll`, `xinput1_4.dll`, then
+`xinput9_1_0.dll`; XInput state polling is required, while vibration is used
+when the selected DLL exports it. Optional SCP extensions provide pressure
+button and Sixaxis sensor values; ordinary XInput buttons remain digital.
+
+On Windows, when no host controller is connected, the host keyboard supplies a
+virtual pad on port 0. Arrows control the d-pad and left stick; Z/X/A/S map to
+Cross/Circle/Square/Triangle, Q/W to L1/R1, 1/2 to L2/R2, Enter to Start, and
+Tab to Select. A connected controller takes precedence. Set `PAD_NO_KEYBOARD`
+to disable this fallback.
+
 **Features:**
 - Up to 7 controller ports (PS3 maximum)
 - Digital buttons: Cross, Circle, Square, Triangle, L1, R1, L2, R2, L3, R3, Start, Select, PS
@@ -241,30 +256,15 @@ All filesystem operations translate PS3 paths (e.g., `/dev_hdd0/game/NPUA80001/`
 **CellPadData structure:**
 ```c
 struct CellPadData {
-    s32 len;            // Number of data words (usually 24)
+    s32 len;            // 8 default, 20 pressure mode, 24 sensor mode
     u16 button[CELL_PAD_MAX_CODES];
-    // [0]:  digital buttons bitmask
-    // [1]:  digital buttons bitmask (continued)
-    // [2]:  right stick X (0-255)
-    // [3]:  right stick Y (0-255)
-    // [4]:  left stick X (0-255)
-    // [5]:  left stick Y (0-255)
-    // [6]:  right pressure (0-255)
-    // [7]:  left pressure (0-255)
-    // [8]:  up pressure (0-255)
-    // [9]:  down pressure (0-255)
-    // [10]: triangle pressure (0-255)
-    // [11]: circle pressure (0-255)
-    // [12]: cross pressure (0-255)
-    // [13]: square pressure (0-255)
-    // [14]: L1 pressure (0-255)
-    // [15]: R1 pressure (0-255)
-    // [16]: L2 pressure (0-255)
-    // [17]: R2 pressure (0-255)
-    // [18]: sensor X (accelerometer)
-    // [19]: sensor Y (accelerometer)
-    // [20]: sensor Z (accelerometer)
-    // [21]: sensor G (gyroscope)
+    // [0]: reserved
+    // [1]: mode and packet-length nibble
+    // [2]: digital1 mask; PS button is bit 8
+    // [3]: digital2 mask
+    // [4..7]: right X/Y and left X/Y (0-255, center=128)
+    // [8..19]: d-pad, face, shoulder and trigger pressure values
+    // [20..23]: sensor X/Y/Z and gyroscope (sensor mode only)
 };
 ```
 
@@ -275,9 +275,10 @@ struct CellPadData {
 
 - Raw mode (scancodes) and ASCII mode (translated characters)
 - Modifier key tracking (Shift, Ctrl, Alt, Meta)
-- LED state control (Caps Lock, Num Lock, Scroll Lock)
+- Keyboard events are wired from the Windows D3D12 window and the SDL Vulkan
+  window on platforms that build that backend
 - Ring buffer of key events
-- Up to 7 keyboard ports
+- Up to 2 keyboard ports
 
 ### cellMouse
 
@@ -286,9 +287,11 @@ struct CellPadData {
 
 - Delta accumulation (X/Y movement since last poll)
 - Button state (left, right, middle, extra buttons)
-- Scroll wheel events
+- Vertical and horizontal wheel events
+- Native Win32 raw mouse events in the D3D12 window and SDL mouse events in the
+  Vulkan window
 - Buffered ring-buffer mode for high-frequency polling
-- Up to 7 mouse ports
+- Up to 2 mouse ports
 
 ---
 
@@ -317,15 +320,28 @@ struct CellPadData {
 - `cellAudioPortStart(port)` — start producing audio
 - `cellAudioGetPortTimestamp(port, block, &stamp)` — timing for audio sync
 - `cellAudioSetNotifyEventQueue(queue)` — notify when a block is consumed
+- `cellAudioAdd2chData()` / `cellAudioAdd6chData()` — stereo and six-channel input
+- `cellAudioSetPortLevel()` — update port volume with a 13 ms ramp
+- `cellAudioCreateNotifyEventQueueEx()` — create PPU- or SPU-type notify queues
 - `cellAudioPortClose(port)` — close port
 - `cellAudioQuit()` — stop mixing thread, release audio device
+
+The Ex set/remove calls validate subscription flags and match flags on removal;
+mix events support decimation and no-mix flags, with ack source/timestamp
+tracking. `cellAudioMiscSetAccessoryVolume` follows RPCS3's initialized no-op.
+The mixer does not yet implement RPCS3's before-mix timing or wait for acks.
 
 ### cellVoice
 
 **File:** `libs/audio/cellVoice.c`
-**Purpose:** Voice chat system (stub)
+**Purpose:** Voice chat port and service management
 
-Port management only — no actual voice data capture or playback. Games can create/connect/disconnect voice ports, but data paths are empty.
+The HLE implements the exported lifecycle, port validation and management,
+mute/volume/bitrate, topology-query, and event-queue calls. Guest structures
+are read and written using PS3 big-endian memory helpers. No microphone capture,
+voice codec, or audio transfer is available: input writes are accepted without
+producing voice data, and output reads return an empty size. Device attribute
+and signal queries report the unavailable-device error.
 
 ### cellMic
 
@@ -414,6 +430,13 @@ Parses the PS3's native media container format:
   - **Audio**: ATRAC3+, LPCM, AC3 (channels, sample rate, bit depth)
 - Entry point navigation for seeking
 - Stream type/codec queries
+- Stream selection by channel and 32-bit big-endian ES filter IDs
+
+The parser currently uses a simplified header and global EP table. Its
+remaining RPCS3 exports for header-size/verification and per-stream EP
+iteration are not implemented: RPCS3's packed header and 24-byte EP ABI do not
+match these local structures, so their behavior cannot be safely inferred from
+the current parser.
 
 ### cellVdec (Partial)
 
@@ -578,14 +601,20 @@ Minimal wrapper that provides direct access to FreeType2. Reports FreeType 2.4.1
 **Purpose:** Unicode and character set conversion
 
 **Supported Conversions:**
-- UTF-8 ↔ UTF-16 (both BE and LE)
-- UTF-8 ↔ UTF-32
-- UTF-8 ↔ UCS-2
-- ISO-8859-1 ↔ UTF-8
-- ASCII ↔ UTF-8
-- Generic converter API: `l10n_convert(src_code, dst_code, src, src_len, dst, dst_len)`
+- UTF-8, UTF-16/32, UCS-2/4, ISO-8859, Windows code pages, Shift-JIS/CP932,
+  EUC-JP, EUC-KR, GB18030, Big5, HZ, and ISO-2022-JP through the generic
+  string conversion entry points, subject to host converter availability.
+- `l10n_get_converter(src_code, dst_code)` returns the packed converter ID.
+- `l10n_convert(converter, src, dst, &dst_len)` converts one source character.
+- `l10n_convert_str(converter, src, &src_len, dst, &dst_len)` and
+  `L10nConvertStr(src_code, src, &src_len, dst_code, dst, &dst_len)` convert
+  bounded strings. `SJISstoUTF8s` and `EUCJPstoUTF8s` are convenience exports.
 
-Each conversion function follows the pattern `L10nResult SJIStoUTF8(...)` with proper bounds checking, surrogate pair handling, and error reporting.
+The generic converter uses PS3 code-page IDs and guest big-endian length
+fields. Result values follow the cellL10n conversion-result enum. The local
+HLE table registers 42 `cellL10n` exports confirmed in RPCS3's registration
+table; the remaining registered RPCS3 converters are still an export-surface
+gap.
 
 ---
 
@@ -752,32 +781,38 @@ SPURS (SPU Runtime System) is Sony's framework for distributing work across SPUs
   - `cellSpursEventFlagWait()` truly blocks until condition met
   - `cellSpursEventFlagSet()` broadcasts to wake waiters
 
-**Not implemented:**
-- Actual SPU program execution on host threads
-- SPU job scheduling and dispatch
-- DMA coordination between SPU tasks
+**Limits:**
+- SPU execution is available for lifted and registered images/jobs, using the
+  runtime's local-store, channel, and DMA glue. Arbitrary SPU binaries are not
+  automatically executable; images must be lifted and registered, and lifter
+  gaps or missing HLE behavior can still block a title.
+- SPURS scheduling and synchronization are partial host-side models, not a
+  cycle-accurate SPU runtime.
 
 ### cellSpursJq
 
 **File:** `libs/spurs/cellSpursJq.c`
 **Purpose:** SPURS Job Queue — advanced SPU job dispatch
 
-Built on top of cellSpurs, provides a higher-level job submission and tracking interface. Jobs are submitted to queues and would normally be dispatched to SPUs for execution.
+Built on top of cellSpurs, provides job submission and tracking. Supported
+descriptors dispatch synchronously through the runtime's lifted-job registry.
+The binary fingerprint must match a registered lift; an unknown binary returns
+`CELL_SPURS_JQ_ERROR_JOB_NOT_FOUND` instead of being reported as completed.
 
 **Implementation:**
 - Up to 16 concurrent job queues
-- Jobs are accepted via `Push` and immediately marked complete (no SPU execution)
-- `Wait` and `TryWait` return immediately since jobs are instantly "done"
+- Supported jobs run through `spu_workload_dispatch_job()` before completion is recorded
+- `Wait` and `TryWait` reflect the queue's completion ring; unknown job binaries fail dispatch
 - Port system connects event queues to job queues for push synchronization
 
 **Key Functions:**
 - `cellSpursJobQueueAttributeInitialize(&attr)` — set defaults (64 max jobs, grab=1, normal priority)
 - `cellSpursCreateJobQueue(spurs, &jq, &attr, buffer, size)` — create queue
 - `cellSpursDestroyJobQueue(&jq)` — destroy queue
-- `cellSpursJobQueuePush(&jq, job, size, tag, &id)` — submit job (completes immediately)
+- `cellSpursJobQueuePush(&jq, job, size, tag, &id)` — submit and synchronously dispatch a supported job
 - `cellSpursJobQueuePushJob(&jq, &job256, tag, &id)` — submit 256-byte job
-- `cellSpursJobQueueWait(&jq, id)` — wait for job (returns immediately)
-- `cellSpursJobQueueGetCount(&jq, &count)` — returns 0 (all jobs complete)
+- `cellSpursJobQueueWait(&jq, id)` — wait/check completion state
+- `cellSpursJobQueueGetCount(&jq, &count)` — report the current queue count
 - `cellSpursJobQueuePort2Create/Destroy/PushSync` — port-based submission
 
 **Job Types:**
@@ -869,6 +904,12 @@ Unlike cellSync (spinlocks), cellSync2 uses **real OS blocking**:
 ### cellUsbd
 
 **File:** `libs/hardware/cellUsbd.c`
+
+The runtime reports no enumerated USB devices. Pipe and transfer calls return
+the public `DEVICE_NOT_FOUND` or `PIPE_NOT_FOUND` errors. The remaining RPCS3
+exports that RPCS3 itself marks `UNIMPLEMENTED_FUNC` are registered as
+success-returning compatibility placeholders; they do not allocate USB
+memory, register composite drivers, or perform transfers.
 **Purpose:** USB device driver framework (stub)
 
 - Logical Device Driver (LDD) registration
@@ -928,16 +969,29 @@ PS3 save data uses a callback pattern:
 
 ### cellRtc
 
-**File:** `libs/misc/cellRtc.c`
+**File:** `libs/system/cellRtc.c`
 **Purpose:** Real-time clock
 
-- PS3 epoch: **January 1, 2000** (not Unix epoch 1970)
+- CellRtc tick epoch: **January 1, year 1**, in microseconds; the Unix epoch is
+  represented by tick `62135596800000000`.
+- System-time values use the separate **January 1, 2000** epoch and are bounded
+  through December 31, 2099.
 - `cellRtcGetCurrentTick(&tick)` — current time as tick count (microseconds since epoch)
 - `cellRtcGetCurrentClockLocalTime(&datetime)` — structured date/time
-- `cellRtcTickAddYears/Months/Days/Hours/Minutes/Seconds/Microseconds()` — time arithmetic
+- `cellRtcGetTick` / `cellRtcSetTick` — convert between structured date/time and ticks
+- `cellRtcTickAddTicks/Weeks/Years/Months/Days/Hours/Minutes/Seconds/Microseconds()` — time arithmetic
 - `cellRtcFormatRfc2822(buf, &tick, tz_minutes)` — RFC 2822 date string
 - `cellRtcFormatRfc3339(buf, &tick, tz_minutes)` — RFC 3339/ISO 8601 date string
-- `cellRtcGetDayOfWeek(year, month, day)` — Zeller's formula
+- `cellRtcParseDateTime` / `cellRtcParseRfc3339` — parse RFC 2822, RFC 3339,
+  and asctime-style dates
+- DOS date/time, Unix `time_t`, system-time, and Win32 FILETIME conversions
+- Validation, leap-year, tick comparison/resolution, local-time formatting,
+  timezone configuration, and secure/current tick APIs
+
+`cellRtcSetCurrentTick` changes the runtime's process-local wall-clock offset;
+it does not change the host clock. `cellRtcSetConf` stores an RTC-local timezone
+override. The secure tick advances from the process's monotonic start point;
+setting it follows RPCS3's success-only secure-RTC handler behavior.
 
 ### cellMsgDialog / cellOskDialog
 
@@ -1036,11 +1090,17 @@ Stub for PS3 printing to compatible USB printers. No printers are ever detected.
 **File:** `libs/misc/cellRemotePlay.c`
 **Purpose:** Remote Play for PS Vita / PSP
 
-Checks whether Remote Play streaming is available. Always reports unavailable in a recompiled environment.
+Exports the eight calls registered by RPCS3. RPCS3 currently implements them
+as TODO handlers that return `CELL_OK`; `cellRemotePlayGetComparativeVolume`
+writes `1.0f` when given a non-null output pointer. No Remote Play stream is
+established by either implementation.
 
-- `cellRemotePlayInit()` / `cellRemotePlayEnd()` — lifecycle
-- `cellRemotePlayIsAvailable()` — always returns 0
-- `cellRemotePlayGetStatus(&status)` — reports disconnected (status = 0)
+- `cellRemotePlayGetStatus()`
+- `cellRemotePlaySetComparativeVolume(volume)`
+- `cellRemotePlayGetPeerInfo()` / `cellRemotePlayGetSharedMemory()`
+- `cellRemotePlayEncryptAllData()` / `cellRemotePlayStopPeerVideoOut()`
+- `cellRemotePlayGetComparativeVolume(&volume)`
+- `cellRemotePlayBreak()`
 
 ### Other Miscellaneous Modules
 
@@ -1052,7 +1112,7 @@ Checks whether Remote Play streaming is available. Always reports unavailable in
 | **cellSheap** | Shared heap allocator | Bump allocator with block tracking, up to 8 heaps |
 | **cellLicenseArea** | License region check | Americas default, all regions valid |
 | **cellMusicDecode/2** | Music decoding | Init/finish, decode returns NOT_SUPPORTED |
-| **cellVideoUpload** | Video upload | Init/term, upload returns NOT_SUPPORTED |
+| **cellVideoUpload** | Video upload | Initialization/finalization callbacks are implemented; remote upload is unavailable. |
 | **cellKey2char** | Keyboard scancode→Unicode | US-101 layout table, shift/caps handling |
 | **cellAvconfExt** | AV configuration | Audio output device info, gamma control |
 | **cellGameExec** | Game execution | Exit parameters, boot info, ExitToShelf |

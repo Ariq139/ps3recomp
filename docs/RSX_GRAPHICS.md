@@ -2,6 +2,16 @@
 
 How ps3recomp translates PS3 RSX GPU commands to host graphics APIs.
 
+## Current implementation status
+
+The repository has a FIFO method processor, state tracking, draw dispatch, and
+multiple backends. Windows uses D3D12, macOS uses Metal, and Linux defaults to
+a null/headless path with an optional Vulkan backend. Guest programs are
+translated through shared decompilers; Vulkan needs glslang, and Metal also
+needs spirv-cross. Coverage remains incomplete, and a backend's presence does
+not establish that a particular game renders correctly. See the current
+[backend matrix and limitations](BUILDING.md#graphics-backends).
+
 ---
 
 ## Architecture Overview
@@ -24,18 +34,18 @@ RSX Command Processor             ← libs/video/rsx_commands.c
   │ Dispatches to registered backend via callbacks
   │
   ├──▶ Null Backend               ← libs/video/rsx_null_backend.c
-  │    Win32 window + GDI clear color (debugging)
+  │    Debug / headless command-path backend
   │
   ├──▶ D3D12 Backend              ← libs/video/rsx_d3d12_backend.c
-  │    Real GPU rendering (Windows) with compiled shaders
+  │    Windows rendering path with guest-program support
   │
   └──▶ Vulkan Backend             ← opt-in (Linux; PS3RECOMP_RSX_VULKAN)
        Guest shaders on the shared draw engine
 
 Supporting files:
-  libs/video/rsx_primitives.h      ← RSX → D3D12 topology mapping + index conversion
-  libs/video/rsx_vertex_formats.h  ← RSX → DXGI format mapping
-  libs/video/rsx_d3d12_shaders.h   ← Built-in HLSL shaders
+  libs/video/rsx_primitives.h      ← RSX primitive conversion
+  libs/video/rsx_vertex_formats.h  ← RSX vertex-format mapping
+  libs/video/rsx_d3d12_shaders.h   ← D3D12 shader helpers
   libs/video/cellResc.c            ← Resolution scaling (16 functions)
   libs/video/cellVideoOut.c        ← Video output configuration
 ```
@@ -188,72 +198,19 @@ typedef struct rsx_backend {
 
 Register a backend with `rsx_set_backend(&my_backend)`. Only one backend can be active at a time.
 
-### Null Backend
+### Backend status
 
-**File:** `libs/video/rsx_null_backend.c`
+| Host | Backend | Status |
+|---|---|---|
+| Windows | D3D12 (`rsx_d3d12_backend.c`) | Main development backend; guest programs and render-target paths are present, with unsupported RSX features remaining. |
+| macOS | Metal (`rsx_metal_backend.m`) | Backend and shader path are present; shader translation requires optional glslang and spirv-cross dependencies. |
+| Linux | Null/headless by default | Command processing can run without presenting a rendered game frame. |
+| Linux, opt-in | Vulkan (`rsx_vulkan_backend.c`) | Requires `PS3RECOMP_RSX_VULKAN=ON`; guest-program translation requires glslang. Coverage is partial. |
 
-Debug backend that creates a Win32 window and displays the RSX clear color via GDI. Shows an FPS counter and debug overlay text. Use this to verify the command pipeline works before switching to D3D12.
-
-```c
-rsx_null_backend_init(1280, 720, "My Game");  // creates window
-// ... game runs ...
-rsx_null_backend_pump_messages();              // call each frame
-```
-
-### D3D12 Backend
-
-**File:** `libs/video/rsx_d3d12_backend.c` (~990 lines)
-
-Real GPU rendering via Direct3D 12. Current capabilities:
-
-| Feature | Status | Details |
-|---------|--------|---------|
-| Device creation | **Done** | Feature level 11.0, any D3D12-capable GPU |
-| Swap chain | **Done** | Double-buffered, flip-discard, VSync present |
-| Clear | **Done** | Clears to RSX clear color (ARGB → float4 RGBA) |
-| Root signature | **Done** | Input assembler enabled |
-| Pipeline state | **Done** | Vertex-colored shader (position + color) compiled at init |
-| Vertex buffer | **Done** | 4MB upload heap, persistently mapped, DrawInstanced |
-| Vertex upload | **Done** | Reads position (float3) + color (ubyte4/float4) from guest memory with BE byte-swap |
-| Shader compilation | **Done** | Runtime D3DCompile (vs_5_0 / ps_5_0) |
-| Frame sync | **Done** | Fence-based, per-frame command allocators |
-| Draw calls | **Done** | DrawInstanced with accumulated per-frame vertices |
-| Vertex attribs | **Done** | Logs all enabled attribs (type, size, stride, offset) |
-| Shader logging | **Done** | Logs fragment/vertex program addresses and output mask |
-| Blend state | Logging | Logs blend enable/factors (PSO recreation needed) |
-| Depth/stencil | Logging | Logs depth test/stencil state |
-| Texture binding | Logging | Logs format, dimensions, guest address. Format decode ready. |
-| Texture upload | Scaffold | 25 RSX→DXGI format mappings, upload process documented |
-| RSX shaders | Not started | Need NV40 ISA → HLSL translation |
-| Depth buffer | Not started | Need depth/stencil texture creation |
-
-**How the D3D12 backend renders a frame:**
-
-```
-1. Reset command allocator + command list for current frame
-2. Transition render target: PRESENT → RENDER_TARGET
-3. Set render target, viewport, scissor
-4. ClearRenderTargetView with RSX clear color
-5. Bind root signature + PSO + vertex buffer + topology
-6. DrawInstanced with accumulated vertex data
-7. Transition render target: RENDER_TARGET → PRESENT
-8. Present with VSync
-9. Signal fence, advance to next frame
-```
-
-**Shaders** are compiled at init time from inline HLSL strings using `D3DCompile`. The basic vertex-colored shader is:
-
-```hlsl
-// Vertex shader
-struct VSInput { float3 pos : POSITION; float4 col : COLOR; };
-struct VSOutput { float4 pos : SV_POSITION; float4 col : COLOR; };
-VSOutput main(VSInput i) { VSOutput o; o.pos = float4(i.pos, 1.0); o.col = i.col; return o; }
-
-// Pixel shader
-float4 main(PSInput i) : SV_TARGET { return i.col; }
-```
-
-Additional shader definitions in `rsx_d3d12_shaders.h`: solid color fill, textured quad.
+The D3D12, Metal, and Vulkan paths share the RSX state/decompiler architecture,
+but their resource and shader implementations differ. Build options and known
+unsupported features change over time; use the [current matrix in BUILDING.md](BUILDING.md#graphics-backends)
+instead of historical prototype checklists.
 
 ---
 
@@ -297,7 +254,7 @@ Maps RSX vertex attribute types (from `NV4097_SET_VERTEX_DATA_ARRAY_FORMAT`) to 
 
 ---
 
-## RSX Shader Translation (Future Work)
+## RSX Shader Translation
 
 The RSX uses a proprietary shader ISA derived from NVIDIA's NV40/NV47 architecture:
 
@@ -306,24 +263,23 @@ The RSX uses a proprietary shader ISA derived from NVIDIA's NV40/NV47 architectu
 - Up to 512 instructions per program.
 - 4-component vector operations (float4).
 - 16 input attributes, 16 output varyings.
+- `BRB` and `CLB` test the D3-encoded branch selector and polarity against
+  `NV4097_SET_TRANSFORM_BRANCH_BITS`; the selected register is uploaded in the
+  VP constant buffer. `PSH` and `POP` remain unsupported by the local
+  decompiler and by the checked RPCS3 vertex-program decompiler.
 
 ### Fragment Programs
 - Stored in VRAM or main memory at the address written to `NV4097_SET_SHADER_PROGRAM` (method 0x08E4). The low 2 bits indicate memory location (0=local, 1=main).
 - Variable length (terminated by end instruction).
 - Operates on interpolated fragment values + textures.
 
-### Translation Strategy
-
-1. **Parse** RSX shader bytecode (NV40 ISA encoding)
-2. **Convert** to an intermediate representation (instruction list with typed operands)
-3. **Emit** HLSL (for D3D12) or GLSL/SPIR-V (for Vulkan)
-4. **Compile** at runtime using `D3DCompile` or `glslang`
-5. **Cache** compiled shaders by content hash to avoid recompilation
-
-**Practical approach for initial ports:** Most PS3 games use only 10-50 unique shader programs. Rather than implementing a full NV40 ISA translator, start by:
-1. Dumping the raw shader bytecode when `SET_SHADER_PROGRAM` / `SET_TRANSFORM_PROGRAM_LOAD` are called
-2. Manually writing equivalent HLSL for each unique shader
-3. Building a per-game shader lookup table
+The shared vertex and fragment decompilers emit host shader source. D3D12 uses
+the HLSL path; Vulkan translates HLSL to SPIR-V through optional glslang
+support; Metal uses glslang and spirv-cross when both are available. This
+translation path is implemented but incomplete. For a title-specific failure,
+capture the guest programs and RSX state, compare them against a known-good
+emulator run, and identify the first rejected method or translation diagnostic
+before adding a game-specific workaround.
 
 **Reference implementations:**
 - RPCS3: `rpcs3/Emu/RSX/Program/RSXVertexProgram.cpp` and `RSXFragmentProgram.cpp`

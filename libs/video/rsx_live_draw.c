@@ -70,6 +70,7 @@ void rsx_live_draw_shutdown(void) {}
 #define _CRT_SECURE_NO_WARNINGS
 
 #include "rsx_dispatch.h"
+#include "rsx_commands.h"
 #include "rsx_fp_decompiler.h"
 static unsigned long long g_ld_bind_white = 0, g_ld_bind_real = 0, g_ld_bind_surf = 0;
 /* Set once PS1 VRAM actually holds a drawn frame (see the PS1_PC heartbeat).
@@ -173,7 +174,7 @@ extern volatile unsigned long long g_yz_auto_start_tick;
  * tables share entries, so this is 128 unique tables between GPU flushes. */
 #define SMP_RING_TABLES  128
 
-#define CB_BLOCK_BYTES   ((512 + 2) * 16)
+#define CB_BLOCK_BYTES   ((512 + 2) * 16 + 16)
 #define CB_BLOCK_ALIGNED ((CB_BLOCK_BYTES + 255) & ~255u)
 #define CB_RING_BYTES    (CB_BLOCK_ALIGNED * SRV_RING_TABLES)
 #define PS_CB_RING_BYTES CB_RING_BYTES
@@ -1277,7 +1278,11 @@ int rsx_live_draw_enabled(void)
 #define M_CULL_FACE          0x1830
 #define M_FRONT_FACE         0x1834
 #define M_CULL_FACE_ENABLE   0x183C
+#define M_SHADE_MODE         0x0368
+#define M_TWO_SIDE_LIGHT_EN  0x142C
 #define M_COLOR_MASK         0x0324
+#define M_BLEND_ENABLE_MRT   0x036C
+#define M_COLOR_MASK_MRT     0x0370
 /* Stencil + scissor (raw NV4097 offsets, same convention as above; RPCS3
  * gcm_enums.h consulted as a read-only numbering oracle). */
 #define M_STENCIL_TEST_ENABLE 0x0328
@@ -1356,10 +1361,13 @@ static u32 ld_rt_count(u32 sel)
 
 typedef struct {
     u32 alpha_test_enable, alpha_func, alpha_ref_raw, alpha_ref_format;
+    u32 texcoord_control_mask, anti_aliasing_control;
     u32 blend_enable, sf_rgb, df_rgb, sf_a, df_a, eq_rgb, eq_a;
     u32 depth_test, depth_write, depth_func;
     u32 cull_enable, cull_face, front_face;
+    u32 flat_shading, two_sided_lighting;
     u32 color_mask;
+    u32 color_mask_mrt, blend_enable_mrt;
     /* TM: this title renders HDR into FP16 (SURFACE_FORMAT 0xB) targets;
      * the RTV format is PSO state, so it belongs in the key. */
     u32 rt_fp16;
@@ -1379,6 +1387,9 @@ typedef struct {
 static void decode_render_state(render_state_t* rs)
 {
     memset(rs, 0, sizeof(*rs));
+    for (u32 i = 0; i < 10; i++)
+        rs->texcoord_control_mask |= (rsx_dsp_reg(&g.rsx, 0x0B40 + i * 4) & 1u) << i;
+    rs->anti_aliasing_control = rsx_dsp_reg(&g.rsx, 0x1D7C);
     rs->alpha_test_enable = rsx_dsp_reg(&g.rsx, M_ALPHA_TEST_ENABLE) & 1;
     rs->alpha_func = rsx_dsp_reg(&g.rsx, M_ALPHA_FUNC);
     rs->alpha_ref_raw = rsx_dsp_reg(&g.rsx, M_ALPHA_REF);
@@ -1404,11 +1415,15 @@ static void decode_render_state(render_state_t* rs)
     rs->cull_enable = rsx_dsp_reg(&g.rsx, M_CULL_FACE_ENABLE) & 1;
     rs->cull_face   = rsx_dsp_reg(&g.rsx, M_CULL_FACE);
     rs->front_face  = rsx_dsp_reg(&g.rsx, M_FRONT_FACE);
+    rs->flat_shading = rsx_dsp_reg(&g.rsx, M_SHADE_MODE) == CELL_GCM_FLAT;
+    rs->two_sided_lighting = rsx_dsp_reg(&g.rsx, M_TWO_SIDE_LIGHT_EN) != 0;
     /* s31 (scratch/s31_blue_emitter.md): honor the RAW register — 0 is a
      * legitimate game-written "write no color channels" (the character
      * shadow-mask depth-prime pass). rsx_dispatch_init seeds the nv40
      * reset default (0x01010101), so never-written reads as all-on. */
     rs->color_mask  = rsx_dsp_reg(&g.rsx, M_COLOR_MASK);
+    rs->color_mask_mrt = rsx_dsp_reg(&g.rsx, M_COLOR_MASK_MRT);
+    rs->blend_enable_mrt = rsx_dsp_reg(&g.rsx, M_BLEND_ENABLE_MRT) & 0x0Eu;
     rs->stencil_enable    = rsx_dsp_reg(&g.rsx, M_STENCIL_TEST_ENABLE) & 1;
     rs->stencil_two_sided = rsx_dsp_reg(&g.rsx, M_TWO_SIDED_STENCIL) & 1;
     rs->s_func       = rsx_dsp_reg(&g.rsx, M_STENCIL_FUNC);
@@ -1442,6 +1457,10 @@ static D3D12_STENCIL_OP gcm_stencil_op(u32 op)
 static void apply_render_state(D3D12_GRAPHICS_PIPELINE_STATE_DESC* pd,
                                const render_state_t* rs)
 {
+    /* One-sample A2C is emulated in the pixel shader before alpha-to-one. */
+    pd->BlendState.AlphaToCoverageEnable = FALSE;
+    const u32 rt_count = rs->rt_count ? rs->rt_count : 1;
+    pd->BlendState.IndependentBlendEnable = rt_count > 1 ? TRUE : FALSE;
     D3D12_RENDER_TARGET_BLEND_DESC* b = &pd->BlendState.RenderTarget[0];
     /* nv40_3d COLOR_MASK byte layout (Mesa/nouveau nv40_3d.xml.h, MIT/X11):
      * B=[0:7] G=[8:15] R=[16:23] A=[24:31]; any nonzero byte = channel on.
@@ -1451,14 +1470,26 @@ static void apply_render_state(D3D12_GRAPHICS_PIPELINE_STATE_DESC* pd,
         (((rs->color_mask >>  8 ) & 0xFF) ? D3D12_COLOR_WRITE_ENABLE_GREEN : 0) |
         (((rs->color_mask >> 16 ) & 0xFF) ? D3D12_COLOR_WRITE_ENABLE_RED   : 0) |
         (((rs->color_mask >> 24 ) & 0xFF) ? D3D12_COLOR_WRITE_ENABLE_ALPHA : 0);
-    if (rs->blend_enable) {
-        b->BlendEnable   = TRUE;
-        b->SrcBlend      = gcm_blend_factor(rs->sf_rgb, 0);
-        b->DestBlend     = gcm_blend_factor(rs->df_rgb, 0);
-        b->BlendOp       = gcm_blend_op(rs->eq_rgb);
-        b->SrcBlendAlpha = gcm_blend_factor(rs->sf_a, 1);
-        b->DestBlendAlpha= gcm_blend_factor(rs->df_a, 1);
-        b->BlendOpAlpha  = gcm_blend_op(rs->eq_a);
+    b->BlendEnable   = rs->blend_enable ? TRUE : FALSE;
+    b->SrcBlend      = gcm_blend_factor(rs->sf_rgb, 0);
+    b->DestBlend     = gcm_blend_factor(rs->df_rgb, 0);
+    b->BlendOp       = gcm_blend_op(rs->eq_rgb);
+    b->SrcBlendAlpha = gcm_blend_factor(rs->sf_a, 1);
+    b->DestBlendAlpha= gcm_blend_factor(rs->df_a, 1);
+    b->BlendOpAlpha  = gcm_blend_op(rs->eq_a);
+    /* NV4097_SET_BLEND_ENABLE_MRT and SET_COLOR_MASK_MRT control outputs
+     * 1..3 independently. The guest mask uses A/R/G/B bits per target;
+     * D3D12's write-mask bits are R/G/B/A. */
+    for (u32 r = 1; r < rt_count && r < 4; r++) {
+        D3D12_RENDER_TARGET_BLEND_DESC* mrt = &pd->BlendState.RenderTarget[r];
+        *mrt = *b;
+        mrt->BlendEnable = (rs->blend_enable_mrt & (1u << r)) ? TRUE : FALSE;
+        const u32 guest_mask = (rs->color_mask_mrt >> (r * 4)) & 0xFu;
+        mrt->RenderTargetWriteMask =
+            ((guest_mask & 0x2u) ? D3D12_COLOR_WRITE_ENABLE_RED   : 0) |
+            ((guest_mask & 0x4u) ? D3D12_COLOR_WRITE_ENABLE_GREEN : 0) |
+            ((guest_mask & 0x8u) ? D3D12_COLOR_WRITE_ENABLE_BLUE  : 0) |
+            ((guest_mask & 0x1u) ? D3D12_COLOR_WRITE_ENABLE_ALPHA : 0);
     }
     pd->RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
     if (rs->cull_enable && rs->cull_face) {
@@ -1790,7 +1821,11 @@ static void ld_flush(ld_flush_reason reason)
 #endif
 }
 
-/* Public wrapper for the RSX SET_REFERENCE / sync fence: block until the GPU
+/* RPCS3_REFERENCE_REVIEWED: synchronization behavior is compared with
+ * RPCS3's set_reference path; this host implementation is local, and targeted
+ * review did not establish a copied RPCS3 body. See docs/RPCS3_LICENSE_AUDIT.md. This is not
+ * license clearance.
+ * Public wrapper for the RSX SET_REFERENCE / sync fence: block until the GPU
  * has finished all queued draws (mirrors RPCS3 nv406e::set_reference's sync(),
  * RSXThread.cpp), so the game's REF poll advances only after the GPU has really
  * caught up. Without it our async consumer writes REF instantly and races ahead
@@ -4134,6 +4169,8 @@ static u64 ld_hash_structural_render_state(
      * select distinct shader/PSO behavior. Every other D3D12 render-state
      * field is listed explicitly so struct padding can never become identity. */
     LD_HASH_RENDER_FIELD(alpha_test_enable);
+    LD_HASH_RENDER_FIELD(texcoord_control_mask);
+    LD_HASH_RENDER_FIELD(anti_aliasing_control);
     LD_HASH_RENDER_FIELD(alpha_func);
     LD_HASH_RENDER_FIELD(blend_enable);
     LD_HASH_RENDER_FIELD(sf_rgb);
@@ -4148,7 +4185,11 @@ static u64 ld_hash_structural_render_state(
     LD_HASH_RENDER_FIELD(cull_enable);
     LD_HASH_RENDER_FIELD(cull_face);
     LD_HASH_RENDER_FIELD(front_face);
+    LD_HASH_RENDER_FIELD(flat_shading);
+    LD_HASH_RENDER_FIELD(two_sided_lighting);
     LD_HASH_RENDER_FIELD(color_mask);
+    LD_HASH_RENDER_FIELD(color_mask_mrt);
+    LD_HASH_RENDER_FIELD(blend_enable_mrt);
     LD_HASH_RENDER_FIELD(rt_fp16);
     LD_HASH_RENDER_FIELD(rt_count);
     LD_HASH_RENDER_FIELD(stencil_enable);
@@ -4165,6 +4206,46 @@ static u64 ld_hash_structural_render_state(
     LD_HASH_RENDER_FIELD(bs_zpass);
 #undef LD_HASH_RENDER_FIELD
     return hash;
+}
+
+static int ld_hlsl_flatten_color_varyings(char* source, size_t capacity)
+{
+    static const char* const fields[] = {
+        "float4 col0", "float4 col1", "float4 col2", "float4 col3"
+    };
+    static const char prefix[] = "nointerpolation ";
+    for (u32 i = 0; i < sizeof(fields) / sizeof(fields[0]); i++) {
+        char* field = strstr(source, fields[i]);
+        if (!field) return 0;
+        if (field >= source + sizeof(prefix) - 1 &&
+            memcmp(field - (sizeof(prefix) - 1), prefix,
+                   sizeof(prefix) - 1) == 0)
+            continue;
+        const size_t used = strlen(source);
+        const size_t prefix_len = sizeof(prefix) - 1;
+        if (used + prefix_len + 1 > capacity) return 0;
+        memmove(field + prefix_len, field,
+                used - (size_t)(field - source) + 1);
+        memcpy(field, prefix, prefix_len);
+    }
+    return 1;
+}
+
+static int ld_hlsl_replace_all(char* source, size_t capacity,
+                               const char* from, const char* to)
+{
+    const size_t from_len = strlen(from);
+    const size_t to_len = strlen(to);
+    char* pos = source;
+    while ((pos = strstr(pos, from)) != NULL) {
+        const size_t used = strlen(source);
+        if (used - from_len + to_len + 1 > capacity) return 0;
+        memmove(pos + to_len, pos + from_len,
+                used - (size_t)(pos - source) - from_len + 1);
+        memcpy(pos, to, to_len);
+        pos += to_len;
+    }
+    return 1;
 }
 
 /*
@@ -4569,7 +4650,8 @@ static ID3D12PipelineState* build_pso(
     pd.InputLayout.pInputElementDescs = input_count ? il : NULL;
     pd.InputLayout.NumElements = input_count;
     apply_render_state(&pd, rs);
-    pd.SampleMask = 0xFFFFFFFFu;
+    pd.SampleMask = (rs->anti_aliasing_control & 1u)
+        ? rs->anti_aliasing_control >> 16 : 0xFFFFFFFFu;
     pd.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     pd.NumRenderTargets = rs->rt_count ? rs->rt_count : 1;
     for (u32 r = 0; r < pd.NumRenderTargets; r++)
@@ -4880,7 +4962,7 @@ static ID3D12PipelineState* get_pso(
     const LONGLONG decompile_begin = ld_profile_qpc();
 #endif
     rsx_vp_set_branch_base(rsx_dsp_vp_start(&g.rsx));
-    const int vi = masked_layout
+    int vi = masked_layout
         ? rsx_vp_decompile_compact_ex(
             vp_uc, vp_instrs * 16, vtex_mask, masked_layout->mask,
             vs_hlsl, sizeof(vs_hlsl))
@@ -4928,6 +5010,20 @@ static ID3D12PipelineState* get_pso(
     g_ld_profile.total.decompile_qpc +=
         (u64)(ld_profile_qpc() - decompile_begin);
 #endif
+    if (fi > 0 && rsx_fp_apply_raster_controls(
+            ps_hlsl, sizeof(ps_hlsl), rs.texcoord_control_mask,
+            rs.anti_aliasing_control) < 0)
+        fi = -1;
+    if (fi > 0 && rs.two_sided_lighting &&
+        (!ld_hlsl_replace_all(ps_hlsl, sizeof(ps_hlsl), "input.col0",
+                              "(input.is_front_face ? input.col0 : input.col2)") ||
+         !ld_hlsl_replace_all(ps_hlsl, sizeof(ps_hlsl), "input.col1",
+                              "(input.is_front_face ? input.col1 : input.col3)")))
+        fi = -1;
+    if (vi > 0 && fi > 0 && rs.flat_shading &&
+        (!ld_hlsl_flatten_color_varyings(vs_hlsl, sizeof(vs_hlsl)) ||
+         !ld_hlsl_flatten_color_varyings(ps_hlsl, sizeof(ps_hlsl))))
+        vi = fi = -1;
     /* LD_FORCE_GREEN=1: make every fragment program return solid green.
      *
      * The same trick as LD_CLEAR_TEST, applied one stage later. Clears are
@@ -5071,6 +5167,9 @@ typedef struct {
      * index order, which is what makes the offsets derivable at all (an
      * inline stream carries no per-array offset registers). */
     const u8* inl; u32 inl_bytes, inl_stride; u32 inl_off[16];
+    /* Immediate ARRAY_ELEMENT16/32 values, delivered by the dispatcher at
+     * END only when the group selected no explicit draw command. */
+    const u32* inline_indices; u32 inline_index_count;
     batch_t arr[256]; u32 n_arr;
     batch_t idx[256]; u32 n_idx;
     u32     n_packets;
@@ -5102,6 +5201,7 @@ static void dc_reset(void)
     dc.n_cuts = 0;
     dc.fetch_ok = 1;
     dc.inl = NULL; dc.inl_bytes = dc.inl_stride = 0;
+    dc.inline_indices = NULL; dc.inline_index_count = 0;
 }
 static void push_vert(const vtx_t* v)
 {
@@ -5292,7 +5392,7 @@ static void fetch_batches(void)
     for (u32 r = 0; r < dc.n_arr && dc.fetch_ok; r++)
         for (u32 i = 0; i < dc.arr[r].count && dc.fetch_ok; i++)
             fetch_one(base, dc.arr[r].first + i, 0);
-    if (!dc.n_idx) return;
+    if (!dc.n_idx && !dc.inline_index_count) return;
     const u32 base_index = rsx_dsp_vertex_data_base_index(&g.rsx);
     rsx_dsp_index_array ia; rsx_dsp_get_index_array(&g.rsx, &ia);
     /* Restart sentinel handling, same rule as the replay harness (RPCS3
@@ -5304,6 +5404,8 @@ static void fetch_batches(void)
     if (s_no_restart < 0) s_no_restart = getenv("RSX_NO_RESTART") ? 1 : 0;
     const int restart_en = !s_no_restart && rsx_dsp_restart_index_enabled(&g.rsx, ia.is_u32);
     const u32 restart_val = rsx_dsp_restart_index(&g.rsx);
+    const int inline_restart_en =
+        !s_no_restart && rsx_dsp_restart_index_enabled(&g.rsx, 1);
     for (u32 r = 0; r < dc.n_idx && dc.fetch_ok; r++)
         for (u32 i = 0; i < dc.idx[r].count && dc.fetch_ok; i++) {
             const u32 esz = ia.is_u32 ? 4 : 2;
@@ -5322,6 +5424,18 @@ static void fetch_batches(void)
             }
             fetch_one(base, index, base_index);
         }
+    for (u32 i = 0; i < dc.inline_index_count && dc.fetch_ok; i++) {
+        const u32 index = dc.inline_indices[i];
+        if (inline_restart_en && index == restart_val) {
+            if (!rsx_restart_cut_push(&dc.cuts, &dc.n_cuts, &dc.cap_cuts,
+                                      dc.n_verts)) {
+                dc.fetch_ok = 0;
+                return;
+            }
+            continue;
+        }
+        fetch_one(base, index, base_index);
+    }
 }
 
 static void fetch_batches_hoisted(
@@ -5331,7 +5445,7 @@ static void fetch_batches_hoisted(
         for (u32 i = 0; i < dc.arr[batch].count && dc.fetch_ok; i++)
             push_compact_ref(dc.arr[batch].first + i, 0);
 
-    if (dc.n_idx && dc.fetch_ok) {
+    if ((dc.n_idx || dc.inline_index_count) && dc.fetch_ok) {
         const u32 base_index = rsx_dsp_vertex_data_base_index(&g.rsx);
         rsx_dsp_index_array index_array;
         rsx_dsp_get_index_array(&g.rsx, &index_array);
@@ -5342,6 +5456,8 @@ static void fetch_batches_hoisted(
         const int restart_enabled =
             !no_restart &&
             rsx_dsp_restart_index_enabled(&g.rsx, index_array.is_u32);
+        const int inline_restart_enabled =
+            !no_restart && rsx_dsp_restart_index_enabled(&g.rsx, 1);
         const u32 restart_value = rsx_dsp_restart_index(&g.rsx);
 
         for (u32 batch = 0; batch < dc.n_idx && dc.fetch_ok; batch++) {
@@ -5384,6 +5500,18 @@ static void fetch_batches_hoisted(
                 }
                 push_compact_ref(index, base_index);
             }
+        }
+        /* RPCS3_REFERENCE_REVIEWED: immediate draws stage these values as
+         * u32 indices even if their source was ARRAY_ELEMENT16. */
+        for (u32 i = 0; i < dc.inline_index_count && dc.fetch_ok; i++) {
+            const u32 index = dc.inline_indices[i];
+            if (inline_restart_enabled && index == restart_value) {
+                if (!rsx_restart_cut_push(
+                        &dc.cuts, &dc.n_cuts, &dc.cap_cuts, dc.n_refs))
+                    dc.fetch_ok = 0;
+                continue;
+            }
+            push_compact_ref(index, base_index);
         }
     }
 
@@ -6335,6 +6463,21 @@ static void sink_inline_array(void* u, const rsx_dispatch* r,
     g_ld_stats.packets_queued++;
 }
 
+static void sink_inline_indices(void* u, const rsx_dispatch* r,
+                                const u32* indices, u32 count)
+{
+    (void)u; (void)r; g_ld_stats.packets_seen++;
+    if (!indices || !count) return;
+    if (g_ld_movie_mode && !ld_movie_composite_ui_enabled()) {
+        g_ld_stats.packets_movie++;
+        return;
+    }
+    dc.inline_indices = indices;
+    dc.inline_index_count = count;
+    dc.n_packets++;
+    g_ld_stats.packets_queued++;
+}
+
 static void sink_draw_index(void* u, const rsx_dispatch* r, u32 first, u32 count)
 {
     (void)u; (void)r; g_ld_stats.packets_seen++;
@@ -7139,6 +7282,12 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
         g_ld_stats.group_drop_primitive++;
         return;
     }
+    const int flat_shading =
+        rsx_dsp_reg(&g.rsx, M_SHADE_MODE) == CELL_GCM_FLAT;
+    if (flat_shading &&
+        (prim == PRIM_TRIANGLES || prim == PRIM_TRIANGLE_STRIP ||
+         prim == PRIM_TRIANGLE_FAN || prim == PRIM_QUADS))
+        indexed = 1;
     u32 n_tri = indexed
         ? topology_index_count(prim)
         : dc.n_source_refs - dc.n_source_refs % 3;
@@ -7184,9 +7333,19 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
         memcpy(
             g.vb_mapped + g.vb_used, vertex_data,
             (size_t)draw_vb_bytes);
-    if (indexed)
+    if (indexed) {
         write_topology_indices(
             prim, (u32*)((u8*)g.ib_mapped + g.ib_used));
+        if (flat_shading) {
+            u32* indices = (u32*)((u8*)g.ib_mapped + g.ib_used);
+            for (u32 i = 0; i + 2 < n_tri; i += 3) {
+                const u32 provoking = indices[i + 2];
+                indices[i + 2] = indices[i + 1];
+                indices[i + 1] = indices[i];
+                indices[i] = provoking;
+            }
+        }
+    }
 
     ID3D12PipelineState* pso = get_pso(
         ld_vertex_mask_signature() ? &used_layout : NULL,
@@ -7751,6 +7910,8 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
     u8* cbdst = g.cb_mapped + g.cb_used;
     memcpy(cbdst, g.rsx.constants, RSX_DSP_NUM_CONSTANTS * 16);
     memcpy(cbdst + 512 * 16, xf, sizeof(xf));
+    { const u32 branch_bits = rsx_dsp_reg(&g.rsx, 0x1FF8u);
+      memcpy(cbdst + (512u + 2u) * 16u, &branch_bits, sizeof(branch_bits)); }
 
     g.list->lpVtbl->SetPipelineState(g.list, pso);
     g.list->lpVtbl->SetGraphicsRootSignature(g.list, g.rootsig_x);
@@ -8492,6 +8653,7 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
     sink.end = sink_end;
     sink.draw_arrays = sink_draw_arrays;
     sink.inline_array = sink_inline_array;
+    sink.inline_index_array = sink_inline_indices;
     sink.draw_index_array = sink_draw_index;
     sink.flip = sink_flip;
     rsx_dispatch_init(&g.rsx, &sink);

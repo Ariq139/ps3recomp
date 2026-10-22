@@ -49,7 +49,16 @@ s32 cellRescInit(const CellRescInitConfig* initConfig)
     if (!initConfig)
         return (s32)CELL_RESC_ERROR_BAD_ARGUMENT;
 
-    s_config = *GUEST_PTR(initConfig, const CellRescInitConfig*);
+    const u32 config_ea = (u32)(uintptr_t)initConfig;
+    s_config.size = vm_read32(config_ea + 0);
+    if (s_config.size > sizeof(CellRescInitConfig))
+        return (s32)CELL_RESC_ERROR_BAD_ARGUMENT;
+    s_config.resourcePolicy = vm_read32(config_ea + 4);
+    s_config.supportModes = vm_read32(config_ea + 8);
+    s_config.ratioMode = vm_read32(config_ea + 12);
+    s_config.palTemporalMode = vm_read32(config_ea + 16);
+    s_config.interlaceMode = vm_read32(config_ea + 20);
+    s_config.flipMode = vm_read32(config_ea + 24);
     memset(s_src, 0, sizeof(s_src));
     memset(s_dsts, 0, sizeof(s_dsts));
     s_flip_handler_opd = 0;
@@ -76,29 +85,41 @@ s32 cellRescSetDisplayMode(u32 displayMode)
     if (!s_initialized)
         return (s32)CELL_RESC_ERROR_NOT_INITIALIZED;
 
+    if (!displayMode || displayMode > CELL_RESC_1920x1080 ||
+        !(s_config.supportModes & displayMode))
+        return (s32)CELL_RESC_ERROR_BAD_ARGUMENT;
+
+    if (displayMode == CELL_RESC_720x576) {
+        const u32 pal_mode = s_config.palTemporalMode;
+        const u32 flip_mode = s_config.flipMode;
+        if (((pal_mode >= CELL_RESC_PAL_60_INTERPOLATE &&
+              pal_mode <= CELL_RESC_PAL_60_INTERPOLATE_DROP_FLEXIBLE) ||
+             pal_mode == CELL_RESC_PAL_60_DROP) &&
+            flip_mode == CELL_RESC_DISPLAY_HSYNC)
+            return (s32)CELL_RESC_ERROR_BAD_COMBINATION;
+        if (pal_mode == CELL_RESC_PAL_60_FOR_HSYNC &&
+            flip_mode == CELL_RESC_DISPLAY_VSYNC)
+            return (s32)CELL_RESC_ERROR_BAD_COMBINATION;
+    }
+
     s_display_mode = displayMode;
     return CELL_OK;
 }
 
-s32 cellRescGetNumColorBuffers(u32 displayMode, u32 palTemporalMode, u32* numBufs)
+s32 cellRescGetNumColorBuffers(u32 displayMode, u32 palTemporalMode, s32 reserved)
 {
-    (void)displayMode;
-
-    if (!numBufs)
+    /* Behavior and ABI follow RPCS3 cellResc.cpp at 2ba2f75bc. */
+    if (reserved != 0)
         return (s32)CELL_RESC_ERROR_BAD_ARGUMENT;
 
-    /* PAL interpolation modes need extra buffers */
-    switch (palTemporalMode) {
-    case CELL_RESC_PAL_60_INTERPOLATE:
-    case CELL_RESC_PAL_60_INTERPOLATE_30_DROP:
-    case CELL_RESC_PAL_60_INTERPOLATE_DROP_FLEXIBLE:
-        vm_write32((uint32_t)(uintptr_t)numBufs, 6);
-        break;
-    default:
-        vm_write32((uint32_t)(uintptr_t)numBufs, 2);
-        break;
+    if (displayMode == CELL_RESC_720x576) {
+        if (palTemporalMode >= CELL_RESC_PAL_60_INTERPOLATE &&
+            palTemporalMode <= CELL_RESC_PAL_60_INTERPOLATE_DROP_FLEXIBLE)
+            return 6;
+        if (palTemporalMode == CELL_RESC_PAL_60_DROP)
+            return 3;
     }
-    return CELL_OK;
+    return 2;
 }
 
 s32 cellRescGetBufferSize(u32* colorBufSize, u32* vertexBufSize, u32* fragmentBufSize)
@@ -128,6 +149,12 @@ s32 cellRescSetBufferAddress(void* colorBuf, void* vertexBuf, void* fragmentBuf)
     if (!s_initialized)
         return (s32)CELL_RESC_ERROR_NOT_INITIALIZED;
 
+    if (!colorBuf || !vertexBuf || !fragmentBuf)
+        return (s32)CELL_RESC_ERROR_BAD_ARGUMENT;
+    if (((uintptr_t)colorBuf & 127u) || ((uintptr_t)vertexBuf & 3u) ||
+        ((uintptr_t)fragmentBuf & 63u))
+        return (s32)CELL_RESC_ERROR_BAD_ALIGNMENT;
+
     /* In host-GPU mode we don't use these buffers directly */
     return CELL_OK;
 }
@@ -149,6 +176,8 @@ s32 cellRescSetSrc(s32 index, const CellRescSrc* src)
     s_src[index].width  = vm_read16(ea + 8);
     s_src[index].height = vm_read16(ea + 10);
     s_src[index].offset = vm_read32(ea + 12);
+    if (!s_src[index].width || !s_src[index].height || s_src[index].height > 4096)
+        return (s32)CELL_RESC_ERROR_BAD_ARGUMENT;
     printf("[cellResc] SetSrc(%d): offset=0x%X pitch=%u %ux%u fmt=%u\n", index,
            s_src[index].offset, s_src[index].pitch, s_src[index].width,
            s_src[index].height, s_src[index].format);
@@ -164,6 +193,8 @@ s32 cellRescSetDsts(u32 displayMode, const CellRescDsts* dsts)
 
     if (!dsts)
         return (s32)CELL_RESC_ERROR_BAD_ARGUMENT;
+    if (!displayMode || displayMode > CELL_RESC_1920x1080)
+        return (s32)CELL_RESC_ERROR_BAD_ARGUMENT;
 
     /* Map display mode to index */
     int idx = 0;
@@ -175,10 +206,14 @@ s32 cellRescSetDsts(u32 displayMode, const CellRescDsts* dsts)
     return CELL_OK;
 }
 
-s32 cellRescSetConvertAndFlip(s32 index)
+s32 cellRescSetConvertAndFlip(void* context, s32 index)
 {
+    (void)context;
+
     if (!s_initialized)
         return (s32)CELL_RESC_ERROR_NOT_INITIALIZED;
+    if (index < 0 || index >= 8)
+        return (s32)CELL_RESC_ERROR_BAD_ARGUMENT;
 
     /* This is a real flip, not bookkeeping. A title that presents through RESC
      * -- Virtua Fighter 5 does -- renders into an off-screen surface and asks
@@ -215,6 +250,41 @@ s32 cellRescSetConvertAndFlip(s32 index)
     return CELL_OK;
 }
 
+/* ABI/validation mirror of RPCS3 cellResc.cpp at 2ba2f75bc. These are local
+ * implementations; no RPCS3 function bodies are copied. */
+s32 cellRescSetWaitFlip(void* context)
+{
+    (void)context;
+    return CELL_OK;
+}
+
+s32 cellRescGcmSurface2RescSrc(const void* gcmSurface, CellRescSrc* rescSrc)
+{
+    (void)gcmSurface;
+    (void)rescSrc;
+    if (!gcmSurface || !rescSrc)
+        return (s32)CELL_RESC_ERROR_BAD_ARGUMENT;
+    return CELL_OK;
+}
+
+s32 cellRescVideoOutResolutionId2RescBufferMode(u32 resolutionId, u32* bufferMode)
+{
+    (void)bufferMode;
+    if (!bufferMode || !resolutionId || resolutionId > CELL_VIDEO_OUT_RESOLUTION_576)
+        return (s32)CELL_RESC_ERROR_BAD_ARGUMENT;
+    return CELL_OK;
+}
+
+s32 cellRescGetRegisterCount(void)
+{
+    return 0;
+}
+
+void cellRescSetRegisterCount(s32 registerCount)
+{
+    (void)registerCount;
+}
+
 s32 cellRescSetFlipHandler(void (*handler)(u32))
 {
     s_flip_handler_opd = (u32)(uintptr_t)handler;
@@ -238,13 +308,9 @@ s32 cellRescGetDisplayMode(u32* displayMode)
     return CELL_OK;
 }
 
-s32 cellRescGetLastFlipTime(u64* time)
+u64 cellRescGetLastFlipTime(void)
 {
-    if (!time)
-        return (s32)CELL_RESC_ERROR_BAD_ARGUMENT;
-
-    vm_write64((uint32_t)(uintptr_t)time, s_last_flip_time);
-    return CELL_OK;
+    return s_last_flip_time;
 }
 
 void cellRescResetFlipStatus(void)
@@ -270,25 +336,20 @@ s32 cellRescGetFlipStatus(void)
 s32 cellRescSetPalInterpolateDropFlexRatio(float ratio)
 {
     printf("[cellResc] SetPalInterpolateDropFlexRatio(%.2f)\n", ratio);
+    if (!s_initialized)
+        return (s32)CELL_RESC_ERROR_NOT_INITIALIZED;
+    if (ratio < 0.0f || ratio > 1.0f)
+        return (s32)CELL_RESC_ERROR_BAD_ARGUMENT;
     s_pal_ratio = ratio;
     return CELL_OK;
 }
 
-s32 cellRescCreateInterlaceTable(void* buf, float ea, u32 tableLen, s32 depth)
+s32 cellRescCreateInterlaceTable(void* table, float srcHeight, s32 depth, s32 length)
 {
-    (void)ea;
-    (void)depth;
-
-    printf("[cellResc] CreateInterlaceTable(len=%u, depth=%d)\n", tableLen, depth);
-
-    if (!buf)
+    /* RPCS3 currently validates these arguments and returns success without
+     * touching the output table; preserve that behavior and its ABI. */
+    if (!table || srcHeight <= 0.0f || depth > CELL_RESC_ELEMENT_FLOAT || length <= 0)
         return (s32)CELL_RESC_ERROR_BAD_ARGUMENT;
-
-    /* Fill with simple linear interpolation weights */
-    float* table = (float*)buf;
-    for (u32 i = 0; i < tableLen; i++)
-        table[i] = (float)i / (float)(tableLen > 1 ? tableLen - 1 : 1);
-
     return CELL_OK;
 }
 
@@ -298,6 +359,10 @@ s32 cellRescAdjustAspectRatio(float horizontal, float vertical)
 
     if (!s_initialized)
         return (s32)CELL_RESC_ERROR_NOT_INITIALIZED;
+
+    if (horizontal < 0.5f || horizontal > 2.0f ||
+        vertical < 0.5f || vertical > 2.0f)
+        return (s32)CELL_RESC_ERROR_BAD_ARGUMENT;
 
     s_aspect_h = horizontal;
     s_aspect_v = vertical;

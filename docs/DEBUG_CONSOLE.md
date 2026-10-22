@@ -33,7 +33,7 @@ which is how these titles get driven to an interesting state in the first place.
 ## Why it is read-only apart from `poke32`
 
 There is no `set` command, and that is deliberate rather than unfinished. The
-runtime has ~470 diagnostic environment variables (see
+runtime has hundreds of diagnostic environment variables (see
 [DIAGNOSTICS.md](DIAGNOSTICS.md)) but the large majority are read once at first
 use and cached in a function-local static, so they are launch-time settings —
 `set` would appear to work and change nothing. `knobs` reports what the run

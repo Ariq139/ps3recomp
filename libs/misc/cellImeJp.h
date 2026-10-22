@@ -23,6 +23,24 @@ extern "C" {
 #define CELL_IMEJP_ERROR_NOT_SUPPORTED       0x80040605
 #define CELL_IMEJP_ERROR_CONTEXT_DESTROYED   0x80040606
 
+/* cellImeJpUtility error and state values. */
+#define CELL_IMEJP_UTILITY_ERROR_ERR         ((s32)0x8002BF01u)
+#define CELL_IMEJP_UTILITY_ERROR_CONTEXT    ((s32)0x8002BF11u)
+#define CELL_IMEJP_UTILITY_ERROR_PARAM      ((s32)0x8002BF41u)
+#define CELL_IMEJP_UTILITY_BEFORE_INPUT     0
+#define CELL_IMEJP_UTILITY_BEFORE_CONVERT   1
+#define CELL_IMEJP_UTILITY_CANDIDATES       7
+#define CELL_IMEJP_UTILITY_RET_CONFIRMED   2
+#define CELL_IMEJP_UTILITY_ROMAN_INPUT     0
+#define CELL_IMEJP_UTILITY_KANA_INPUT      1
+#define CELL_IMEJP_UTILITY_DSPCHAR_HIRA    1
+#define CELL_IMEJP_UTILITY_DSPCHAR_FKANA   2
+#define CELL_IMEJP_UTILITY_DSPCHAR_RAW     3
+#define CELL_IMEJP_UTILITY_DSPCHAR_HKANA   4
+#define CELL_IMEJP_UTILITY_DSPCHAR_HRAW    5
+#define CELL_IMEJP_UTILITY_EXTENSION_MASK  0x001Du
+#define CELL_IMEJP_UTILITY_STRING_MAXLENGTH 128
+
 /* Input mode */
 #define CELL_IMEJP_INPUT_MODE_HIRAGANA      0
 #define CELL_IMEJP_INPUT_MODE_KATAKANA      1
@@ -59,6 +77,34 @@ s32 cellImeJpConfirm(CellImeJpHandle handle);
 
 s32 cellImeJpGetInputString(CellImeJpHandle handle, u16* str, u32* len);
 s32 cellImeJpGetConvertedString(CellImeJpHandle handle, u16* str, u32* len);
+
+/* Utility APIs use an identity-conversion fallback when no dictionary is
+ * available. Candidate mode then exposes the unchanged input as its single
+ * candidate; dictionary-specific clause operations report NOT_SUPPORTED. */
+s32 cellImeJpGetStatus(CellImeJpHandle handle, s16* status);
+s32 cellImeJpEnterChar(CellImeJpHandle handle, u16 ch, s16* outputStatus);
+s32 cellImeJpSetKanaInputMode(CellImeJpHandle handle, s16 mode);
+s32 cellImeJpAllowExtensionCharacters(CellImeJpHandle handle, s16 extensions);
+s32 cellImeJpSetInputCharType(CellImeJpHandle handle, s16 type);
+s32 cellImeJpConvertForward(CellImeJpHandle handle);
+s32 cellImeJpConvertBackward(CellImeJpHandle handle);
+s32 cellImeJpCurrentPartConfirm(CellImeJpHandle handle, s16 listItem);
+s32 cellImeJpAllConfirm(CellImeJpHandle handle);
+s32 cellImeJpConvertCancel(CellImeJpHandle handle);
+s32 cellImeJpExtendConvertArea(CellImeJpHandle handle);
+s32 cellImeJpShortenConvertArea(CellImeJpHandle handle);
+s32 cellImeJpTemporalConfirm(CellImeJpHandle handle, s16 selectIndex);
+s32 cellImeJpPostConvert(CellImeJpHandle handle, s16 postType);
+s32 cellImeJpMoveFocusClause(CellImeJpHandle handle, s16 moveType);
+s32 cellImeJpGetFocusTop(CellImeJpHandle handle, s16* focusTop);
+s32 cellImeJpGetFocusLength(CellImeJpHandle handle, s16* focusLength);
+s32 cellImeJpGetConfirmString(CellImeJpHandle handle, u16* string);
+s32 cellImeJpGetConvertString(CellImeJpHandle handle, u16* string);
+s32 cellImeJpGetCandidateListSize(CellImeJpHandle handle, s16* listSize);
+s32 cellImeJpGetCandidateList(CellImeJpHandle handle, s16* listNum,
+                              u16* candidateString);
+s32 cellImeJpGetCandidateSelect(CellImeJpHandle handle, s16* index);
+s32 cellImeJpBackspaceWord(CellImeJpHandle handle);
 
 #ifdef __cplusplus
 }

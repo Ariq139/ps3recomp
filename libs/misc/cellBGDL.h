@@ -1,8 +1,8 @@
 /*
  * ps3recomp - cellBGDL HLE
  *
- * Background download manager for DLC/patches.
- * Stub — init/term work, no downloads occur.
+ * Contains RPCS3-compatible cellBGDLUtility exports plus the pre-existing
+ * lowercase local download-management interface.
  */
 
 #ifndef PS3RECOMP_CELL_BGDL_H
@@ -29,6 +29,35 @@ extern "C" {
 #define CELL_BGDL_STATUS_COMPLETE     3
 #define CELL_BGDL_STATUS_ERROR        4
 
+/* RPCS3's cellBGDLUtility ABI. Its current handlers are TODO success paths. */
+#define CELL_BGDL_UTIL_ERROR_BUSY          0x8002CE01u
+#define CELL_BGDL_UTIL_ERROR_INTERNAL      0x8002CE02u
+#define CELL_BGDL_UTIL_ERROR_PARAM         0x8002CE03u
+#define CELL_BGDL_UTIL_ERROR_ACCESS_ERROR  0x8002CE04u
+#define CELL_BGDL_UTIL_ERROR_INITIALIZE    0x8002CE05u
+
+typedef enum CellBGDLState {
+    CELL_BGDL_STATE_ERROR = 0,
+    CELL_BGDL_STATE_PAUSE,
+    CELL_BGDL_STATE_READY,
+    CELL_BGDL_STATE_RUN,
+    CELL_BGDL_STATE_COMPLETE
+} CellBGDLState;
+
+typedef enum CellBGDLMode {
+    CELL_BGDL_MODE_AUTO = 0,
+    CELL_BGDL_MODE_ALWAYS_ALLOW
+} CellBGDLMode;
+
+/* Guest ABI layout from RPCS3 cellBgdl.h. Fields are stored big-endian in
+ * guest memory; reserved is a 32-bit guest pointer. */
+typedef struct CellBGDLInfo {
+    u64 received_size;
+    u64 content_size;
+    s32 state;
+    u32 reserved;
+} CellBGDLInfo;
+
 /* Types */
 typedef u32 CellBgdlId;
 
@@ -53,6 +82,12 @@ s32 cellBgdlStartDownload(const char* url, const char* contentId,
 s32 cellBgdlPauseDownload(CellBgdlId id);
 s32 cellBgdlResumeDownload(CellBgdlId id);
 s32 cellBgdlCancelDownload(CellBgdlId id);
+
+/* NIDs exported by RPCS3's cellBGDLUtility module. */
+s32 cellBGDLGetInfo(const char* contentId, CellBGDLInfo* info, s32 num);
+s32 cellBGDLGetInfo2(const char* serviceId, CellBGDLInfo* info, s32 num);
+s32 cellBGDLSetMode(CellBGDLMode mode);
+s32 cellBGDLGetMode(CellBGDLMode* mode);
 
 #ifdef __cplusplus
 }

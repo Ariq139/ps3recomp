@@ -264,7 +264,8 @@ int rsx_vp_analyze_inputs(const u8* ucode, u32 max_bytes,
 }
 
 static int rsx_vp_decompile_impl(
-    const u8* ucode, u32 max_bytes, u32 vtex_mask, int compact_inputs,
+    const u8* ucode, u32 max_bytes, u32 vtex_mask, u32 vtex_cube_mask,
+    u32 vtex_1d_mask, int compact_inputs,
     u32 input_mask, char* out, u32 out_size);
 
 int rsx_vp_decompile(const u8* ucode, u32 max_bytes, char* out, u32 out_size)
@@ -276,7 +277,16 @@ int rsx_vp_decompile_ex(const u8* ucode, u32 max_bytes, u32 vtex_mask,
                         char* out, u32 out_size)
 {
     return rsx_vp_decompile_impl(
-        ucode, max_bytes, vtex_mask, 0, 0xFFFFu, out, out_size);
+        ucode, max_bytes, vtex_mask, 0u, 0u, 0, 0xFFFFu, out, out_size);
+}
+
+int rsx_vp_decompile_textures(const u8* ucode, u32 max_bytes,
+                              u32 vtex_mask, u32 vtex_cube_mask,
+                              u32 vtex_1d_mask, char* out, u32 out_size)
+{
+    return rsx_vp_decompile_impl(
+        ucode, max_bytes, vtex_mask, vtex_cube_mask, vtex_1d_mask,
+        0, 0xFFFFu, out, out_size);
 }
 
 int rsx_vp_decompile_compact_ex(
@@ -291,11 +301,12 @@ int rsx_vp_decompile_compact_ex(
     else
         input_mask = analysis.input_mask;
     return rsx_vp_decompile_impl(
-        ucode, max_bytes, vtex_mask, 1, input_mask, out, out_size);
+        ucode, max_bytes, vtex_mask, 0u, 0u, 1, input_mask, out, out_size);
 }
 
 static int rsx_vp_decompile_impl(
-    const u8* ucode, u32 max_bytes, u32 vtex_mask, int compact_inputs,
+    const u8* ucode, u32 max_bytes, u32 vtex_mask, u32 vtex_cube_mask,
+    u32 vtex_1d_mask, int compact_inputs,
     u32 input_mask, char* out, u32 out_size)
 {
     if (!ucode || !out || out_size < 256) return -1;
@@ -428,11 +439,20 @@ static int rsx_vp_decompile_impl(
             case 0x16: snprintf(rhs,sizeof rhs,"sign(%s)",A); break;           /* SSG */
             case 0x19: {
                 const u32 tex_unit = (d2 >> 8) & 3u;
-                if ((vtex_mask >> tex_unit) & 1u)
-                    snprintf(rhs, sizeof rhs,
-                        "rsx_vtex%u.SampleLevel(rsx_vsamp%u, (%s).xy, 0.0)",
-                        tex_unit, tex_unit, A);
-                else
+                if ((vtex_mask >> tex_unit) & 1u) {
+                    if ((vtex_cube_mask >> tex_unit) & 1u)
+                        snprintf(rhs, sizeof rhs,
+                            "rsx_vtex%u.SampleLevel(rsx_vsamp%u, (%s).xyz, 0.0)",
+                            tex_unit, tex_unit, A);
+                    else if ((vtex_1d_mask >> tex_unit) & 1u)
+                        snprintf(rhs, sizeof rhs,
+                            "rsx_vtex%u.SampleLevel(rsx_vsamp%u, float2((%s).x, 0.5), 0.0)",
+                            tex_unit, tex_unit, A);
+                    else
+                        snprintf(rhs, sizeof rhs,
+                            "rsx_vtex%u.SampleLevel(rsx_vsamp%u, (%s).xy, 0.0)",
+                            tex_unit, tex_unit, A);
+                } else
                     snprintf(rhs, sizeof rhs, "float4(0,0,0,0)");
                 break;
             }
@@ -500,7 +520,28 @@ static int rsx_vp_decompile_impl(
                 snprintf(flow_term, sizeof flow_term,
                          "        if (%s) { if (_csp > 0) { _csp--; _pc = _cs[_csp]; } else _pc = -1; } else _pc = %d;\n",
                          c, next);
-            else {                                         /* BRB/CLB: boolean-register branches */
+            else if (sca_op == 0x11 || sca_op == 0x12) {    /* BRB, CLB */
+                /* RPCS3_REFERENCE_REVIEWED: NV40 branch-bit field semantics
+                 * checked against VertexProgramDecompiler.cpp and
+                 * RSXVertexProgram.h; this HLSL emission is local code. */
+                /* RPCS3's NV40 decoder reads the branch selector from D3[23:27]
+                 * and its polarity from D3[28]. The selected bit comes from
+                 * NV4097_SET_TRANSFORM_BRANCH_BITS, uploaded in VPConst. */
+                const u32 branch_index = (d3 >> 23) & 0x1Fu;
+                const int branch_on_true = (d3 >> 28) & 1u;
+                char bc[80];
+                snprintf(bc, sizeof bc,
+                         "(((transform_branch_bits >> %u) & 1u) %s 0u)",
+                         branch_index, branch_on_true ? "!=" : "==");
+                if (sca_op == 0x11) {                       /* BRB */
+                    snprintf(flow_term, sizeof flow_term,
+                             "        _pc = %s ? %u : %d;\n", bc, tgt, next);
+                } else {                                    /* CLB */
+                    snprintf(flow_term, sizeof flow_term,
+                             "        if (%s && _csp < 8) { _cs[_csp++] = %d; _pc = %u; } else _pc = %d;\n",
+                             bc, next, tgt, next);
+                }
+            } else {                                         /* reserved/unknown flow opcode */
                 n_flow_skipped++;
                 snprintf(flow_term, sizeof flow_term,
                          "        _pc = %d; /* TODO: %s not modelled */\n", next, rsx_vp_sca_name(sca_op));
@@ -587,6 +628,7 @@ static int rsx_vp_decompile_impl(
     emit(&o,
         "struct VSOutput {\n"
         "    float4 pos:SV_Position; float4 col0:COLOR0; float4 col1:COLOR1;\n"
+        "    float4 col2:COLOR2; float4 col3:COLOR3;\n"
         "    float4 fog:FOG;\n"
         "    float4 t0:TEXCOORD0; float4 t1:TEXCOORD1; float4 t2:TEXCOORD2; float4 t3:TEXCOORD3;\n"
         "    float4 t4:TEXCOORD4; float4 t5:TEXCOORD5; float4 t6:TEXCOORD6; float4 t7:TEXCOORD7;\n"
@@ -599,6 +641,7 @@ static int rsx_vp_decompile_impl(
         "    float4 vp_c[512];\n"
         "    float4 vp_posscale;\n"
         "    float4 vp_posoffset;\n"
+        "    uint transform_branch_bits;\n"
         "};\n"
         /* NV vertex programs multiply by the legacy rule: 0 times anything,
          * INF and NaN included, is 0. IEEE gives NaN, and one RCP of a zero
@@ -616,8 +659,9 @@ static int rsx_vp_decompile_impl(
         if (!((vtex_mask >> vtu) & 1u)) continue;
         char decl[128];
         snprintf(decl, sizeof(decl),
-            "Texture2D rsx_vtex%u : register(t%u);\n"
+            "%s rsx_vtex%u : register(t%u);\n"
             "SamplerState rsx_vsamp%u : register(s%u);\n",
+            ((vtex_cube_mask >> vtu) & 1u) ? "TextureCube" : "Texture2D",
             vtu, 16u + vtu, vtu, vtu);
         emit(&o, decl);
     }
@@ -663,7 +707,8 @@ static int rsx_vp_decompile_impl(
         "    VSOutput Out;\n"
         "    float4 _p = o[0];\n"
         "    Out.pos = float4(_p.xyz * vp_posscale.xyz + _p.w * vp_posoffset.xyz, _p.w);\n"
-        "    Out.col0 = o[1]; Out.col1 = o[2]; Out.fog = o[5].xxxx;\n"
+        "    Out.col0 = o[1]; Out.col1 = o[2];\n"
+        "    Out.col2 = o[3]; Out.col3 = o[4]; Out.fog = o[5].xxxx;\n"
         "    Out.t0=o[7];  Out.t1=o[8];  Out.t2=o[9];  Out.t3=o[10];\n"
         "    Out.t4=o[11]; Out.t5=o[12]; Out.t6=o[13]; Out.t7=o[14];\n"
         "    Out.t8=o[15]; Out.t9=o[6];\n"

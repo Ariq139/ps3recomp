@@ -104,6 +104,14 @@ s32 cellSysutilRegisterCallback(s32 slot, CellSysutilCallback func, void* userda
 s32 cellSysutilUnregisterCallback(s32 slot);
 s32 cellSysutilCheckCallback(void);
 s32 cellSysutilQueueGuestCallbackArgs(u32 opd, const u64 args[8]);
+
+/* Internal helper: queue a guest callback with an inline payload copied into
+ * temporary guest memory. payload_arg is the GPR argument receiving its EA;
+ * that allocation is released after the callback returns. */
+s32 ps3_sysutil_queue_guest_callback_payload(u32 opd, const u64 args[8],
+                                            u32 payload_arg,
+                                            const void* payload,
+                                            u32 payload_size);
 s32 cellSysutilQueueGuestCallback(u32 opd, u64 arg0, u64 arg1);
 
 /* Internal HLE completion queue, delivered by the guest's next callback poll. */

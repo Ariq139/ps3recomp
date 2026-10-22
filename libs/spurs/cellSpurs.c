@@ -249,7 +249,12 @@ static inline void ef_broadcast(EventFlagSync* s)
  * event-flag core only reports WHO must wake. */
 extern void spu_taskset_signal_task(uint32_t taskset_ea, uint32_t taskId);
 
-/* Core Set protocol on the guest struct (sync lock held). Mirrors the real
+/* RPCS3_REFERENCE_REVIEWED: this locally expressed event-flag protocol follows
+ * documented RPCS3/kernel behavior; targeted review did not establish a
+ * copied function body.
+ * This is provenance context, not license clearance. See
+ * docs/RPCS3_LICENSE_AUDIT.md.
+ * Core Set protocol on the guest struct (sync lock held). Mirrors the real
  * kernel/RPCS3 semantics: satisfy registered SPU-task wait slots (slot s uses
  * bit 0x8000>>s in the used/pending/mode words), hand each its received
  * events, auto-clear consumed bits, then signal the tasks. PPU waiters are
@@ -930,6 +935,43 @@ s32 cellSpursJoinTaskset(CellSpursTaskset* taskset)
 
     printf("[cellSpurs] JoinTaskset()\n");
     /* In a full implementation, wait for all tasks to complete */
+    return CELL_OK;
+}
+
+/* RPCS3_REFERENCE_REVIEWED: NID 0xE7DD87E1. RPCS3 does not check that the taskset is currently valid;
+ * it reads the workload id from the guest CellSpursTaskset after the same
+ * null/alignment checks. Keep this on the real big-endian layout used by the
+ * SPU policy module rather than the host-side convenience struct above. */
+s32 cellSpursGetTasksetId(CellSpursTaskset* taskset, u32* workloadId)
+{
+    const u32 taskset_ea = (u32)(uintptr_t)taskset;
+    const u32 workload_id_ea = (u32)(uintptr_t)workloadId;
+    if (!taskset_ea || !workload_id_ea)
+        return CELL_SPURS_TASK_ERROR_NULL_POINTER;
+    if (taskset_ea & 0x7Fu)
+        return CELL_SPURS_TASK_ERROR_ALIGN;
+
+    vm_write32(workload_id_ea, vm_read32(taskset_ea + CSTS_WID));
+    return CELL_OK;
+}
+
+/* RPCS3_REFERENCE_REVIEWED: NID 0x58D58FCF. This follows RPCS3's taskset getter checks and reads the
+ * SPURS effective address from the shared guest-memory header. */
+s32 cellSpursTasksetGetSpursAddress(const CellSpursTaskset* taskset,
+                                    u32* spursEa)
+{
+    const u32 taskset_ea = (u32)(uintptr_t)taskset;
+    const u32 spurs_ea_out = (u32)(uintptr_t)spursEa;
+    if (!taskset_ea || !spurs_ea_out)
+        return CELL_SPURS_TASK_ERROR_NULL_POINTER;
+    if (taskset_ea & 0x7Fu)
+        return CELL_SPURS_TASK_ERROR_ALIGN;
+
+    const u32 workload_id = vm_read32(taskset_ea + CSTS_WID);
+    if (workload_id >= CELL_SPURS_MAX_WORKLOAD)
+        return CELL_SPURS_TASK_ERROR_INVAL;
+
+    vm_write32(spurs_ea_out, (u32)vm_read64(taskset_ea + CSTS_SPURS));
     return CELL_OK;
 }
 
@@ -1724,47 +1766,132 @@ static DWORD WINAPI spurs_kernel_thread(LPVOID p)
         AcquireSRWLockExclusive(&s_workload_registry_lock);
         si->pass_no++;
         u32 enabled = vm_read32(ea + SPURS_WKL_ENABLED);
-        for (u32 sn = 0; sn < si->nspus; sn++) {
-            struct SpursPmSlot* slot = &si->slots[sn];
-            if (slot->busy) continue;
-            for (u32 checked = 0; checked < 16; checked++) {
-                u32 wid = si->cursor;
-                si->cursor = (wid + 1) & 15;
-                if (!(enabled & (0x80000000u >> wid)) ||
-                    vm_read8(ea + SPURS_WKL_STATE1 + wid) != 2 ||
-                    !s_workloads[wid].in_use || s_workloads[wid].spurs_ea != ea)
-                    continue;
-                if (!vm_read8(ea + SPURS_WKL_INFO1 + wid * SPURS_WKL_INFO_SZ + 0x18 + sn))
-                    continue; /* priority zero makes this physical lane ineligible */
-                u32 maxcont = vm_read8(ea + SPURS_WKL_MAXCONT + wid);
-                if (!maxcont || si->active[wid] >= maxcont) continue;
-                WklPm* pm = spurs_resolve_pm(wid);
-                if (!pm) continue;
-                u32 signal = vm_read16(ea + SPURS_WKL_SIGNAL1);
-                u32 ready = vm_read8(ea + SPURS_WKL_READY1 + wid);
-                int kicked = ready || (signal & (0x8000u >> wid));
-                if (kicked) si->idle[wid] = 0;
-                if (!kicked && (si->pass_no & ((1u << si->idle[wid]) - 1)))
-                    continue;
-                spu_lockline_lock();
-                ready = vm_read8(ea + SPURS_WKL_READY1 + wid);
-                signal = vm_read16(ea + SPURS_WKL_SIGNAL1);
-                if (ready) vm_base[ea + SPURS_WKL_READY1 + wid] = (u8)(ready - 1);
-                if (signal & (0x8000u >> wid))
-                    ef_w16(ea + SPURS_WKL_SIGNAL1, (u16)(signal & ~(0x8000u >> wid)));
-                ef_line_end(ea);
-                slot->fn = pm->fn; slot->image_id = pm->image_id;
-                slot->pm = vm_base + (u32)(uintptr_t)s_workloads[wid].pm;
-                slot->pm_size = s_workloads[wid].sizePm;
-                slot->data = vm_read64(ea + SPURS_WKL_INFO1 + wid * SPURS_WKL_INFO_SZ + 8);
-                slot->wid = wid; slot->ea = ea;
-                si->active[wid]++;
-                spu_lockline_lock();
-                vm_base[ea + SPURS_WKL_CURCONT + wid] = si->active[wid];
-                ef_line_end(ea);
-                slot->busy = 1;
-                WakeAllConditionVariable(&si->wake);
-                break;
+
+        /* Kick visibility (can't-miss): log ANY nonzero readyCount/signal state
+         * even for wids the dispatch filter below would skip — the game pokes
+         * these bytes with inlined atomics and this is our only tap. */
+        {
+            static int _seen[MAX_SPURS_INST][16];
+            int slot = (int)(si - s_inst);
+            u32 sig = vm_read32(ea + SPURS_WKL_SIGNAL1) >> 16;
+            for (u32 w = 0; w < 16; w++) {
+                u8 rc = *(vm_base + ea + SPURS_WKL_READY1 + w);
+                if ((rc || (sig & (0x8000u >> w))) && _seen[slot][w] < 4) {
+                    _seen[slot][w]++;
+                    fprintf(stderr, "[spurs-kern] \"%s\" POKE wid=%u ready=%u sig=%u enabled=%d state=%u\n",
+                            si->prefix, w, rc, (sig >> (15 - w)) & 1,
+                            (enabled >> (31 - w)) & 1,
+                            *(vm_base + ea + SPURS_WKL_STATE1 + w));
+                }
+            }
+        }
+        if (!enabled) continue;
+
+        for (u32 wid = 0; wid < 16; wid++) {
+            if (!(enabled & (0x80000000u >> wid))) continue;
+            if (*(vm_base + ea + SPURS_WKL_STATE1 + wid) != 2) continue;
+            if (!s_workloads[wid].in_use || s_workloads[wid].spurs_ea != ea) continue;
+
+            /* A SPURS policy module is a PERSISTENT SPU program. The real kernel
+             * schedules an ENABLED, runnable workload onto an SPU and the module
+             * then polls its OWN job queue in main memory; being enabled is the
+             * trigger, not a per-job kick. That is why this title never writes
+             * wklReadyCount, never sets a signal bit, and never calls
+             * cellSpursReadyCountStore -- on hardware it does not have to. Gating
+             * dispatch on a kick meant the module never ran at all, so nothing
+             * ever called cellSpursEventFlagSet and the title's loading thread
+             * blocked forever.
+             *
+             * Run one scheduling quantum per enabled workload per pass: the
+             * module does its work, exits to the kernel (LS 0x9C0) when it has
+             * none, and we re-enter it on the next pass -- which is exactly what
+             * the real kernel's dispatch loop does.
+             *
+             * readyCount/wklSignal are still honoured when a title DOES use them:
+             * consume one unit so a kick-driven title paces the same as before. */
+            volatile u8* rdy = vm_base + ea + SPURS_WKL_READY1 + wid;
+            u32 sig = vm_read32(ea + SPURS_WKL_SIGNAL1) >> 16;    /* be u16 @0x70 */
+            int kicked = (*rdy != 0) || ((sig & (0x8000u >> wid)) != 0);
+            if (*rdy) (*rdy)--;
+            if (sig & (0x8000u >> wid))
+                vm_write32(ea + SPURS_WKL_SIGNAL1,
+                           (vm_read32(ea + SPURS_WKL_SIGNAL1) & ~((0x8000u >> wid) << 16)));
+
+            WklPm* r = spurs_resolve_pm(wid);
+            if (!r) continue;
+
+            /* Idle backoff: running EVERY enabled workload's module EVERY 1ms
+             * pass (x N instance threads) burned ~5 host cores on modules that
+             * immediately exit-to-kernel with no work, starving the actual
+             * decode/render threads (LBP movie at ~1fps while 500% CPU).
+             * A module that keeps finding nothing gets re-run every 2nd, 4th,
+             * ... up to 16th pass; an explicit kick (readyCount/signal) resets
+             * it to every pass, so kick-driven latency is unchanged. */
+            {
+                static u8 s_idle[CELL_SPURS_MAX_WORKLOAD];      /* idle streak (log2 cadence) */
+                static u32 s_pass_no;                            /* shared pass counter is fine */
+                if (wid == 0) s_pass_no++;
+                if (kicked) s_idle[wid] = 0;
+                u32 cad = 1u << (s_idle[wid] > 4 ? 4 : s_idle[wid]);
+                if (!kicked && (s_pass_no & (cad - 1)) != 0) continue;
+            {   static int _n = 0;
+                if (_n < 8) { _n++;
+                    fprintf(stderr, "[spurs-kern] \"%s\" dispatch wid=%u (enabled, state=2) "
+                                    "image=%d ready=%u\n", si->prefix, wid, r->image_id, *rdy);
+                    fflush(stderr); } }
+
+            /* Live workload arg from the real wklInfo (the game may update it). */
+            u64 arg = vm_read64(ea + SPURS_WKL_INFO1 + wid * SPURS_WKL_INFO_SZ + 8);
+            /* Run one lane by default. Earlier experiments showed that running
+             * multiple WWS lanes concurrently races on the shared jobIndex
+             * atomic. Keep additional lanes as an explicit diagnostic override;
+             * execute them sequentially so they cannot race each other. */
+            u8 maxcont = *(vm_base + ea + SPURS_WKL_MAXCONT + wid);
+            if (maxcont < 1) maxcont = 1;
+            if (maxcont > 6) maxcont = 6;
+            /* Do NOT exceed the workload's own contention: per-SPU rows in
+             * the WWS sync struct live at +0x40+16*spuNum, and dispatching
+             * spuNum >= nSpus made virtual SPU 3 write its bookkeeping row
+             * OVER the game's ticket row (row 3) -- observed as ticket values
+             * jumping to garbage (141028, 9960...) during the savedata load.
+             * The earlier "4 lanes drains the queue" result was partly that
+             * scribble. Correct progress comes from PERSISTENT PM contexts
+             * (spurs_policy.c), not extra lanes. */
+            /* RPCS3_REFERENCE_REVIEWED: single-lane policy is based on observed
+             * RPCS3 jobmanager behavior; this local scheduling implementation
+             * was not established as a copied RPCS3 body by targeted review.
+             * See docs/RPCS3_LICENSE_AUDIT.md.
+             * SPURS_FORCE_SPUS=<n>: dispatch every workload for n virtual SPUs
+             * regardless of maxContention (A/B: LBP publishes its loading
+             * tickets on sync row 3, and the PM's row index = spuNum).
+             * 2026-07-23 FINDING: with the completion HLE (LBP_HLE_JOBDONE) in
+             * place, forcing 2+ lanes is now COUNTERPRODUCTIVE -- two host
+             * threads race on the shared jobIndex atomic in WwsJob_AllocateJob
+             * (GETLLAR 0xD0/PUTLLC 0xB4 on the joblist header), making the boot
+             * nondeterministic. Single-lane (leave SPURS_FORCE_SPUS unset) is
+             * both correct (RPCS3 oracle: jobmanager runs one SPU at a time) and
+             * far more stable -- it reaches the furthest boot yet (LBP renders to
+             * finish#922: glyphthread+network+camera up). PREFER single-lane. */
+            { static int s_fs = -2;
+              if (s_fs == -2) { const char* e = getenv("SPURS_FORCE_SPUS");
+                s_fs = e ? atoi(e) : -1; }
+              if (s_fs > 0) maxcont = (u8)(s_fs > 6 ? 6 : s_fs);
+              else maxcont = 1; }
+            *(vm_base + ea + SPURS_WKL_CURCONT + wid) = maxcont;
+            {
+                const uint8_t* pm = (const uint8_t*)vm_base + (uint32_t)(uintptr_t)s_workloads[wid].pm;
+                uint32_t sz = s_workloads[wid].sizePm;
+                for (u32 sn = 0; sn < maxcont; sn++)
+                    spu_run_policy_module(r->fn, r->image_id, pm, sz, arg, wid, ea, sn);
+            }
+            *(vm_base + ea + SPURS_WKL_CURCONT + wid) = 0;
+            /* "Found work" heuristic: a module that did something polls the
+             * kernel for MORE work before exiting (selectWorkload calls >0);
+             * an idle module exits immediately with polls==0. Grow the idle
+             * streak on the latter, reset on the former. */
+            extern SPU_THREAD_LOCAL volatile unsigned g_spurs_pm_polls;
+            if (g_spurs_pm_polls == 0) { if (s_idle[wid] < 8) s_idle[wid]++; }
+            else s_idle[wid] = 0;
             }
         }
         ReleaseSRWLockExclusive(&s_workload_registry_lock);
@@ -2182,6 +2309,10 @@ s32 cellSpursEventFlagGetDirection(CellSpursEventFlag* eventFlag,
  * Additional functions needed by Tokyo Jungle (from RPCS3 audit)
  * -----------------------------------------------------------------------*/
 
+/* RPCS3_REFERENCE_REVIEWED: these RPCS3-audit exports use this project's
+ * guest-memory and taskset helpers; targeted review did not establish copied
+ * function bodies.
+ * See docs/RPCS3_LICENSE_AUDIT.md. */
 /* _cellSpursEventFlagInitialize — internal init with more parameters */
 s32 _cellSpursEventFlagInitialize(void* spurs, void* taskset,
                                     CellSpursEventFlag* eventFlag,
@@ -2242,6 +2373,7 @@ static struct {
     u16 max_grab;
     int run_count;
     volatile long running;   /* 1 while a host thread walks this chain */
+    u32 failed_job_ea;        /* descriptor that failed; zero after a clean run */
 } s_jobchains[MAX_JOBCHAINS];
 
 static void jc_dump_commands(const char* tag, u32 ea, int max_words)
@@ -2405,7 +2537,7 @@ enum {                              /* CellSpursJobHeader (48 B) */
     JH_SIZE          = 0x30,
 };
 
-static void jc_run_one_job(u32 job_ea, int idx, u32 size_desc)
+static int jc_run_one_job(u32 job_ea, int idx, u32 size_desc)
 {
     u64 ea_bin_raw = vm_read64(job_ea + JH_EA_BINARY);
     u32 ea_bin     = (u32)(ea_bin_raw & ~7ull);          /* low 3 bits = flags */
@@ -2429,7 +2561,7 @@ static void jc_run_one_job(u32 job_ea, int idx, u32 size_desc)
         if (PS3_LOG_FIRST(_b, 4))
             printf("[cellSpurs]   job[%d]: implausible binary (ea=0x%08X size=%u) -- skipped\n",
                    idx, ea_bin, size_bin);
-        return;
+        return 0;
     }
     /* A jobchain job is NOT a SPURS task: Sony's jm2 stages the whole working
      * set in local store and enters the job's CRT with r3 = CellSpursJobContext2*
@@ -2438,7 +2570,7 @@ static void jc_run_one_job(u32 job_ea, int idx, u32 size_desc)
      * DMA traffic at all. spu_workload_dispatch_job reproduces jm2's staging.
      * Synchronous by design: a job runs to completion, and the chain's own
      * NEXT/CALL/RET commands are what order them. */
-    spu_workload_dispatch_job(vm_base + ea_bin, size_bin, job_ea, size_desc);
+    return spu_workload_dispatch_job(vm_base + ea_bin, size_bin, job_ea, size_desc);
 }
 
 /* Walk one chain's command stream. Bounded: a malformed or self-looping stream
@@ -2667,7 +2799,7 @@ static void jc_signal_done(u32 jc_ea, int job_index)
     }
 }
 
-static void jc_execute(u32 entry_ea, u32 jc_ea, u32 size_desc)
+static u32 jc_execute(u32 entry_ea, u32 jc_ea, u32 size_desc)
 {
     u32 pc = entry_ea, ret_pc = 0;
     int jobs = 0;
@@ -2688,7 +2820,12 @@ static void jc_execute(u32 entry_ea, u32 jc_ea, u32 size_desc)
         if (cmd != 0 && op == 0) {                    /* JOB */
             { extern u32 g_spurs_job_ls_handle; g_spurs_job_ls_handle = jc_ea; }
             int idx = jobs++;
-            jc_run_one_job((u32)(cmd & ~7ull), idx, size_desc);
+            const u32 job_ea = (u32)(cmd & ~7ull);
+            if (!jc_run_one_job(job_ea, idx, size_desc)) {
+                fprintf(stderr, "[cellSpurs] chain %08X failed at job %08X\n",
+                        jc_ea, job_ea);
+                return job_ea;
+            }
             idle = 0;                    /* real work: the chain is healthy */
             /* Signal per JOB, not per lap. The application waits once for each
              * unit of work it queued -- this title notified the guard 7 times
@@ -2705,20 +2842,20 @@ static void jc_execute(u32 entry_ea, u32 jc_ea, u32 size_desc)
             if (ext == (7 | (15 << 3))) {                     /* END */
                 printf("[cellSpurs] chain 0x%08X: END after %d job(s)\n", jc_ea, jobs);
                 if (jobs) jc_signal_done(jc_ea, jobs - 1);
-                return;
+                return 0;
             }
             if (ext == (7 | (14 << 3))) {                     /* RET */
-                if (!ret_pc) return;
+                if (!ret_pc) return 0;
                 pc = ret_pc; ret_pc = 0; continue;
             }
             if (ext == (7 | (0 << 3))) {                      /* ABORT */
                 printf("[cellSpurs] chain 0x%08X: ABORT\n", jc_ea);
-                return;
+                return 0;
             }
         }
         if (op == 7 && ext == (7 | (1 << 3))) {           /* GUARD */
             u32 g_ea = (u32)(cmd & ~127ull);
-            if (!jg_wait(g_ea)) return;                  /* still closed */
+            if (!jg_wait(g_ea)) return 0;                /* still closed */
             pc += 8; continue;
         }
         /* NOP(0) / SYNC+LWSYNC(2, one virtual SPU: nothing to wait for) /
@@ -2728,6 +2865,7 @@ static void jc_execute(u32 entry_ea, u32 jc_ea, u32 size_desc)
     printf("[cellSpurs] chain 0x%08X: 4096 commands with no job run after %d "
            "job(s) -- malformed?\n",
            jc_ea, jobs);
+    return pc;
 }
 
 static DWORD WINAPI jc_thread(LPVOID p)
@@ -2740,12 +2878,14 @@ static DWORD WINAPI jc_thread(LPVOID p)
      * Confirms timing-vs-never before committing to the async rewrite. */
     { const char* d = getenv("SPURS_JC_DELAY");
       if (d && *d) Sleep((unsigned)atoi(d)); }
-    jc_execute(s_jobchains[slot].entry_ea, s_jobchains[slot].jc_ea,
+    s_jobchains[slot].failed_job_ea = jc_execute(
+               s_jobchains[slot].entry_ea, s_jobchains[slot].jc_ea,
                s_jobchains[slot].size_desc);
     s_jobchains[slot].running = 0;
     /* Tell the application the chain is done. Without this the walk finishes
      * in silence and a thread waiting on the attached queue never runs again. */
-    jc_signal_done(s_jobchains[slot].jc_ea, -1);
+    if (!s_jobchains[slot].failed_job_ea)
+        jc_signal_done(s_jobchains[slot].jc_ea, -1);
     return 0;
 }
 
@@ -2778,6 +2918,7 @@ static s32 jc_start(u64 jc_ea, const char* who)
         if (s_off || !s_jobchains[i].entry_ea) return CELL_OK;
         /* Coalesce: a chain already being walked must not start twice. */
         if (_InterlockedCompareExchange(&s_jobchains[i].running, 1, 0) == 0) {
+            s_jobchains[i].failed_job_ea = 0;
             HANDLE th = CreateThread(NULL, 1u << 20, jc_thread, (LPVOID)(intptr_t)i, 0, NULL);
             if (th) CloseHandle(th);
             else s_jobchains[i].running = 0;
@@ -2842,6 +2983,7 @@ s32 cellSpursJoinJobChain(u64 jc_ea)
             usleep(0);
 #endif
         }
+        if (s_jobchains[i].failed_job_ea) return (s32)0x80410A0D;
     }
     return CELL_OK;
 }
@@ -2850,6 +2992,13 @@ s32 cellSpursJobChainGetError(u64 jc_ea, u64 cause_out_ea)
 {
     static int _n = 0;
     if (PS3_LOG_FIRST(_n, 8)) printf("[cellSpurs] JobChainGetError(jc=0x%08X)\n", (u32)jc_ea);
+    for (int i = 0; i < MAX_JOBCHAINS; i++) {
+        if (s_jobchains[i].jc_ea != (u32)jc_ea) continue;
+        const u32 cause = s_jobchains[i].failed_job_ea;
+        if (cause_out_ea) vm_write32((u32)cause_out_ea, cause);
+        /* CELL_SPURS_JOB_ERROR_FAULT, SDK common cell/spurs/error.h. */
+        return cause ? (s32)0x80410A0D : CELL_OK;
+    }
     if (cause_out_ea) vm_write32((u32)cause_out_ea, 0);
     return CELL_OK;
 }

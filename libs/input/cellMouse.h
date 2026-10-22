@@ -95,9 +95,16 @@ s32 cellMouseSetTabletMode(u32 port_no, u32 mode);
 s32 cellMouseClearBuf(u32 port_no);
 
 /* Internal: feed mouse events from host input system */
-void cellMouse_moveEvent(u32 port, s8 dx, s8 dy);
+void cellMouse_moveEvent(u32 port, s32 dx, s32 dy);
 void cellMouse_buttonEvent(u32 port, u8 button_mask, int pressed);
-void cellMouse_wheelEvent(u32 port, s8 wheel);
+void cellMouse_wheelEvent(u32 port, s32 wheel);
+void cellMouse_tiltEvent(u32 port, s32 tilt);
+/* Client coordinates scaled by the backend into the guest display space. */
+void cellMouse_positionEvent(u32 port, s32 x, s32 y);
+/* A port with a software cursor can provide its current position before a
+ * read, keeping relative PS3 samples aligned after cursor resets/clamping. */
+void cellMouse_syncPosition(u32 port, s32 x, s32 y);
+int cellMouse_isInitialized(void);
 
 #ifdef __cplusplus
 }

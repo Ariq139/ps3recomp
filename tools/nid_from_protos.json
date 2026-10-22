@@ -189,6 +189,7 @@
   },
   "cellSpursJq": {
     "_cellSpursCreateJobQueue": "0xF244E799",
+    "_cellSpursCreateJobQueueWithJobDescriptorPool": "0x983BE7FC",
     "_cellSpursJobQueuePort2PushJobBody": "0xCF89F218",
     "_cellSpursJobQueuePushJob2Body": "0x36D0A53C",
     "cellSpursJobQueueAttributeSetDoBusyWaiting": "0x0582338A",

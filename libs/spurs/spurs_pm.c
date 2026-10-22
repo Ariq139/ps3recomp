@@ -8,6 +8,9 @@
  * the task's context and runs it. Selection logic cross-referenced vs RPCS3
  * spursTasksetProcessRequest(SELECT_TASK): readyButNotRunning = ready & ~running, scanned
  * round-robin starting after last_scheduled_task; task N occupies bitset bit (127-N).
+ * RPCS3_REFERENCE_REVIEWED: this file declares a clean-room implementation
+ * using RPCS3 behavior/layout as a reference. The cited comments do not
+ * establish copied source; see docs/RPCS3_LICENSE_AUDIT.md.
  */
 #include "spurs_taskset.h"
 #include <stdint.h>

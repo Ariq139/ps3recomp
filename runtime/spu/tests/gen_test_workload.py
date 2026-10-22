@@ -13,7 +13,7 @@ The SPU program proves the two things the loader+ABI must get right:
 Both are DMA-PUT to main memory so the host harness can check them.
 
 Also emits test_workload_image.h: the exact ELF bytes as a C array plus the
-Python-side FNV-1a-64 fingerprint, so the harness validates that the C and
+Python-side project FNV-1a-style 64-bit fingerprint, so the harness validates that the C and
 offline fingerprints agree (the offline extractor uses the same hash to build
 the registration manifest).
 """
@@ -60,7 +60,8 @@ b = b.ljust(0x80, b"\x00") + struct.pack(">I", MARKER) + b"\x00" * 12
 elf = wrap(b, base=0, entry=0, symbols=[{"name": "main", "addr": 0, "size": len(b)}])
 open(os.path.join(HERE, "test_workload.elf"), "wb").write(elf)
 
-# FNV-1a-64 over the exact ELF bytes — the canonical workload fingerprint.
+# Project FNV-1a-style hash over the exact ELF bytes — keep its legacy seed in
+# sync with runtime/spu/spu_workload.c.
 def fnv1a64(data):
     h = 1469598103934665603
     for byte in data:

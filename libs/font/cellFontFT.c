@@ -7,9 +7,12 @@
  */
 
 #include "cellFontFT.h"
+#include "cellFont.h"
 #include "../../runtime/ppu/ppu_memory.h"   /* GUEST_PTR, vm_read/vm_write: guest EA -> host */
 #include <stdio.h>
 #include <string.h>
+
+extern void* _sys_malloc(u32 size);
 
 /* ---------------------------------------------------------------------------
  * Guest struct access
@@ -69,6 +72,38 @@ static int s_initialized = 0;
 static FTFontSlot s_fonts[MAX_FT_FONTS];
 
 /* API */
+
+/* RPCS3_REFERENCE_REVIEWED: the public output-object contract was checked
+ * against the SDK-facing initializer. This implementation uses local font
+ * state and the guest allocator; no RPCS3 function body is copied. The
+ * FreeType rasterizer itself is not available in this runtime. */
+s32 cellFontInitLibraryFreeTypeWithRevision(u64 revisionFlags,
+                                             const void* config,
+                                             void** libraryOut)
+{
+    (void)revisionFlags;
+    const u32 out_ea = (u32)(uintptr_t)libraryOut;
+    if (!out_ea)
+        return (s32)CELL_FONT_ERROR_INVALID_PARAMETER;
+
+    vm_write32(out_ea, 0);
+    if (!config)
+        return (s32)CELL_FONT_ERROR_INVALID_PARAMETER;
+
+    s32 rc = cellFontInit(NULL);
+    if (rc != CELL_OK && rc != CELL_FONT_ERROR_ALREADY_INITIALIZED)
+        return rc;
+
+    /* CellFontLibrary's guest ABI is three big-endian u32 fields. */
+    const u32 lib_ea = (u32)(uintptr_t)_sys_malloc(12);
+    if (!lib_ea)
+        return (s32)CELL_FONT_ERROR_ALLOCATION_FAILED;
+    vm_write32(lib_ea + 0, 0); /* local font backend */
+    vm_write32(lib_ea + 4, 1); /* library version */
+    vm_write32(lib_ea + 8, 0); /* SystemClosed */
+    vm_write32(out_ea, lib_ea);
+    return CELL_OK;
+}
 
 s32 cellFontFTInit(const CellFontFTConfig* config, CellFontFTLibrary* lib)
 {

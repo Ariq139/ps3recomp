@@ -8,11 +8,21 @@ Step-by-step guide to recompiling your first PS3 game.
 
 - **CMake** 3.20 or later: [cmake.org](https://cmake.org/download/)
 - **C/C++ compiler** with C17 and C++20 support:
-  - Windows: Visual Studio 2022 (MSVC 17+) or Clang 14+
+  - Windows: Visual Studio 2022 with the **Desktop development with C++** workload. MSVC works; `clang-cl` is the more commonly used compiler for game projects.
   - Linux: GCC 12+ or Clang 14+
   - macOS: Xcode 14+ (Apple Clang)
+- **SDL2 development files** on Linux/macOS: required for the runtime's
+  controller and audio backends (`sudo apt install libsdl2-dev` on Debian or
+  Ubuntu; `brew install sdl2` on macOS).
 - **Python** 3.9+: Required for the recompiler tools
 - **Ninja** (recommended): Faster than Make/MSBuild -- `pip install ninja`
+
+On Windows, run CMake from **Developer PowerShell for VS 2022** (or an x64
+Native Tools Command Prompt). This sets up the compiler, Windows SDK, and
+resource tools. To use `clang-cl`, install the **C++ Clang tools for Windows**
+component in Visual Studio Installer, and check that `Get-Command clang-cl`
+finds it. Ninja is a build generator; it does not install or locate a C/C++
+compiler for you.
 
 ### Required Game Files
 
@@ -37,23 +47,46 @@ git clone https://github.com/sp00nznet/ps3recomp.git
 cd ps3recomp
 ```
 
-### 2. Build the Runtime Library
+### 2. Optional: Build the Runtime Library Separately
 
 ```bash
-mkdir build && cd build
-cmake .. -G Ninja
-ninja
+cmake -S . -B build -G Ninja
+cmake --build build
 ```
+
+On Windows, run those commands in Developer PowerShell for VS 2022. To select
+`clang-cl` explicitly, use a new build directory:
+
+```powershell
+cmake -S . -B build-clang -G Ninja `
+  -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl
+cmake --build build-clang
+```
+
+For MSVC (`cl`), omit the compiler options and use a separate `build-msvc`
+directory. CMake caches the selected compiler, so do not reuse a build folder
+configured with a different compiler. You can skip this standalone runtime
+build when using the project template below; its CMake project builds the
+runtime from source automatically.
 
 This builds `libps3recomp_runtime.a` (or `ps3recomp_runtime.lib` on Windows), which contains the memory manager, thread manager, and all HLE library stubs.
 
-### 3. Verify the Build
+### 3. Runtime Library Output
 
-```bash
-# The runtime library should exist:
-ls build/libps3recomp_runtime.a    # Linux/macOS
-dir build\ps3recomp_runtime.lib    # Windows
-```
+The runtime library is under the build directory (`libps3recomp_runtime.a` on
+Linux/macOS, `ps3recomp_runtime.lib` on Windows).
+
+The game runner shows warning/error-class diagnostics by default and keeps the
+guest TTY stream in `ps3_tty.log` in the launch directory. Japanese TTY text is
+decoded from CP932 to UTF-8. Set `PS3_TTY_ENCODING=utf8` if the title writes
+UTF-8, or `PS3_TTY_ENCODING=raw` to preserve the original bytes. Set
+`PS3_TTY_LOG=off` to discard TTY output, or set it to a path to change the log
+file. For more host output, set `PS3_LOG_LEVEL=info`, `debug`, or `trace`; the
+default is `warning`. `PS3_VERBOSE=1` enables high-volume trace sites and is
+most useful with `PS3_LOG_LEVEL=debug`. Warning/error recognition follows
+standard severity labels and failure terms; untagged stdout is treated as info
+and untagged stderr as debug. Set `PS3_TTY_STDOUT=1` to echo decoded TTY text
+back to the launch console.
 
 ## First Recompilation Walkthrough
 
@@ -84,6 +117,7 @@ PS3 executables ship as SELF. The recompiler needs the plain ELF inside:
   the original ELF with no keys at all:
 
 ```bash
+cmake -E make_directory game
 python tools/unfself.py EBOOT.BIN --output game/EBOOT.ELF
 python tools/unfself.py EBOOT.BIN --info       # describe it, write nothing
 ```
@@ -91,10 +125,23 @@ python tools/unfself.py EBOOT.BIN --info       # describe it, write nothing
 See [PROTO_BUILDS.md](PROTO_BUILDS.md) for why a debug build is worth hunting
 for: symbols make every later step checkable.
 
-### Step 2: Load the ELF — functions, imports, TOC
+### Step 2: Create a project
+
+From the repository root, copy the starter project. `cmake -E` works in
+PowerShell, Command Prompt, and POSIX shells:
 
 ```bash
-python tools/ppu_loader.py game/EBOOT.ELF -o out/
+cmake -E copy_directory templates/project my_game
+```
+
+Edit `my_game/CMakeLists.txt` to set the project name. `config.toml` is a
+reference for port settings; the loader and lifter commands below use their
+explicit command-line paths.
+
+### Step 3: Load the ELF — functions, imports, TOC
+
+```bash
+python tools/ppu_loader.py game/EBOOT.ELF -o my_game/out/
 ```
 
 This is stage 1 of the pipeline and it writes everything the lifter needs:
@@ -122,26 +169,17 @@ names where the database knows them, which is useful to read but not required
 by the lifter:
 
 ```bash
-python tools/gen_imports.py game/EBOOT.ELF -o out/imports_named.json
+python tools/gen_imports.py game/EBOOT.ELF -o my_game/out/imports_named.json
 # 1 libraries, 12 imports, 12 named (100%) -> out/imports_named.json
-```
-
-### Step 3: Create a project
-
-```bash
-cp -r templates/project/ my_game/
-cd my_game/
-# Edit config.toml -- set the elf_path
-# Edit CMakeLists.txt -- set the project name
 ```
 
 ### Step 4: Lift PPU code to C++
 
 ```bash
-python ../tools/ppu_lifter.py game/EBOOT.ELF \
-    --functions out/EBOOT.functions.json \
-    --hle-stubs out/EBOOT.imports.json \
-    --output recompiled/
+python tools/ppu_lifter.py game/EBOOT.ELF \
+    --functions my_game/out/EBOOT.functions.json \
+    --hle-stubs my_game/out/EBOOT.imports.json \
+    --output my_game/recompiled/
 ```
 
 This writes `ppu_recomp.h` plus `ppu_recomp_NNN.cpp` chunks (which can total
@@ -170,8 +208,11 @@ Lifting produces the game's own code. It does **not** produce the bridge from
 firmware NIDs to this runtime's HLE implementations — that is a separate
 generated file:
 
+For a custom build system, generate the table into the lifted output directory
+so it can be compiled with the lifted code:
+
 ```bash
-python ../tools/gen_hle_nids.py --all --out recompiled/ppu_hle_nids.cpp
+python tools/gen_hle_nids.py --all --out my_game/recompiled/ppu_hle_nids.cpp
 ```
 
 Compile the result into the port along with the lifted sources. It defines
@@ -181,9 +222,9 @@ it still links, which is why the omission is not a build error. The runtime
 warns at startup when it ends up with no handlers registered.
 
 **The project template does this for you.** Its `CMakeLists.txt` generates the
-every-module table at configure time unless `recompiled/ppu_hle_nids.cpp`
-already exists, so this step only needs running by hand in a build system you
-rolled yourself — which is exactly where it gets forgotten.
+every-module table during the build unless
+`my_game/recompiled/ppu_hle_nids.cpp` already exists. You do not need to run
+the generator manually when using the template.
 
 Regenerate it whenever you update ps3recomp: the table is generated from the
 toolkit's registered modules, so one built against a different revision can
@@ -195,49 +236,64 @@ reaches the table in the first place. Do both.
 
 ### Step 6: Build the Recompiled Game
 
-```bash
-cmake -B build -G Ninja -DPS3RECOMP_DIR=/path/to/ps3recomp -DRECOMP_DIR=$PWD/recompiled
-cmake --build build
-```
-
-Use **clang-cl** on Windows, not `cl`. The runtime uses `__atomic_*` builtins,
-`__int128` and `__builtin_bswap*`, and the lifted output uses `__int128` for the
-PPC 64x64 multiplies; `cl` has none of them. clang-cl consumes the same MSVC
-headers and libraries, so nothing else about the build changes:
+On Linux/macOS, configure from the repository root with:
 
 ```bash
-cmake -B build -G Ninja -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl
+cmake -S my_game -B my_game/build -G Ninja \
+    -DPS3RECOMP_DIR="$PWD" \
+    -DRECOMP_DIR="$PWD/my_game/recompiled"
+cmake --build my_game/build
 ```
 
-Lifted output also produces very large translation units, so add `/bigobj` to the
-target that compiles them or the object files overflow their section limit:
+On Windows, use Developer PowerShell for VS 2022. For `clang-cl`, configure
+with a fresh build folder and explicit compiler names:
 
-```cmake
-if(MSVC)
-    target_compile_options(${PROJECT_NAME} PRIVATE /bigobj)
-endif()
+```powershell
+$repoRoot = (Get-Location).Path
+cmake -S my_game -B my_game/build-clang -G Ninja `
+  "-DPS3RECOMP_DIR=$repoRoot" `
+  "-DRECOMP_DIR=$repoRoot/my_game/recompiled" `
+  -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl
+cmake --build my_game/build-clang
 ```
 
-`templates/project/CMakeLists.txt` in this repository does exactly that and is the working
-reference; the starter template does not set it for you.
+MSVC's `cl.exe` is not supported yet: the runtime and lifted code use compiler
+builtins that it does not provide. Use `clang-cl` from the Visual Studio Clang
+Tools component; it uses the same Windows SDK and Visual Studio libraries. The
+template adds `/bigobj` for large generated files when using this compiler.
 
 ### Step 7: Run
 
-The game executable takes the path to the decrypted ELF as its first argument
--- it is loaded into the guest address space at startup, not baked into the
-binary:
+On Windows, the project CMake embeds the configured decrypted ELF into the
+executable as a resource and loads its original segments into guest memory at
+startup. Replace `MyGameRecomp` below with the executable name derived from the
+project name in `my_game/CMakeLists.txt` (and use the matching build directory
+if you chose MSVC instead of `clang-cl`):
 
 ```bash
-./build/my_game path/to/EBOOT.elf
+./my_game/build/MyGameRecomp game/EBOOT.ELF
 ```
 
 Most ports also need to know where the title's files live, so that guest mount
 points such as `/dev_hdd0` resolve to a real directory. The in-tree ports derive
 that from the ELF path and accept `PS3_VFS_ROOT` as an override:
 
-```bash
-PS3_VFS_ROOT=/path/to/game-files ./build/my_game path/to/EBOOT.elf
+`PS3_VFS_ROOT` must point to the directory that contains `PS3_GAME`. In
+PowerShell, set it and launch the program like this:
+
+```powershell
+$env:PS3_VFS_ROOT = 'D:\path\to\game-root'
+& '.\my_game\build-clang\MyGameRecomp.exe'
 ```
+
+On Linux/macOS:
+
+```bash
+PS3_VFS_ROOT=/path/to/game-root ./my_game/build/MyGameRecomp game/EBOOT.ELF
+```
+
+The explicit ELF argument remains necessary on non-Windows hosts unless the
+port has configured a default `PORT_PPU_ELF` path.
 
 You'll see:
 - `[init]` messages as the runtime initializes (VM, syscalls, HLE modules)
@@ -245,6 +301,27 @@ You'll see:
 - `[LV2]` messages for unimplemented system calls
 - A window opens for RSX output -- Direct3D 12 on Windows, Metal on macOS. See
   [Graphics backends](BUILDING.md#graphics-backends) for what each platform gets.
+
+The template chooses the renderer at compile time from the host platform;
+`config.toml`'s `graphics.backend` setting does not switch it. Windows uses
+D3D12. The Vulkan backend is currently an early, opt-in Linux runtime path and
+is not connected to the template game's renderer selection.
+
+### Controller input
+
+The template's `config.toml` lists `cellPad = "hle"`; the host input backend is
+selected by platform: XInput on Windows and SDL2 GameController on Linux/macOS.
+There is no per-title controller-mapping setting in the template. The default
+Xbox-to-PS3 button mapping is documented in [Game Porting Guide: Input](GAME_PORTING_GUIDE.md#input),
+and platform details are in [Platform Abstraction: Gamepad Backends](PLATFORM_ABSTRACTION.md#gamepad-backends).
+
+On Windows, if XInput port 0 has no controller, `cellPad` also accepts this
+built-in keyboard layout: **arrow keys** for the D-pad, **Z/X/A/S** for
+Cross/Circle/Square/Triangle, **Q/W** for L1/R1, **1/2** for L2/R2, **Enter**
+for Start, and **Tab** for Select. The left stick mirrors the arrow keys. This
+feeds `cellPad` directly; it does not create a system-wide virtual XInput
+device. Set `PAD_NO_KEYBOARD=1` before launching to disable the fallback. See
+[Keyboard fallback](PLATFORM_ABSTRACTION.md#keyboard-fallback-windows) for details.
 
 **Expected first-run behavior:** CRT startup executes, the game calls `cellSysmoduleLoadModule` to load libraries, then begins initialization. Missing HLE functions show as `[HLE] UNIMPLEMENTED` — add bridges in your game's `hle_modules.cpp`.
 
@@ -255,23 +332,20 @@ After setup, your project should look like:
 ```
 my_game/
   CMakeLists.txt          # Build configuration
-  config.toml             # Recompiler settings
+  config.toml             # Port settings reference
   main.cpp                # Entry point (from template)
   stubs.cpp               # Game-specific overrides
-  out/                    # ppu_loader.py stage-1 output
+  out/                    # ppu_loader.py output (my_game/out/)
     EBOOT.functions.json
     EBOOT.imports.json
     EBOOT.image.json
     EBOOT.loader.json
-  src/
-    recomp/               # Generated by ppu_lifter.py
-      ppu_recomp.h
-      ppu_recomp_000.cpp
-      ppu_recomp_001.cpp
-      ...
-    gen/
-      ppu_hle_nids.cpp    # Generated by gen_hle_nids.py
-  build/                  # CMake build directory
+  recompiled/              # ppu_lifter.py output (my_game/recompiled/)
+    ppu_recomp.h
+    ppu_recomp_000.cpp
+    ppu_recomp_001.cpp
+    ...
+  build/                   # CMake build directory; includes generated HLE table
 ```
 
 ## Troubleshooting
@@ -300,10 +374,16 @@ find who is supposed to write it.
 
 ### "Unimplemented NID 0xXXXXXXXX in module YYY"
 
-The game is calling a PS3 API function that does not have an HLE stub. Options:
-1. Check if the function is trivial (e.g., returns CELL_OK) and add a stub in `stubs.cpp`.
-2. Look up the NID: `python tools/nid_database.py --lookup 0xXXXXXXXX`.
-3. Check RPCS3's source for reference implementations.
+The game is calling a PS3 API function that does not have an HLE handler. First
+establish its ABI and caller-visible effects, then implement the behavior. Use
+a documented placeholder only when the call is proven irrelevant to this path
+or its behavior remains unknown.
+1. Look up the NID: `python tools/nid_database.py --lookup 0xXXXXXXXX`.
+2. Check the SDK-facing declaration and local callers to establish its ABI and
+   required outputs and side effects.
+3. Check RPCS3's source as a behavior reference, then implement the observable
+   contract. Add a documented placeholder only when evidence shows the call is
+   irrelevant to this path or its behavior is still unknown.
 
 ### `/* sync: cache/sync — no-op */` in the lifted output
 
@@ -327,6 +407,18 @@ the loop waits on is never written (see `[HOTREAD]` above).
 - Switch to the **D3D12 backend** (`rsx_d3d12_backend_init()`) for real GPU rendering.
 - See [RSX_GRAPHICS.md](RSX_GRAPHICS.md) for the full graphics architecture.
 
+### CMake cannot find a Windows compiler
+
+- Open **Developer PowerShell for VS 2022** before configuring; a regular
+  PowerShell window does not have the Visual Studio compiler environment.
+- Check `Get-Command cl, clang-cl, ninja`. If `cl` is missing, install the
+  Visual Studio **Desktop development with C++** workload. If `clang-cl` is
+  missing, install the Visual Studio Clang tools component or add LLVM's `bin`
+  directory to `PATH`.
+- If using MSVC, remove the `CMAKE_C_COMPILER` and `CMAKE_CXX_COMPILER`
+  overrides. Configure into a fresh build directory after changing compilers;
+  CMake caches its compiler selection.
+
 ### Audio crackling or silence
 
 - Check that `cellAudio` is set to `"hle"` in modules config.
@@ -342,10 +434,7 @@ the loop waits on is never written (see `[HOTREAD]` above).
 ### Build errors in generated code
 
 - Ensure your compiler supports C17 and C++20.
-- On Windows use **clang-cl**, not `cl`: the runtime and the lifted output use
-  `__atomic_*`, `__int128` and `__builtin_bswap*`, none of which MSVC has. See
-  Step 6.
-- Lifted translation units are large enough to need `/bigobj`.
+- The template adds `/bigobj` for the large lifted translation units.
 
 ---
 

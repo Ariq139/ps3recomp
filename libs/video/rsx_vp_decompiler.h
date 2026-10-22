@@ -48,8 +48,10 @@ int rsx_vp_analyze_inputs(const u8* ucode, u32 max_bytes,
  * vp_posoffset (the RSX viewport transform mapped to D3D clip space; the
  * caller computes them per draw), SV_Position + COLOR0/1 + FOG + TEXCOORD0..7
  * varyings routed per the NV40 output register map (o0/o1/o2/o5/o7..o14).
- * Not modeled: condition-code tests and flow control (BRA/CAL/...). TXL is
- * stubbed to zero unless rsx_vp_decompile_ex receives a bound-unit mask. */
+ * Conditional branches use the condition-code and transform-branch-bit fields
+ * from VPConst. The caller must upload the guest's NV4097_SET_TRANSFORM_BRANCH_BITS
+ * value in the uint immediately after vp_posoffset. TXL is stubbed to zero
+ * unless rsx_vp_decompile_ex receives a bound-unit mask. */
 int rsx_vp_decompile(const u8* ucode, u32 max_bytes, char* out, u32 out_size);
 
 /* The VP slot the next program decompiled starts at (NV4097 transform
@@ -62,6 +64,13 @@ void rsx_vp_set_branch_base(u32 start_slot);
  * Unmasked units retain the defined-zero fallback. */
 int rsx_vp_decompile_ex(const u8* ucode, u32 max_bytes, u32 vtex_mask,
                         char* out, u32 out_size);
+
+/* Extended D3D-compatible vertex-texture shapes. `vtex_cube_mask` selects
+ * cube SRVs and xyz coordinates; `vtex_1d_mask` maps 1D coordinates to the
+ * x-axis of a one-row 2D SRV. Enabled units outside these masks use 2D. */
+int rsx_vp_decompile_textures(const u8* ucode, u32 max_bytes,
+                              u32 vtex_mask, u32 vtex_cube_mask,
+                              u32 vtex_1d_mask, char* out, u32 out_size);
 
 /* Compact-input variant.  The generated VSInput declares only the original
  * ATTRn semantics selected by input_mask.  The mask is checked against a

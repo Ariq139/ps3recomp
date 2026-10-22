@@ -6,12 +6,17 @@
  *
  * The host input layer should call cellMouse_moveEvent(), cellMouse_buttonEvent(),
  * and cellMouse_wheelEvent() when mouse events occur.
+ *
+ * RPCS3_REFERENCE_REVIEWED (RPCS3 commit 2ba2f75bc, cellMouse.cpp): guest
+ * structures and mouse status behavior were checked; event buffering and the
+ * Win32/SDL host event translations are local, with no RPCS3 body copied.
  */
 
 #include "cellMouse.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#include "../../runtime/platform/win32_compat.h"
 
 /* HLE struct args are GUEST EAs -- write through the vm accessors (also
  * declared above cellMouseGetInfo; harmless duplicates). */
@@ -31,25 +36,30 @@ typedef struct {
     s32  acc_dx;
     s32  acc_dy;
     s32  acc_wheel;
+    s32  acc_tilt;
     int  updated;
-    /* Ring buffer for data list mode */
-    CellMouseData ring[CELL_MOUSE_MAX_DATA_LIST_NUM];
-    u32  ring_write;
-    u32  ring_count;
+    int  position_valid;
+    s32  position_x;
+    s32  position_y;
 } MousePortState;
 
 static int            s_mouse_initialized = 0;
 static u32            s_mouse_max_connect = 0;
 static MousePortState s_mouse_ports[CELL_MOUSE_MAX_MICE];
+static SRWLOCK        s_mouse_lock = SRWLOCK_INIT;
+
+#define MOUSE_UNLOCK_RETURN(value) do { ReleaseSRWLockExclusive(&s_mouse_lock); return (value); } while (0)
+#define MOUSE_UNLOCK_VOID()        do { ReleaseSRWLockExclusive(&s_mouse_lock); return; } while (0)
 
 /* ---------------------------------------------------------------------------
  * Host event injection
  * -----------------------------------------------------------------------*/
 
-void cellMouse_moveEvent(u32 port, s8 dx, s8 dy)
+void cellMouse_moveEvent(u32 port, s32 dx, s32 dy)
 {
+    AcquireSRWLockExclusive(&s_mouse_lock);
     if (!s_mouse_initialized || port >= CELL_MOUSE_MAX_MICE)
-        return;
+        MOUSE_UNLOCK_VOID();
 
     MousePortState* ms = &s_mouse_ports[port];
     if (!ms->connected) ms->connected = 1;
@@ -57,12 +67,14 @@ void cellMouse_moveEvent(u32 port, s8 dx, s8 dy)
     ms->acc_dx += dx;
     ms->acc_dy += dy;
     ms->updated = 1;
+    ReleaseSRWLockExclusive(&s_mouse_lock);
 }
 
 void cellMouse_buttonEvent(u32 port, u8 button_mask, int pressed)
 {
+    AcquireSRWLockExclusive(&s_mouse_lock);
     if (!s_mouse_initialized || port >= CELL_MOUSE_MAX_MICE)
-        return;
+        MOUSE_UNLOCK_VOID();
 
     MousePortState* ms = &s_mouse_ports[port];
     if (!ms->connected) ms->connected = 1;
@@ -72,45 +84,104 @@ void cellMouse_buttonEvent(u32 port, u8 button_mask, int pressed)
     else
         ms->buttons &= ~button_mask;
     ms->updated = 1;
+    ReleaseSRWLockExclusive(&s_mouse_lock);
 }
 
-void cellMouse_wheelEvent(u32 port, s8 wheel)
+void cellMouse_wheelEvent(u32 port, s32 wheel)
 {
+    AcquireSRWLockExclusive(&s_mouse_lock);
     if (!s_mouse_initialized || port >= CELL_MOUSE_MAX_MICE)
-        return;
+        MOUSE_UNLOCK_VOID();
 
     MousePortState* ms = &s_mouse_ports[port];
     if (!ms->connected) ms->connected = 1;
 
     ms->acc_wheel += wheel;
     ms->updated = 1;
+    ReleaseSRWLockExclusive(&s_mouse_lock);
 }
 
-/* Push a snapshot into the ring buffer */
-static void mouse_push_ring(MousePortState* ms)
+void cellMouse_tiltEvent(u32 port, s32 tilt)
+{
+    AcquireSRWLockExclusive(&s_mouse_lock);
+    if (!s_mouse_initialized || port >= CELL_MOUSE_MAX_MICE)
+        MOUSE_UNLOCK_VOID();
+
+    MousePortState* ms = &s_mouse_ports[port];
+    if (!ms->connected) ms->connected = 1;
+
+    ms->acc_tilt += tilt;
+    ms->updated = 1;
+    ReleaseSRWLockExclusive(&s_mouse_lock);
+}
+
+int cellMouse_isInitialized(void)
+{
+    AcquireSRWLockShared(&s_mouse_lock);
+    int initialized = s_mouse_initialized;
+    ReleaseSRWLockShared(&s_mouse_lock);
+    return initialized;
+}
+
+void cellMouse_positionEvent(u32 port, s32 x, s32 y)
+{
+    AcquireSRWLockExclusive(&s_mouse_lock);
+    if (!s_mouse_initialized || port >= s_mouse_max_connect)
+        MOUSE_UNLOCK_VOID();
+    MousePortState* ms = &s_mouse_ports[port];
+    ms->connected = 1;
+    ms->acc_dx += x - ms->position_x;
+    ms->acc_dy += y - ms->position_y;
+    ms->position_x = x;
+    ms->position_y = y;
+    ms->position_valid = 1;
+    ms->updated = 1;
+    ReleaseSRWLockExclusive(&s_mouse_lock);
+}
+
+void cellMouse_syncPosition(u32 port, s32 x, s32 y)
+{
+    AcquireSRWLockExclusive(&s_mouse_lock);
+    if (!s_mouse_initialized || port >= s_mouse_max_connect)
+        MOUSE_UNLOCK_VOID();
+    MousePortState* ms = &s_mouse_ports[port];
+    if (ms->position_valid) {
+        ms->acc_dx = ms->position_x - x;
+        ms->acc_dy = ms->position_y - y;
+        if (ms->acc_dx || ms->acc_dy) ms->updated = 1;
+    }
+    ReleaseSRWLockExclusive(&s_mouse_lock);
+}
+
+/* Preserve movement beyond one signed-byte report; dropping it makes slow
+ * polling and fast host movement leave the guest cursor permanently behind. */
+static s8 mouse_take_axis(s32* pending)
+{
+    s32 value = *pending;
+    if (value > 127) value = 127;
+    if (value < -128) value = -128;
+    *pending -= value;
+    return (s8)value;
+}
+
+static CellMouseData mouse_take_data(MousePortState* ms, int buffered)
 {
     CellMouseData d;
     d.update  = ms->updated ? 1 : 0;
     d.buttons = ms->buttons;
 
-    /* Clamp accumulated deltas to s8 range */
-    s32 dx = ms->acc_dx;
-    s32 dy = ms->acc_dy;
-    s32 wh = ms->acc_wheel;
-    if (dx > 127) dx = 127; if (dx < -128) dx = -128;
-    if (dy > 127) dy = 127; if (dy < -128) dy = -128;
-    if (wh > 127) wh = 127; if (wh < -128) wh = -128;
-
-    d.x_axis = (s8)dx;
-    d.y_axis = (s8)dy;
-    d.wheel  = (s8)wh;
-    d.tilt   = 0;
-
-    u32 idx = ms->ring_write % CELL_MOUSE_MAX_DATA_LIST_NUM;
-    ms->ring[idx] = d;
-    ms->ring_write++;
-    if (ms->ring_count < CELL_MOUSE_MAX_DATA_LIST_NUM)
-        ms->ring_count++;
+    d.x_axis = mouse_take_axis(&ms->acc_dx);
+    d.y_axis = mouse_take_axis(&ms->acc_dy);
+    /* A software cursor sums X/Y across a list but reads its last wheel
+     * sample. Keep wheel input on the final movement fragment. */
+    if (buffered && (ms->acc_dx || ms->acc_dy)) {
+        d.wheel = d.tilt = 0;
+    } else {
+        d.wheel = mouse_take_axis(&ms->acc_wheel);
+        d.tilt  = mouse_take_axis(&ms->acc_tilt);
+    }
+    ms->updated = ms->acc_dx || ms->acc_dy || ms->acc_wheel || ms->acc_tilt;
+    return d;
 }
 
 /* ---------------------------------------------------------------------------
@@ -120,12 +191,13 @@ static void mouse_push_ring(MousePortState* ms)
 s32 cellMouseInit(u32 max_connect)
 {
     printf("[cellMouse] Init(max_connect=%u)\n", max_connect);
+    AcquireSRWLockExclusive(&s_mouse_lock);
 
     if (s_mouse_initialized)
-        return CELL_MOUSE_ERROR_ALREADY_INITIALIZED;
+        MOUSE_UNLOCK_RETURN(CELL_MOUSE_ERROR_ALREADY_INITIALIZED);
 
     if (max_connect == 0 || max_connect > CELL_MOUSE_MAX_MICE)
-        return CELL_MOUSE_ERROR_INVALID_PARAMETER;
+        MOUSE_UNLOCK_RETURN(CELL_MOUSE_ERROR_INVALID_PARAMETER);
 
     s_mouse_initialized = 1;
     s_mouse_max_connect = max_connect;
@@ -138,118 +210,90 @@ s32 cellMouseInit(u32 max_connect)
      * never arrive. Report what actually exists -- an unplugged port is a
      * perfectly normal thing for a title to see. */
 
-    return CELL_OK;
+    MOUSE_UNLOCK_RETURN(CELL_OK);
 }
 
 s32 cellMouseEnd(void)
 {
     printf("[cellMouse] End()\n");
+    AcquireSRWLockExclusive(&s_mouse_lock);
 
     if (!s_mouse_initialized)
-        return CELL_MOUSE_ERROR_UNINITIALIZED;
+        MOUSE_UNLOCK_RETURN(CELL_MOUSE_ERROR_UNINITIALIZED);
 
     s_mouse_initialized = 0;
-    return CELL_OK;
+    MOUSE_UNLOCK_RETURN(CELL_OK);
 }
 
-/* Guest CellMouseData layout (big-endian, 8 bytes): +0 update u8, +1 buttons
- * u8, +2 x_axis s8, +3 y_axis s8, +4 wheel s8, +5 tilt s8, +6..7 pad. The
+/* Guest CellMouseData layout (6 bytes): +0 update u8, +1 buttons
+ * u8, +2 x_axis s8, +3 y_axis s8, +4 wheel s8, +5 tilt s8. The
  * arg is a GUEST EA -- write via vm accessors (see cellMouseGetInfo below);
  * dereferencing it as a host pointer is an instant AV. */
 static void mouse_write_data(unsigned long long ea, u8 update, u8 buttons,
-                             s8 x, s8 y, s8 wheel)
+                             s8 x, s8 y, s8 wheel, s8 tilt)
 {
     vm_write8(ea + 0, update);
     vm_write8(ea + 1, buttons);
     vm_write8(ea + 2, (u8)x);
     vm_write8(ea + 3, (u8)y);
     vm_write8(ea + 4, (u8)wheel);
-    vm_write8(ea + 5, 0);           /* tilt */
-    vm_write8(ea + 6, 0);
-    vm_write8(ea + 7, 0);
+    vm_write8(ea + 5, (u8)tilt);
 }
 
 s32 cellMouseGetData(u32 port_no, CellMouseData* data)
 {
     unsigned long long ea = (unsigned int)(uintptr_t)data;
+    AcquireSRWLockExclusive(&s_mouse_lock);
 
     if (!s_mouse_initialized)
-        return CELL_MOUSE_ERROR_UNINITIALIZED;
+        MOUSE_UNLOCK_RETURN(CELL_MOUSE_ERROR_UNINITIALIZED);
 
     if (port_no >= s_mouse_max_connect || !data)
-        return CELL_MOUSE_ERROR_INVALID_PARAMETER;
+        MOUSE_UNLOCK_RETURN(CELL_MOUSE_ERROR_INVALID_PARAMETER);
 
     MousePortState* ms = &s_mouse_ports[port_no];
 
     if (!ms->connected) {
-        mouse_write_data(ea, 0, 0, 0, 0, 0);
-        return CELL_MOUSE_ERROR_NO_DEVICE;
+        mouse_write_data(ea, 0, 0, 0, 0, 0, 0);
+        MOUSE_UNLOCK_RETURN(CELL_MOUSE_ERROR_NO_DEVICE);
     }
 
-    /* Clamp accumulated deltas to s8 range */
-    s32 dx = ms->acc_dx;
-    s32 dy = ms->acc_dy;
-    s32 wh = ms->acc_wheel;
-    if (dx > 127) dx = 127; if (dx < -128) dx = -128;
-    if (dy > 127) dy = 127; if (dy < -128) dy = -128;
-    if (wh > 127) wh = 127; if (wh < -128) wh = -128;
+    CellMouseData d = mouse_take_data(ms, 0);
+    mouse_write_data(ea, d.update, d.buttons,
+                     d.x_axis, d.y_axis, d.wheel, d.tilt);
 
-    mouse_write_data(ea, ms->updated ? 1 : 0, ms->buttons,
-                     (s8)dx, (s8)dy, (s8)wh);
-
-    /* Reset accumulated state */
-    ms->acc_dx = 0;
-    ms->acc_dy = 0;
-    ms->acc_wheel = 0;
-    ms->updated = 0;
-
-    return CELL_OK;
+    MOUSE_UNLOCK_RETURN(CELL_OK);
 }
 
 /* Guest CellMouseDataList layout: +0x00 list_num u32, +0x04 CellMouseData[8]. */
 s32 cellMouseGetDataList(u32 port_no, CellMouseDataList* data)
 {
     unsigned long long ea = (unsigned int)(uintptr_t)data;
+    AcquireSRWLockExclusive(&s_mouse_lock);
 
     if (!s_mouse_initialized)
-        return CELL_MOUSE_ERROR_UNINITIALIZED;
+        MOUSE_UNLOCK_RETURN(CELL_MOUSE_ERROR_UNINITIALIZED);
 
     if (port_no >= s_mouse_max_connect || !data)
-        return CELL_MOUSE_ERROR_INVALID_PARAMETER;
+        MOUSE_UNLOCK_RETURN(CELL_MOUSE_ERROR_INVALID_PARAMETER);
 
     MousePortState* ms = &s_mouse_ports[port_no];
 
     if (!ms->connected) {
         vm_write32(ea + 0x00, 0);
-        return CELL_MOUSE_ERROR_NO_DEVICE;
+        MOUSE_UNLOCK_RETURN(CELL_MOUSE_ERROR_NO_DEVICE);
     }
 
-    /* Push current state into ring if there's pending data */
-    if (ms->updated) {
-        mouse_push_ring(ms);
-        ms->acc_dx = 0;
-        ms->acc_dy = 0;
-        ms->acc_wheel = 0;
-        ms->updated = 0;
+    u32 count = 0;
+    while (ms->updated && count < CELL_MOUSE_MAX_DATA_LIST_NUM) {
+        CellMouseData d = mouse_take_data(ms, 1);
+        mouse_write_data(ea + 0x04 + count * sizeof(CellMouseData),
+                         d.update, d.buttons, d.x_axis, d.y_axis, d.wheel, d.tilt);
+        count++;
     }
+    vm_write32(ea, count);
 
-    vm_write32(ea + 0x00, ms->ring_count);
-    u32 start = 0;
-    if (ms->ring_write > CELL_MOUSE_MAX_DATA_LIST_NUM)
-        start = ms->ring_write - CELL_MOUSE_MAX_DATA_LIST_NUM;
-
-    for (u32 i = 0; i < ms->ring_count; i++) {
-        u32 idx = (start + i) % CELL_MOUSE_MAX_DATA_LIST_NUM;
-        CellMouseData* d = &ms->ring[idx];
-        mouse_write_data(ea + 0x04 + i * 8, d->update, d->buttons,
-                         d->x_axis, d->y_axis, d->wheel);
-    }
-
-    /* Clear ring */
-    ms->ring_count = 0;
-    ms->ring_write = 0;
-
-    return CELL_OK;
+    MOUSE_UNLOCK_RETURN(CELL_OK);
 }
 
 /* CellMouseInfo lives in GUEST memory and is BIG-ENDIAN. Layout is the SDK's
@@ -282,11 +326,12 @@ extern void vm_write32(unsigned long long a, unsigned int   v);
 
 s32 cellMouseGetInfo(u32 info_ea)
 {
+    AcquireSRWLockExclusive(&s_mouse_lock);
     if (!s_mouse_initialized)
-        return CELL_MOUSE_ERROR_UNINITIALIZED;
+        MOUSE_UNLOCK_RETURN(CELL_MOUSE_ERROR_UNINITIALIZED);
 
     if (!info_ea)
-        return CELL_MOUSE_ERROR_INVALID_PARAMETER;
+        MOUSE_UNLOCK_RETURN(CELL_MOUSE_ERROR_INVALID_PARAMETER);
 
     for (u32 i = 0; i < MOUSE_INFO_SIZE; i++)
         vm_write8((unsigned long long)info_ea + i, 0);
@@ -305,38 +350,42 @@ s32 cellMouseGetInfo(u32 info_ea)
     }
     vm_write32((unsigned long long)info_ea + 4, connected);
 
-    return CELL_OK;
+    MOUSE_UNLOCK_RETURN(CELL_OK);
 }
 
 s32 cellMouseSetTabletMode(u32 port_no, u32 mode)
 {
     printf("[cellMouse] SetTabletMode(port=%u, mode=%u)\n", port_no, mode);
+    AcquireSRWLockExclusive(&s_mouse_lock);
 
     if (!s_mouse_initialized)
-        return CELL_MOUSE_ERROR_UNINITIALIZED;
+        MOUSE_UNLOCK_RETURN(CELL_MOUSE_ERROR_UNINITIALIZED);
 
     if (port_no >= CELL_MOUSE_MAX_MICE)
-        return CELL_MOUSE_ERROR_INVALID_PARAMETER;
+        MOUSE_UNLOCK_RETURN(CELL_MOUSE_ERROR_INVALID_PARAMETER);
 
     s_mouse_ports[port_no].mode = mode;
-    return CELL_OK;
+    MOUSE_UNLOCK_RETURN(CELL_OK);
 }
 
 s32 cellMouseClearBuf(u32 port_no)
 {
+    AcquireSRWLockExclusive(&s_mouse_lock);
     if (!s_mouse_initialized)
-        return CELL_MOUSE_ERROR_UNINITIALIZED;
+        MOUSE_UNLOCK_RETURN(CELL_MOUSE_ERROR_UNINITIALIZED);
 
     if (port_no >= CELL_MOUSE_MAX_MICE)
-        return CELL_MOUSE_ERROR_INVALID_PARAMETER;
+        MOUSE_UNLOCK_RETURN(CELL_MOUSE_ERROR_INVALID_PARAMETER);
 
     MousePortState* ms = &s_mouse_ports[port_no];
     ms->acc_dx = 0;
     ms->acc_dy = 0;
     ms->acc_wheel = 0;
+    ms->acc_tilt = 0;
     ms->updated = 0;
-    ms->ring_count = 0;
-    ms->ring_write = 0;
 
-    return CELL_OK;
+    MOUSE_UNLOCK_RETURN(CELL_OK);
 }
+
+#undef MOUSE_UNLOCK_RETURN
+#undef MOUSE_UNLOCK_VOID

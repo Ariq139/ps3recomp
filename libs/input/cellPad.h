@@ -23,7 +23,8 @@ extern "C" {
 #define CELL_PAD_MAX_CODES          64
 #define CELL_MAX_PADS               CELL_PAD_MAX_PORT_NUM
 
-/* Button bitmask constants (digital buttons, in button[2] low word) */
+/* Flattened digital button flags used by this host backend. cellPadGetData
+ * splits these across the PS3 digital1/digital2 words. */
 #define CELL_PAD_CTRL_SELECT        (1 << 0)
 #define CELL_PAD_CTRL_L3            (1 << 1)
 #define CELL_PAD_CTRL_R3            (1 << 2)
@@ -41,8 +42,8 @@ extern "C" {
 #define CELL_PAD_CTRL_CROSS         (1 << 14)
 #define CELL_PAD_CTRL_SQUARE        (1 << 15)
 
-/* PS button (in button[3] high byte) */
-#define CELL_PAD_CTRL_PS            (1 << 0)
+/* PS button is bit 8 of the digital1 word (button[2]). */
+#define CELL_PAD_CTRL_PS            (1 << 8)
 
 /* Port setting flags */
 #define CELL_PAD_SETTING_PRESS_ON       (1 << 1)
@@ -70,8 +71,8 @@ extern "C" {
 /* Standard data lengths */
 #define CELL_PAD_LEN_NO_CHANGE          0
 #define CELL_PAD_LEN_CHANGE_DEFAULT     8
-#define CELL_PAD_LEN_CHANGE_PRESS_ON    24
-#define CELL_PAD_LEN_CHANGE_SENSOR_ON   28
+#define CELL_PAD_LEN_CHANGE_PRESS_ON    20
+#define CELL_PAD_LEN_CHANGE_SENSOR_ON   24
 
 /* Pressure-sensitive button offsets in button[] array */
 #define CELL_PAD_BTN_OFFSET_DIGITAL1    2
@@ -110,10 +111,10 @@ extern "C" {
  * CellPadData -- returned by cellPadGetData.
  *
  * Layout of the button[] array (each element is u16):
- *   [0] = data length (number of valid entries following)
- *   [1] = reserved
- *   [2] = digital buttons bitmask (CELL_PAD_CTRL_*)
- *   [3] = digital buttons bitmask continued (PS button, etc.)
+ *   [0] = reserved
+ *   [1] = mode and packet-length nibble
+ *   [2] = digital1 mask (low byte) plus PS button in bit 8
+ *   [3] = digital2 mask (L2/R2/L1/R1 and face buttons)
  *   [4] = right analog stick X (0-255, center=128)
  *   [5] = right analog stick Y (0-255, center=128)
  *   [6] = left  analog stick X (0-255, center=128)
@@ -122,7 +123,7 @@ extern "C" {
  *   [20..23] = sensor data (accel X, Y, Z, gyro)
  */
 typedef struct CellPadData {
-    s32 len;                          /* number of valid button entries */
+    s32 len;                          /* 8 default, 20 pressure, 24 sensor mode */
     u16 button[CELL_PAD_MAX_CODES];   /* button/analog/sensor data */
 } CellPadData;
 

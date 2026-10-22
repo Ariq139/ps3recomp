@@ -55,7 +55,7 @@ extern u32 ppu_vm_size;
  * target rather than destroying a live one. */
 #define ENG_MAX_SURFACE_DIM 8192u
 
-#define ENG_VP_CB_BYTES    ((RSX_DSP_NUM_CONSTANTS + 2) * 16u)
+#define ENG_VP_CB_BYTES    ((RSX_DSP_NUM_CONSTANTS + 3) * 16u)
 #define ENG_FP_MAX_BYTES   0x10000u
 
 #define M_ALPHA_TEST_ENABLE   0x0304
@@ -88,6 +88,8 @@ extern u32 ppu_vm_size;
 #define M_DEPTH_WRITE         0x0A70
 #define M_DEPTH_TEST_ENABLE   0x0A74
 #define M_ZSTENCIL_CLEAR      0x1D8C
+#define M_SHADE_MODE          0x0368
+#define M_TWO_SIDE_LIGHT_EN   0x142C
 
 /* ---- module state -------------------------------------------------------- */
 
@@ -218,6 +220,9 @@ static struct {
     const u8* inl;
     u32 inl_bytes;
     u32 inline_dropped_at_begin;
+    /* RPCS3 immediate-draw indices from ARRAY_ELEMENT16/32. */
+    const u32* inline_indices;
+    u32 inline_index_count;
 } dc;
 
 /* ---- guest memory -------------------------------------------------------- */
@@ -280,6 +285,8 @@ void rsx_draw_engine_decode_render_state(const rsx_dispatch* rsx,
     rs->cull_enable = rsx_dsp_reg(rsx, 0x183C) & 1;
     rs->cull_face   = rsx_dsp_reg(rsx, 0x1830);
     rs->front_face  = rsx_dsp_reg(rsx, 0x1834);
+    rs->flat_shading = rsx_dsp_reg(rsx, M_SHADE_MODE) == CELL_GCM_FLAT;
+    rs->two_sided_lighting = rsx_dsp_reg(rsx, M_TWO_SIDE_LIGHT_EN) != 0;
     /* The RAW register: a game-written 0 is a real "write no colour channel"
      * (a depth-prime pass), and rsx_dispatch_init seeds the nv40 reset value
      * so never-written reads as all-on. */
@@ -324,6 +331,8 @@ u64 rsx_draw_engine_hash_render_state(const rsx_be_render_state* rs, u64 hash)
     ENG_HASH_FIELD(cull_enable);
     ENG_HASH_FIELD(cull_face);
     ENG_HASH_FIELD(front_face);
+    ENG_HASH_FIELD(flat_shading);
+    ENG_HASH_FIELD(two_sided_lighting);
     ENG_HASH_FIELD(color_mask);
     ENG_HASH_FIELD(color_mask_mrt);
     ENG_HASH_FIELD(blend_mrt);
@@ -356,6 +365,22 @@ u32 rsx_draw_engine_topology_index_count(u32 primitive, u32 source_refs,
 {
     const u32 segments = cut_count + 1;
     switch (primitive) {
+    case RSX_PRIMITIVE_LINES:
+    case RSX_PRIMITIVE_LINE_STRIP:
+    case RSX_PRIMITIVE_LINE_LOOP: {
+        u32 total = 0;
+        for (u32 s = 0; s < segments; s++) {
+            u32 begin, count;
+            rsx_restart_segment_bounds(cuts, cut_count, source_refs, s,
+                                       &begin, &count);
+            (void)begin;
+            if (primitive == RSX_PRIMITIVE_LINES)
+                total += count - count % 2u;
+            else if (count >= 2)
+                total += (primitive == RSX_PRIMITIVE_LINE_LOOP ? count : count - 1u) * 2u;
+        }
+        return total;
+    }
     case RSX_PRIMITIVE_TRIANGLES:
         return source_refs - source_refs % 3u;
     case RSX_PRIMITIVE_TRIANGLE_STRIP:
@@ -404,6 +429,29 @@ void rsx_draw_engine_write_topology_indices(u32 primitive, u32 source_refs,
     u32 write = 0;
     const u32 segments = cut_count + 1;
     switch (primitive) {
+    case RSX_PRIMITIVE_LINES:
+    case RSX_PRIMITIVE_LINE_STRIP:
+    case RSX_PRIMITIVE_LINE_LOOP:
+        for (u32 s = 0; s < segments; s++) {
+            u32 begin, count;
+            rsx_restart_segment_bounds(cuts, cut_count, source_refs, s,
+                                       &begin, &count);
+            if (primitive == RSX_PRIMITIVE_LINES) {
+                count -= count % 2u;
+                for (u32 i = 0; i < count; i += 2) {
+                    indices[write++] = eng_topology_vertex(occurrence_to_unique, begin + i);
+                    indices[write++] = eng_topology_vertex(occurrence_to_unique, begin + i + 1u);
+                }
+            } else if (count >= 2) {
+                const u32 line_count = primitive == RSX_PRIMITIVE_LINE_LOOP ? count : count - 1u;
+                for (u32 i = 0; i < line_count; i++) {
+                    indices[write++] = eng_topology_vertex(occurrence_to_unique, begin + i);
+                    indices[write++] = eng_topology_vertex(
+                        occurrence_to_unique, begin + ((i + 1u) % count));
+                }
+            }
+        }
+        break;
     case RSX_PRIMITIVE_TRIANGLES: {
         const u32 count = source_refs - source_refs % 3u;
         for (u32 o = 0; o < count; o++)
@@ -486,8 +534,16 @@ void rsx_draw_engine_write_topology_indices(u32 primitive, u32 source_refs,
  * engine, whose own expansion stops at quads. Quad strips and polygons are
  * this engine's, so their two cases are decided here rather than in the
  * shared helper, which the vendored rsx_live_draw.c also calls. */
-static int eng_topology_rebuild(u32 primitive, int refs_remapped, int* indexed)
+static int eng_topology_rebuild(u32 primitive, int refs_remapped,
+                                int flat_shading, int* indexed)
 {
+    if (flat_shading &&
+        (primitive == RSX_PRIMITIVE_LINES ||
+         primitive == RSX_PRIMITIVE_LINE_STRIP ||
+         primitive == RSX_PRIMITIVE_LINE_LOOP)) {
+        *indexed = 1;
+        return 1;
+    }
     if (primitive == RSX_PRIMITIVE_QUAD_STRIP ||
         primitive == RSX_PRIMITIVE_POLYGON) {
         (void)refs_remapped;
@@ -1495,6 +1551,7 @@ static const char* const kEngFixedVS =
 "};\n"
 "struct VSOutput {\n"
 "    float4 pos:SV_Position; float4 col0:COLOR0; float4 col1:COLOR1;\n"
+"    float4 col2:COLOR2; float4 col3:COLOR3;\n"
 "    float4 fog:FOG;\n"
 "    float4 t0:TEXCOORD0; float4 t1:TEXCOORD1; float4 t2:TEXCOORD2; float4 t3:TEXCOORD3;\n"
 "    float4 t4:TEXCOORD4; float4 t5:TEXCOORD5; float4 t6:TEXCOORD6; float4 t7:TEXCOORD7;\n"
@@ -1504,6 +1561,7 @@ static const char* const kEngFixedVS =
 "    float4 vp_c[512];\n"
 "    float4 vp_posscale;\n"
 "    float4 vp_posoffset;\n"
+"    uint transform_branch_bits;\n"
 "};\n"
 "VSOutput main(VSInput input) {\n"
 "    float4 _p = float4(dot(vp_c[0], input.a0), dot(vp_c[1], input.a0),\n"
@@ -1513,7 +1571,8 @@ static const char* const kEngFixedVS =
 "    if (_m == 0.0) _p = input.a0;\n"
 "    VSOutput Out;\n"
 "    Out.pos = float4(_p.xyz * vp_posscale.xyz + _p.w * vp_posoffset.xyz, _p.w);\n"
-"    Out.col0 = input.a3; Out.col1 = float4(0,0,0,1); Out.fog = (float4)0;\n"
+"    Out.col0 = input.a3; Out.col1 = float4(0,0,0,1);\n"
+"    Out.col2 = Out.col0; Out.col3 = Out.col1; Out.fog = (float4)0;\n"
 "    Out.t0 = input.a8; Out.t1 = (float4)0; Out.t2 = (float4)0; Out.t3 = (float4)0;\n"
 "    Out.t4 = (float4)0; Out.t5 = (float4)0; Out.t6 = (float4)0; Out.t7 = (float4)0;\n"
 "    Out.t8 = (float4)0; Out.t9 = (float4)0;\n"
@@ -1523,11 +1582,54 @@ static const char* const kEngFixedVS =
 static const char* const kEngFixedPS =
 "struct PSInput {\n"
 "    float4 position : SV_POSITION; float4 col0 : COLOR0; float4 col1 : COLOR1;\n"
-"    float4 fog : FOG;\n"
+"    float4 col2 : COLOR2; float4 col3 : COLOR3; float4 fog : FOG;\n"
 "    float4 tc0:TEXCOORD0; float4 tc1:TEXCOORD1; float4 tc2:TEXCOORD2; float4 tc3:TEXCOORD3;\n"
 "    float4 tc4:TEXCOORD4; float4 tc5:TEXCOORD5; float4 tc6:TEXCOORD6; float4 tc7:TEXCOORD7;\n"
+"    bool is_front_face : SV_IsFrontFace;\n"
 "};\n"
-"float4 main(PSInput input) : SV_TARGET { return input.col0; }\n";
+"float4 main(PSInput input) : SV_TARGET { return input.is_front_face ? input.col0 : input.col2; }\n";
+
+/* HLSL/D3D use the first vertex as the flat-shading source. The RSX and
+ * RPCS3's configured Vulkan/GL paths use the last vertex, so triangle indices
+ * are cyclically rotated at draw time and these varyings are made flat. */
+static int eng_hlsl_flatten_color_varyings(char* source, size_t capacity)
+{
+    static const char* const fields[] = {
+        "float4 col0", "float4 col1", "float4 col2", "float4 col3"
+    };
+    static const char prefix[] = "nointerpolation ";
+    for (u32 i = 0; i < sizeof(fields) / sizeof(fields[0]); i++) {
+        char* field = strstr(source, fields[i]);
+        if (!field) return 0;
+        if (field >= source + sizeof(prefix) - 1 &&
+            memcmp(field - (sizeof(prefix) - 1), prefix,
+                   sizeof(prefix) - 1) == 0)
+            continue;
+        const size_t used = strlen(source);
+        const size_t prefix_len = sizeof(prefix) - 1;
+        if (used + prefix_len + 1 > capacity) return 0;
+        memmove(field + prefix_len, field, used - (size_t)(field - source) + 1);
+        memcpy(field, prefix, prefix_len);
+    }
+    return 1;
+}
+
+static int eng_hlsl_replace_all(char* source, size_t capacity,
+                               const char* from, const char* to)
+{
+    const size_t from_len = strlen(from);
+    const size_t to_len = strlen(to);
+    char* pos = source;
+    while ((pos = strstr(pos, from)) != NULL) {
+        const size_t used = strlen(source);
+        if (used - from_len + to_len + 1 > capacity) return 0;
+        memmove(pos + to_len, pos + from_len,
+                used - (size_t)(pos - source) - from_len + 1);
+        memcpy(pos, to, to_len);
+        pos += to_len;
+    }
+    return 1;
+}
 
 /* The texture units a translated pixel program samples. Every sampling call
  * the decompiler emits names its unit's sampler, rsx_samp[N], whatever the
@@ -1744,6 +1846,20 @@ static u32 eng_pipeline_get(const rsx_vertex_layout_plan* layout,
             rsx_fp_apply_alpha_test_buffered(s_ps_hlsl, sizeof s_ps_hlsl,
                                              rs->alpha_func) < 0)
             fi = -1;
+        if (fi > 0 && rs->two_sided_lighting &&
+            (!eng_hlsl_replace_all(s_ps_hlsl, sizeof s_ps_hlsl,
+                                   "input.col0",
+                                   "(input.is_front_face ? input.col0 : input.col2)") ||
+             !eng_hlsl_replace_all(s_ps_hlsl, sizeof s_ps_hlsl,
+                                   "input.col1",
+                                   "(input.is_front_face ? input.col1 : input.col3)")))
+            fi = -1;
+    }
+    if (rs->flat_shading &&
+        (!eng_hlsl_flatten_color_varyings(s_vs_hlsl, sizeof s_vs_hlsl) ||
+         !eng_hlsl_flatten_color_varyings(s_ps_hlsl, sizeof s_ps_hlsl))) {
+        fprintf(stderr, "[rsx engine] flat-shading color varyings were not found\n");
+        vi = fi = -1;
     }
     if (vi > 0 && fi > 0)
         handle = g.be->pipeline_create(g.be->user, s_vs_hlsl, s_ps_hlsl, rs,
@@ -1806,11 +1922,13 @@ static void dc_reset(void)
 {
     dc.n_arr = dc.n_idx = dc.n_packets = 0;
     dc.n_refs = dc.n_source_refs = dc.n_verts = dc.n_cuts = 0;
+    dc.n_immediate = 0;
     dc.refs_remapped = 0;
     dc.fetch_ok = 1;
     dc.inl = NULL;
     dc.inl_bytes = 0;
-    dc.n_immediate = 0;
+    dc.inline_indices = NULL;
+    dc.inline_index_count = 0;
 }
 
 static int dc_push_ref(u32 vertex_id, u32 base_index)
@@ -1876,13 +1994,15 @@ static void dc_fetch(const rsx_vertex_layout_plan* layout, int allow_remap)
         for (u32 i = 0; i < dc.arr[b].count && dc.fetch_ok; i++)
             if (!dc_push_ref(dc.arr[b].first + i, 0)) dc.fetch_ok = 0;
 
-    if (dc.n_idx && dc.fetch_ok) {
+    if ((dc.n_idx || dc.inline_index_count) && dc.fetch_ok) {
         const u32 base_index = rsx_dsp_vertex_data_base_index(&g.rsx);
         rsx_dsp_index_array ia;
         rsx_dsp_get_index_array(&g.rsx, &ia);
         const u32 esz = ia.is_u32 ? 4u : 2u;
         const int restart_en = rsx_dsp_restart_index_enabled(&g.rsx, ia.is_u32);
         const u32 restart_val = rsx_dsp_restart_index(&g.rsx);
+        const int immediate_restart_en =
+            rsx_dsp_restart_index_enabled(&g.rsx, 1);
         /* The index array's location field is a DMA selector, not the
          * rsx_dsp location enum: 0 selects local memory. */
         const u32 ia_loc = ia.location ? RSX_LOCATION_MAIN : RSX_LOCATION_LOCAL;
@@ -1910,6 +2030,19 @@ static void dc_fetch(const rsx_vertex_layout_plan* layout, int allow_remap)
                 }
                 if (!dc_push_ref(index, base_index)) dc.fetch_ok = 0;
             }
+        }
+        /* RPCS3_REFERENCE_REVIEWED: immediate draws stage these values as
+         * u32 indices even if their source was ARRAY_ELEMENT16. */
+        for (u32 i = 0; i < dc.inline_index_count && dc.fetch_ok; i++) {
+            const u32 index = dc.inline_indices[i];
+            if (immediate_restart_en && index == restart_val) {
+                if (!rsx_restart_cut_push(&dc.cuts, &dc.n_cuts,
+                                          &dc.cap_cuts, dc.n_refs))
+                    dc.fetch_ok = 0;
+                continue;
+            }
+            if (!dc_push_ref(index, base_index))
+                dc.fetch_ok = 0;
         }
     }
     if (!dc.fetch_ok) return;
@@ -2012,6 +2145,16 @@ static void sink_inline_array(void* user, const rsx_dispatch* r,
     dc.arr[dc.n_arr].first = 0;
     dc.arr[dc.n_arr].count = bytes / stride;
     dc.n_arr++;
+}
+
+static void sink_inline_indices(void* user, const rsx_dispatch* r,
+                                const u32* indices, u32 count)
+{
+    (void)user; (void)r;
+    if (!indices || !count) return;
+    dc.inline_indices = indices;
+    dc.inline_index_count = count;
+    dc.n_packets++;
 }
 
 static void sink_draw_index(void* user, const rsx_dispatch* r, u32 first, u32 count)
@@ -2537,6 +2680,8 @@ static void sink_end(void* user, const rsx_dispatch* r)
                           r->inline_dropped != dc.inline_dropped_at_begin)) return;
 
     const u32 prim = g.rsx.current_primitive;
+    const int flat_shading =
+        rsx_dsp_reg(&g.rsx, M_SHADE_MODE) == CELL_GCM_FLAT;
     /* Everything that becomes triangles -- lists, strips, fans, quads, quad
      * strips and polygons -- is REBUILT into one triangle list through an
      * index buffer. A host strip topology cannot express a restart cut, which
@@ -2547,11 +2692,16 @@ static void sink_end(void* user, const rsx_dispatch* r)
      * than drawn as something else. */
     rsx_topology topology = RSX_TOPOLOGY_TRIANGLES;
     int scratch = 0;
-    const int rebuild = eng_topology_rebuild(prim, 0, &scratch) != 0;
+    const int rebuild = eng_topology_rebuild(prim, 0, flat_shading, &scratch) != 0;
     if (!rebuild) {
         if (rsx_primitive_needs_expansion(prim)) return;
         topology = rsx_primitive_topology(prim);
         if (topology == RSX_TOPOLOGY_UNSUPPORTED) return;
+    } else if (flat_shading &&
+               (prim == RSX_PRIMITIVE_LINES ||
+                prim == RSX_PRIMITIVE_LINE_STRIP ||
+                prim == RSX_PRIMITIVE_LINE_LOOP)) {
+        topology = RSX_TOPOLOGY_LINES;
     }
 
     rsx_vertex_layout_plan layout;
@@ -2562,11 +2712,16 @@ static void sink_end(void* user, const rsx_dispatch* r)
     int indexed = 0;
     u32 n_draw = dc.n_source_refs;
     if (rebuild) {
-        if (!eng_topology_rebuild(prim, dc.refs_remapped, &indexed)) return;
-        n_draw = indexed
-            ? rsx_draw_engine_topology_index_count(prim, dc.n_source_refs,
-                                                   dc.cuts, dc.n_cuts)
-            : dc.n_source_refs - dc.n_source_refs % 3u;
+        if (!eng_topology_rebuild(prim, dc.refs_remapped, flat_shading,
+                                  &indexed)) return;
+        if (indexed) {
+            n_draw = rsx_draw_engine_topology_index_count(prim,
+                                                           dc.n_source_refs,
+                                                           dc.cuts,
+                                                           dc.n_cuts);
+        } else {
+            n_draw = dc.n_source_refs - dc.n_source_refs % 3u;
+        }
     }
     if (!n_draw) return;
 
@@ -2615,12 +2770,33 @@ static void sink_end(void* user, const rsx_dispatch* r)
     const u32 vtex_mask = sink_bind_vertex_textures(eng_vtex_mask(), vtextures,
                                                     vsamplers);
 
+    /* Every triangle primitive is rebuilt as a list. Force an index buffer
+     * for a non-remapped list too, so the last RSX provoking vertex can move
+     * to D3D's first-vertex position without changing triangle winding. */
+    if (rs.flat_shading && rebuild)
+        indexed = 1;
     if (indexed) {
         if (!dc_reserve_indices(n_draw)) return;
         rsx_draw_engine_write_topology_indices(
             prim, dc.n_source_refs, dc.cuts, dc.n_cuts,
             dc.refs_remapped ? dc.ref_remap.occurrence_to_unique : NULL,
             g.indices);
+        if (rs.flat_shading && rebuild) {
+            if (topology == RSX_TOPOLOGY_LINES) {
+                for (u32 i = 0; i + 1 < n_draw; i += 2) {
+                    const u32 provoking = g.indices[i + 1];
+                    g.indices[i + 1] = g.indices[i];
+                    g.indices[i] = provoking;
+                }
+            } else {
+                for (u32 i = 0; i + 2 < n_draw; i += 3) {
+                    const u32 provoking = g.indices[i + 2];
+                    g.indices[i + 2] = g.indices[i + 1];
+                    g.indices[i + 1] = g.indices[i];
+                    g.indices[i] = provoking;
+                }
+            }
+        }
     }
 
     /* The transform constant block, then the viewport epilogue the vertex
@@ -2643,6 +2819,9 @@ static void sink_end(void* user, const rsx_dispatch* r)
     }
     memcpy(g.vp_cb, g.rsx.constants, RSX_DSP_NUM_CONSTANTS * 16u);
     memcpy(g.vp_cb + RSX_DSP_NUM_CONSTANTS * 16u, xf, sizeof xf);
+    { const u32 branch_bits = rsx_dsp_reg(&g.rsx, 0x1FF8u);
+      memcpy(g.vp_cb + (RSX_DSP_NUM_CONSTANTS + 2u) * 16u,
+             &branch_bits, sizeof(branch_bits)); }
 
     /* The buffered fragment constants, then fp_alpha: the layout
      * rsx_fp_decompile_buffered_ex compiled the shader against. */
@@ -2897,7 +3076,7 @@ int rsx_draw_engine_init(u32 width, u32 height)
     sink.draw_arrays      = sink_draw_arrays;
     sink.draw_index_array = sink_draw_index;
     sink.inline_array     = sink_inline_array;
-    sink.immediate_vertex = sink_immediate_vertex;
+    sink.inline_index_array = sink_inline_indices;
     sink.flip             = sink_flip;
     rsx_dispatch_init(&g.rsx, &sink);
     g.ready = 1;

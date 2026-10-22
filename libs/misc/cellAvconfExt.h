@@ -85,6 +85,9 @@ s32 cellAudioOutSetCopyControl(u32 audioOut, u32 control);
 s32 cellAudioOutGetNumberOfDevice(u32 audioOut);
 
 /* Video output extended queries */
+#define CELL_VIDEO_OUT_ERROR_ILLEGAL_PARAMETER        ((s32)0x8002B222u)
+#define CELL_VIDEO_OUT_ERROR_PARAMETER_OUT_OF_RANGE   ((s32)0x8002B223u)
+#define CELL_VIDEO_OUT_ERROR_UNSUPPORTED_VIDEO_OUT    ((s32)0x8002B225u)
 s32 cellVideoOutGetGamma(u32 videoOut, float* gamma);
 s32 cellVideoOutSetGamma(u32 videoOut, float gamma);
 void avconf_register_ctx(void);

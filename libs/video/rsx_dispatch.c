@@ -24,6 +24,7 @@
  *     +0x08 TEX_WRAP     +0x0C TEX_ENABLE (control0, enable = bit 31)
  *     +0x10 TEX_SWIZZLE (component remap)  +0x14 TEX_FILTER
  *     +0x18 TEX_NPOT_SIZE height[0:15] width[16:31]  +0x1C TEX_BORDER_COLOR
+ *   0x0B00+i*4 fragment texture CONTROL2 (one contiguous word per unit)
  *   0x1738 VERTEX_DATA_BASE_OFFSET  0x173C VB_ELEMENT_BASE
  *   0x1740+i*4 VTXFMT[i] type[0:3] size[4:7] stride[8:15] frequency[16:31]
  *   0x1808 VERTEX_BEGIN_END  arg = primitive, 0 = end
@@ -41,6 +42,8 @@
  */
 
 #include "rsx_dispatch.h"
+#include "cellGcmSys.h"
+#include "rsx_commands.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -75,7 +78,13 @@
 #define M_VERTEX_DATA_BASE      0x1738
 #define M_VB_ELEMENT_BASE       0x173C
 #define M_VTXFMT                0x1740
+/* RPCS3_REFERENCE_REVIEWED: immediate element behavior follows
+ * NV47/HW/nv4097.cpp::set_array_element16/32 and
+ * Core/RSXDrawCommands.cpp::append_array_element/get_push_buffer_index_count.
+ * Only behavior was referenced; no RPCS3 function body was copied. */
 #define M_VERTEX_BEGIN_END      0x1808
+#define M_ARRAY_ELEMENT16       0x180C
+#define M_ARRAY_ELEMENT32       0x1810
 #define M_VB_VERTEX_BATCH       0x1814
 #define M_INLINE_ARRAY          0x1818
 #define M_IDXBUF_OFFSET         0x181C
@@ -83,6 +92,7 @@
 #define M_VB_INDEX_BATCH        0x1824
 #define M_TEX_SIZE1             0x1840  /* + unit * 4  (control3)           */
 #define M_TEX_OFFSET            0x1A00  /* + unit * 0x20 (8-word unit block) */
+#define M_TEX_CONTROL2          0x0B00  /* + unit * 4                       */
 #define M_VERTEX_TEXTURE        0x0900  /* + unit * 0x20 (8-word unit block) */
 #define M_FP_ACTIVE_PROGRAM     0x08E4  /* offset | dma-context [1:0]        */
 #define M_FP_CONTROL            0x1D60
@@ -94,6 +104,7 @@
 #define M_VP_UPLOAD_FROM_ID     0x1E9C
 #define M_VP_UPLOAD_CONST_ID    0x1EFC
 #define M_VP_UPLOAD_CONST       0x1F00
+#define M_RENDER_ENABLE         0x1E98
 #define M_GCM_FLIP_HEAD_0       0xE920
 #define M_GCM_FLIP_HEAD_1       0xE924
 #define M_GCM_DRIVER_FLIP       0xE944
@@ -118,7 +129,10 @@
 #define M_BLEND_FUNC_SRC        0x0314
 #define M_BLEND_FUNC_DST        0x0318
 #define M_COLOR_MASK            0x0324
+#define M_MRT_BLEND_ENABLE      0x036C
 #define M_MRT_COLOR_MASK        0x0370
+#define M_SHADE_MODE            0x0368
+#define M_TWO_SIDE_LIGHT_EN     0x142C
 #define M_DEPTH_FUNC            0x0A6C
 #define M_DEPTH_WRITE_ENABLE    0x0A70
 #define M_DEPTH_TEST_ENABLE     0x0A74
@@ -144,6 +158,19 @@ static void mark_class(rsx_dispatch* rsx, u32 method, u32 count, u8 klass)
         rsx->klass[(method >> 2) + i] = klass;
 }
 
+static int conditional_render_passes(const rsx_dispatch* rsx)
+{
+    u32 value;
+    if (!rsx->conditional_render_enabled)
+        return 1;
+    /* RPCS3 marks the predicate failed when the report value is zero. If an
+     * offset is outside ps3recomp's emulated report array, fail open: the
+     * method cannot be evaluated and must not erase otherwise valid draws. */
+    if (!cellGcmGetReportValueAtOffset(rsx->conditional_render_offset, &value))
+        return 1;
+    return value != 0;
+}
+
 void rsx_dispatch_init(rsx_dispatch* rsx, const rsx_dispatch_sink* sink)
 {
     memset(rsx, 0, sizeof(*rsx));
@@ -159,6 +186,7 @@ void rsx_dispatch_init(rsx_dispatch* rsx, const rsx_dispatch_sink* sink)
      * the seed, consumers substituted mask=ALL for 0 and force-wrote the
      * depth-only pass's garbage FP output (the blue-character class). */
     rsx->regs[M_COLOR_MASK >> 2] = 0x01010101u;
+    rsx->regs[0x1D7C >> 2] = 0xFFFF0000u;
 
     /* NV40 reset state is counter-clockwise front winding.  Leaving this
      * register zero made a live stream that relied on the hardware default
@@ -166,18 +194,28 @@ void rsx_dispatch_init(rsx_dispatch* rsx, const rsx_dispatch_sink* sink)
      * because its seeded register image already contained 0x901. */
     rsx->regs[M_FRONT_FACE >> 2] = 0x0901u;
 
+    /* RPCS3's NV4097 reset image seeds all fragment TEXTURE_CONTROL2 words
+     * to 0x2DC8. Keep the dispatch register file's default identical. */
+    for (u32 i = 0; i < RSX_DSP_NUM_TEXTURES; i++)
+        rsx->regs[(M_TEX_CONTROL2 + i * 4) >> 2] = 0x2DC8u;
+
     /* NV40 reset ZSTENCIL_CLEAR_VALUE (Z24S8: depth24<<8 | stencil8) is
      * 0xFFFFFF00 = depth 1.0, stencil 0 (RPCS3 rsx_methods.cpp reset image
      * as numbering oracle). Seeded so a raw register read is trustworthy for
      * clear consumers, mirroring COLOR_MASK/FRONT_FACE above. */
     rsx->regs[0x1D8C >> 2] = 0xFFFFFF00u;
 
+    /* NV40 reset shade mode is smooth. */
+    rsx->regs[M_SHADE_MODE >> 2] = CELL_GCM_SMOOTH;
+
     /* Execution methods */
     mark_class(rsx, M_VERTEX_BEGIN_END,  1, RSX_DSP_CLASS_EXEC);
+    mark_class(rsx, M_ARRAY_ELEMENT16,   2, RSX_DSP_CLASS_EXEC);
     mark_class(rsx, M_VB_VERTEX_BATCH,   1, RSX_DSP_CLASS_EXEC);
     mark_class(rsx, M_INLINE_ARRAY,      1, RSX_DSP_CLASS_EXEC);
     mark_class(rsx, M_VB_INDEX_BATCH,    1, RSX_DSP_CLASS_EXEC);
     mark_class(rsx, M_CLEAR_BUFFERS,     1, RSX_DSP_CLASS_EXEC);
+    mark_class(rsx, M_RENDER_ENABLE,     1, RSX_DSP_CLASS_EXEC);
     mark_class(rsx, M_VP_UPLOAD_INST,   32, RSX_DSP_CLASS_EXEC);
     mark_class(rsx, M_VP_UPLOAD_CONST,  32, RSX_DSP_CLASS_EXEC);
     mark_class(rsx, M_GCM_FLIP_HEAD_0,   1, RSX_DSP_CLASS_EXEC);
@@ -198,6 +236,7 @@ void rsx_dispatch_init(rsx_dispatch* rsx, const rsx_dispatch_sink* sink)
     mark_class(rsx, M_IDXBUF_OFFSET,     2, RSX_DSP_CLASS_STATE);
     mark_class(rsx, M_TEX_SIZE1,        16, RSX_DSP_CLASS_STATE);
     mark_class(rsx, M_TEX_OFFSET, RSX_DSP_NUM_TEXTURES * 8, RSX_DSP_CLASS_STATE);
+    mark_class(rsx, M_TEX_CONTROL2, RSX_DSP_NUM_TEXTURES, RSX_DSP_CLASS_STATE);
     mark_class(rsx, M_CLEAR_DEPTH_VALUE, 2, RSX_DSP_CLASS_STATE);
     mark_class(rsx, M_VP_UPLOAD_FROM_ID, 1, RSX_DSP_CLASS_STATE);
     mark_class(rsx, M_RESTART_INDEX_ENABLE, 2, RSX_DSP_CLASS_STATE);
@@ -214,6 +253,9 @@ void rsx_dispatch_init(rsx_dispatch* rsx, const rsx_dispatch_sink* sink)
     mark_class(rsx, M_ALPHA_FUNC_ENABLE, 3, RSX_DSP_CLASS_STATE); /* ..FUNC_REF */
     mark_class(rsx, M_BLEND_FUNC_ENABLE, 5, RSX_DSP_CLASS_STATE); /* ..BLEND_EQUATION */
     mark_class(rsx, M_COLOR_MASK,        1, RSX_DSP_CLASS_STATE);
+    mark_class(rsx, M_SHADE_MODE,        1, RSX_DSP_CLASS_STATE);
+    mark_class(rsx, M_TWO_SIDE_LIGHT_EN, 1, RSX_DSP_CLASS_STATE);
+    mark_class(rsx, M_MRT_BLEND_ENABLE,  1, RSX_DSP_CLASS_STATE);
     mark_class(rsx, M_MRT_COLOR_MASK,    1, RSX_DSP_CLASS_STATE);
     mark_class(rsx, M_DEPTH_FUNC,        3, RSX_DSP_CLASS_STATE); /* ..TEST_ENABLE */
     mark_class(rsx, M_CULL_FACE,         1, RSX_DSP_CLASS_STATE);
@@ -228,6 +270,10 @@ void rsx_dispatch_init(rsx_dispatch* rsx, const rsx_dispatch_sink* sink)
      * each time). Classifying them EXEC removes them from the TODO count
      * without pretending they do anything. */
     mark_class(rsx, M_VTX_CACHE_INVALIDATE, 1, RSX_DSP_CLASS_EXEC);
+    mark_class(rsx, 0x1710, 1, RSX_DSP_CLASS_EXEC);
+    mark_class(rsx, 0x0B40, 10, RSX_DSP_CLASS_STATE);
+    mark_class(rsx, 0x1D7C, 1, RSX_DSP_CLASS_STATE);
+    mark_class(rsx, 0x1EF8, 1, RSX_DSP_CLASS_STATE);
     mark_class(rsx, M_NV4097_NOP,           1, RSX_DSP_CLASS_EXEC);
 }
 
@@ -321,6 +367,12 @@ void rsx_dispatch_method(rsx_dispatch* rsx, u32 method, u32 arg)
                     method, arg);
         return;
     }
+    /* Invalid shade-mode values are rejected like RPCS3's NV4097 handler;
+     * retain the previous register value instead of baking a bad PSO key. */
+    if (method == M_SHADE_MODE && arg != CELL_GCM_FLAT && arg != CELL_GCM_SMOOTH) {
+        rsx->seen[idx]++;
+        return;
+    }
     rsx->seen[idx]++;
     rsx->regs[idx] = arg;
     if ((method >= 0x1500 && method < 0x1A00) || (method >= 0x1E40 && method < 0x1E80) ||
@@ -367,6 +419,21 @@ void rsx_dispatch_method(rsx_dispatch* rsx, u32 method, u32 arg)
         return;
     }
 
+    if (method == M_RENDER_ENABLE) {
+        const u32 mode = arg >> 24;
+        if (mode == 1) {
+            rsx->conditional_render_enabled = 0;
+        } else if (mode == 2) {
+            const u32 offset = arg & 0x00FFFFFFu;
+            u32 ignored;
+            if (cellGcmGetReportValueAtOffset(offset, &ignored)) {
+                rsx->conditional_render_offset = offset;
+                rsx->conditional_render_enabled = 1;
+            }
+        }
+        return;
+    }
+
     switch (method) {
     case M_CLEAR_BUFFERS:
         if (rsx->sink.clear)
@@ -378,6 +445,9 @@ void rsx_dispatch_method(rsx_dispatch* rsx, u32 method, u32 arg)
             rsx->in_begin_end = 1;
             rsx->current_primitive = arg;
             rsx->inline_len = 0;
+            rsx->inline_index_count = 0;
+            rsx->inline_index_overflow = 0;
+            rsx->draw_command_seen = 0;
             if (rsx->sink.begin)
                 rsx->sink.begin(rsx->sink.user, rsx, arg);
         } else {
@@ -385,12 +455,54 @@ void rsx_dispatch_method(rsx_dispatch* rsx, u32 method, u32 arg)
             /* Hand an inline stream over BEFORE end: the sink reads end as
              * "draw what you have", so a batch delivered after it would be
              * drawn one primitive late, or not at all. */
-            if (rsx->inline_len && rsx->sink.inline_array)
+            if (rsx->inline_len && rsx->sink.inline_array &&
+                conditional_render_passes(rsx))
                 rsx->sink.inline_array(rsx->sink.user, rsx,
                                        rsx->inline_data, rsx->inline_len);
+            /* RPCS3 collects ARRAY_ELEMENT16/32 writes while inside
+             * BEGIN_END. If no explicit draw command selected another input
+             * stream, END turns those values into an immediate indexed draw;
+             * immediate indices are interpreted as u32 even when they came
+             * from ARRAY_ELEMENT16. */
+            if (rsx->inline_index_count && !rsx->draw_command_seen &&
+                !rsx->inline_len && rsx->sink.inline_index_array &&
+                conditional_render_passes(rsx))
+                rsx->sink.inline_index_array(
+                    rsx->sink.user, rsx, rsx->inline_indices,
+                    rsx->inline_index_count);
             rsx->inline_len = 0;
+            rsx->inline_index_count = 0;
+            rsx->inline_index_overflow = 0;
+            rsx->draw_command_seen = 0;
             if (rsx->sink.end)
                 rsx->sink.end(rsx->sink.user, rsx);
+        }
+        break;
+
+    case M_ARRAY_ELEMENT16:
+        if (rsx->in_begin_end && !rsx->inline_index_overflow) {
+            if (rsx->inline_index_count + 2u <=
+                RSX_DSP_MAX_INLINE_INDEX_ELEMENTS) {
+                rsx->inline_indices[rsx->inline_index_count++] = arg & 0xFFFFu;
+                rsx->inline_indices[rsx->inline_index_count++] = arg >> 16;
+            } else {
+                rsx->inline_index_count = 0;
+                rsx->inline_index_overflow = 1;
+                rsx->inline_index_dropped++;
+            }
+        }
+        break;
+
+    case M_ARRAY_ELEMENT32:
+        if (rsx->in_begin_end && !rsx->inline_index_overflow) {
+            if (rsx->inline_index_count <
+                RSX_DSP_MAX_INLINE_INDEX_ELEMENTS) {
+                rsx->inline_indices[rsx->inline_index_count++] = arg;
+            } else {
+                rsx->inline_index_count = 0;
+                rsx->inline_index_overflow = 1;
+                rsx->inline_index_dropped++;
+            }
         }
         break;
 
@@ -408,6 +520,7 @@ void rsx_dispatch_method(rsx_dispatch* rsx, u32 method, u32 arg)
      * carrying no vertices at all: the backend saw BEGIN/END with nothing
      * between them and counted an empty group. */
     case M_INLINE_ARRAY:
+        rsx->draw_command_seen = 1;
         if (rsx->inline_len + 4u <= RSX_DSP_INLINE_MAX_BYTES) {
             rsx->inline_data[rsx->inline_len + 0] = (u8)(arg >> 24);
             rsx->inline_data[rsx->inline_len + 1] = (u8)(arg >> 16);
@@ -423,13 +536,15 @@ void rsx_dispatch_method(rsx_dispatch* rsx, u32 method, u32 arg)
         break;
 
     case M_VB_VERTEX_BATCH:
-        if (rsx->sink.draw_arrays)
+        rsx->draw_command_seen = 1;
+        if (rsx->sink.draw_arrays && conditional_render_passes(rsx))
             rsx->sink.draw_arrays(rsx->sink.user, rsx,
                                   arg & 0xFFFFFF, (arg >> 24) + 1);
         break;
 
     case M_VB_INDEX_BATCH:
-        if (rsx->sink.draw_index_array)
+        rsx->draw_command_seen = 1;
+        if (rsx->sink.draw_index_array && conditional_render_passes(rsx))
             rsx->sink.draw_index_array(rsx->sink.user, rsx,
                                        arg & 0xFFFFFF, (arg >> 24) + 1);
         break;
@@ -547,6 +662,7 @@ void rsx_dsp_get_texture(const rsx_dispatch* rsx, u32 unit, rsx_dsp_texture* out
     out->mipmaps   = fmt >> 16;
     out->wrap      = rsx_dsp_reg(rsx, base + 0x08);
     out->control0  = rsx_dsp_reg(rsx, base + 0x0C);
+    out->control2  = rsx_dsp_reg(rsx, M_TEX_CONTROL2 + unit * 4);
     out->enabled   = out->control0 >> 31;
     out->remap     = rsx_dsp_reg(rsx, base + 0x10);
     out->filter    = rsx_dsp_reg(rsx, base + 0x14);

@@ -260,6 +260,7 @@ typedef struct spu_context {
     /* MFC tag completion mask and status */
     uint32_t mfc_tag_mask;
     uint32_t mfc_tag_status;
+    int spurs_job_services; /* Host job manager service table is installed. */
 
     /* Atomic reservation state (GETLLAR/PUTLLC lock-line semantics). Multiple
      * SPU kernel threads share a lock-free queue in main memory; PUTLLC must

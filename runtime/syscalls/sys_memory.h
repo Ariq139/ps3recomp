@@ -26,6 +26,31 @@ extern "C" {
 #define SYS_MEMORY_CONTAINER_MAX  16
 #define SYS_MMAPPER_SHARED_MAX    64
 
+/* Guest EA ranges used by the flat-memory allocator. Projects may override
+ * the primary window to match the address range their title validates. */
+#ifndef SYS_MEM_ALLOC_BASE
+#ifdef PS3RECOMP_SYS_MEM_ALLOC_BASE
+#define SYS_MEM_ALLOC_BASE          PS3RECOMP_SYS_MEM_ALLOC_BASE
+#else
+#define SYS_MEM_ALLOC_BASE          0x40000000u
+#endif
+#endif
+#ifndef SYS_MEM_ALLOC_END
+#ifdef PS3RECOMP_SYS_MEM_ALLOC_END
+#define SYS_MEM_ALLOC_END           PS3RECOMP_SYS_MEM_ALLOC_END
+#else
+#define SYS_MEM_ALLOC_END           0x50000000u
+#endif
+#endif
+/* The spill arena stays after sys_vm and stops before RSX local memory. */
+#define SYS_MEM_ALLOC_SPILL_BASE    0x70000000u
+#define SYS_MEM_ALLOC_SPILL_END     0xC0000000u
+
+#define SYS_MEM_ALLOC_KIND_NONE            0u
+#define SYS_MEM_ALLOC_KIND_MEMORY          1u
+#define SYS_MEM_ALLOC_KIND_MAPPER_ADDRESS  2u
+#define SYS_MEM_ALLOC_KIND_MAPPER_MEMORY  3u
+
 /* Allocation record */
 typedef struct sys_mem_alloc_info {
     int      active;
@@ -33,6 +58,7 @@ typedef struct sys_mem_alloc_info {
     uint32_t size;
     int32_t  container_id;  /* 0 = main pool */
     uint32_t page_size;     /* 0x100000 (1M) or 0x10000 (64K) from the alloc flags */
+    uint32_t kind;          /* SYS_MEM_ALLOC_KIND_* */
 } sys_mem_alloc_info;
 
 /* Container */
@@ -53,7 +79,17 @@ typedef struct sys_mmapper_shared_info {
 extern sys_mem_alloc_info       g_sys_mem_allocs[SYS_MEMORY_ALLOC_MAX];
 extern sys_mem_container_info   g_sys_mem_containers[SYS_MEMORY_CONTAINER_MAX];
 extern sys_mmapper_shared_info  g_sys_mmapper_shared[SYS_MMAPPER_SHARED_MAX];
-extern uint32_t                 g_sys_mem_bump_ptr;  /* bump allocator pointer */
+extern uint32_t                 g_sys_mem_bump_ptr;  /* high-water diagnostic */
+
+/* True when the complete guest range belongs to a currently active allocation. */
+int sys_memory_contains(uint32_t addr, uint32_t size);
+
+/* Internal HLE scratch allocations in the guest address space. These use the
+ * same tracked allocator as sys_memory_allocate but preserve the requested
+ * small alignment/size, for callback-scoped guest payloads. */
+int32_t ps3_guest_memory_alloc(uint32_t size, uint32_t alignment,
+                               uint32_t* out_addr);
+int32_t ps3_guest_memory_free(uint32_t addr);
 
 /* Syscall handlers */
 int64_t sys_memory_allocate(ppu_context* ctx);

@@ -25,6 +25,22 @@ extern "C" {
  */
 #define CELL_RTC_UNIX_EPOCH_OFFSET  62135596800ULL
 
+/* Return codes from the public cellRtc ABI. */
+#define CELL_RTC_ERROR_NOT_INITIALIZED      ((s32)0x80010601u)
+#define CELL_RTC_ERROR_INVALID_POINTER      ((s32)0x80010602u)
+#define CELL_RTC_ERROR_INVALID_VALUE        ((s32)0x80010603u)
+#define CELL_RTC_ERROR_INVALID_ARG          ((s32)0x80010604u)
+#define CELL_RTC_ERROR_NOT_SUPPORTED        ((s32)0x80010605u)
+#define CELL_RTC_ERROR_NO_CLOCK             ((s32)0x80010606u)
+#define CELL_RTC_ERROR_BAD_PARSE            ((s32)0x80010607u)
+#define CELL_RTC_ERROR_INVALID_YEAR         ((s32)0x80010621u)
+#define CELL_RTC_ERROR_INVALID_MONTH        ((s32)0x80010622u)
+#define CELL_RTC_ERROR_INVALID_DAY          ((s32)0x80010623u)
+#define CELL_RTC_ERROR_INVALID_HOUR         ((s32)0x80010624u)
+#define CELL_RTC_ERROR_INVALID_MINUTE       ((s32)0x80010625u)
+#define CELL_RTC_ERROR_INVALID_SECOND       ((s32)0x80010626u)
+#define CELL_RTC_ERROR_INVALID_MICROSECOND  ((s32)0x80010627u)
+
 /* ---------------------------------------------------------------------------
  * Structures
  * -----------------------------------------------------------------------*/
@@ -52,13 +68,36 @@ typedef CellRtcDateTime CellRtcTime;
 
 s32 cellRtcGetCurrentTick(CellRtcTick* pTick);
 
+s32 cellRtcGetCurrentClock(CellRtcDateTime* pClock, s32 iTimeZone);
+
 s32 cellRtcGetCurrentClockLocalTime(CellRtcDateTime* pClock);
 
 s32 cellRtcGetCurrentClockUtc(CellRtcDateTime* pClock);
 
-s32 cellRtcGetTime_t(const CellRtcTick* pTick, s64* pTime);
+s32 cellRtcGetTime_t(const CellRtcDateTime* pDateTime, s64* pTime);
 
-s32 cellRtcSetTime_t(CellRtcTick* pTick, s64 iTime);
+s32 cellRtcSetTime_t(CellRtcDateTime* pDateTime, u64 iTime);
+
+s32 cellRtcGetSystemTime(const CellRtcDateTime* pDateTime, s64* pTimeStamp);
+s32 cellRtcSetSystemTime(CellRtcDateTime* pDateTime, u64 iTime);
+s32 cellRtcGetWin32FileTime(const CellRtcDateTime* pDateTime, u64* pFileTime);
+s32 cellRtcSetWin32FileTime(CellRtcDateTime* pDateTime, u64 fileTime);
+s32 cellRtcGetDosTime(const CellRtcDateTime* pDateTime, u32* pDosTime);
+s32 cellRtcSetDosTime(CellRtcDateTime* pDateTime, u32 dosTime);
+s32 cellRtcGetCurrentSecureTick(CellRtcTick* pTick);
+s32 cellRtcSetCurrentSecureTick(const CellRtcTick* pTick);
+s32 cellRtcSetCurrentTick(const CellRtcTick* pTick);
+s32 cellRtcSetConf(s64 unk1, s64 unk2, u32 timezone, u32 summertime);
+s32 cellRtcGetTickResolution(void);
+s32 cellRtcIsLeapYear(s32 year);
+s32 cellRtcCheckValid(const CellRtcDateTime* pDateTime);
+s32 cellRtcCompareTick(const CellRtcTick* pTick0, const CellRtcTick* pTick1);
+s32 cellRtcParseDateTime(CellRtcTick* pTick, const char* pszDateTime);
+s32 cellRtcParseRfc3339(CellRtcTick* pTick, const char* pszDateTime);
+s32 cellRtcFormatRfc2822LocalTime(char* pszDateTime, const CellRtcTick* pTick);
+s32 cellRtcFormatRfc3339LocalTime(char* pszDateTime, const CellRtcTick* pTick);
+s32 cellRtcTickAddTicks(CellRtcTick* pTick0, const CellRtcTick* pTick1, s64 iAdd);
+s32 cellRtcTickAddWeeks(CellRtcTick* pTick0, const CellRtcTick* pTick1, s32 iAdd);
 
 s32 cellRtcTickAddYears(CellRtcTick* pTick0, const CellRtcTick* pTick1, s32 iAdd);
 s32 cellRtcTickAddMonths(CellRtcTick* pTick0, const CellRtcTick* pTick1, s32 iAdd);

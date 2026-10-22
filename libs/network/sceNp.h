@@ -9,6 +9,7 @@
 
 #include "ps3emu/ps3types.h"
 #include "ps3emu/error_codes.h"
+#include "../system/cellRtc.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -30,6 +31,12 @@ extern "C" {
 #define SCE_NP_ERROR_OFFLINE                    0x8002aa0c
 #define SCE_NP_ERROR_INTERNAL                   0x8002aaff
 
+/* NPDRM errors used by sceNpDrmIsAvailable2. */
+#define SCE_NP_DRM_ERROR_INVALID_PARAM           0x80029502
+#define SCE_NP_DRM_ERROR_NO_ENTITLEMENT          0x80029513
+#define SCE_NP_DRM_ERROR_BAD_FORMAT              0x80029515
+#define SCE_NP_DRM_ERROR_LICENSE_NOT_FOUND       0x80029521
+
 /* ---------------------------------------------------------------------------
  * Constants
  * -----------------------------------------------------------------------*/
@@ -40,6 +47,7 @@ extern "C" {
 #define SCE_NP_COMMUNICATION_ID_MAX_LENGTH      9
 #define SCE_NP_COMMUNICATION_PASSPHRASE_SIZE    128
 #define SCE_NP_COMMUNICATION_SIGNATURE_SIZE     160
+#define SCE_NP_ENTITLEMENT_ID_SIZE              32
 
 /* Country codes */
 #define SCE_NP_LANG_ENGLISH                     1
@@ -101,6 +109,7 @@ typedef struct SceNpMyLanguages {
 
 s32 sceNpInit(u32 poolSize, void* poolPtr);
 s32 sceNpTerm(void);
+s32 sceNpDrmIsAvailable2(const u8* klicensee, const char* drmPath);
 
 #define SCE_NP_COMMUNITY_ERROR_ALREADY_INITIALIZED 0x8002a101
 #define SCE_NP_COMMUNITY_ERROR_NOT_INITIALIZED     0x8002a102
@@ -126,12 +135,20 @@ s32 sceNpGetMyLanguages(SceNpMyLanguages* langs);
 typedef void (*SceNpManagerCallback)(s32 event, s32 result, void* arg);
 
 s32 sceNpManagerGetStatus(s32* status);
+s32 sceNpManagerIsSP(void);
 s32 sceNpManagerRegisterCallback(SceNpManagerCallback callback, void* arg);
 s32 sceNpManagerUnregisterCallback(void);
 s32 sceNpManagerGetNpId(SceNpId* npId);
 s32 sceNpManagerGetOnlineId(SceNpOnlineId* onlineId);
 s32 sceNpManagerGetOnlineName(SceNpOnlineName* onlineName);
 s32 sceNpManagerGetAccountAge(s32* age);
+s32 sceNpManagerGetNetworkTime(CellRtcTick* tick);
+s32 sceNpManagerRequestTicket2(const SceNpId* npId, const void* version,
+                                const char* serviceId, const void* cookie,
+                                u32 cookieSize, const char* entitlementId,
+                                u32 consumedCount);
+s32 sceNpManagerGetEntitlementById(const char* entitlementId, void* entitlement);
+s32 sceNpManagerGetEntitlementIdList(void* entitlementIds, u32 count);
 
 /* NPDRM availability checks. The guest passes its klicensee (16 bytes) and the
  * path of an EDAT/SELF; the klicensee is handed to the EDAT reader, which then

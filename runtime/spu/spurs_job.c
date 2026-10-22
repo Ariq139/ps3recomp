@@ -97,7 +97,7 @@ enum {
 enum {
     JC_IO_BUFFER          = 0x00,
     JC_CACHE_BUFFER       = 0x04,   /* void *cacheBuffer[4] */
-    JC_SIZE_JOB_DESC      = 0x14,   /* sizeJobDescriptor:4 + pad:28 */
+    JC_SIZE_JOB_DESC      = 0x14,   /* sizeJobDescriptor:4 + manager table:28 */
     JC_NUM_IO_BUFFER      = 0x18,
     JC_NUM_CACHE_BUFFER   = 0x1A,
     JC_O_BUFFER           = 0x1C,
@@ -108,7 +108,6 @@ enum {
 };
 
 #define ALIGN1024(x)  (((x) + 1023u) & ~1023u)
-#define JOB_DMA_TAG   20u          /* "one of: {20,21}" — job_context_types.h */
 #define JOB_STACK_DEFAULT 8192u    /* _cellSpursCheckJob's sizeStack==0 default */
 
 /* Local store of the most recent job, kept alive past the run.
@@ -159,6 +158,20 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
                       uint32_t job_ea, uint32_t job_desc_size)
 {
     if (!entry || !job_ea) return -1;
+
+    /* Diagnostic options are launch settings. Cache even absent options:
+     * getenv takes the CRT environment lock on Windows, and this path runs
+     * for every submitted job on several host threads. */
+    static SPURS_JOB_TLS int trace_initialized;
+    static SPURS_JOB_TLS int trace_desc, trace_desc_level, trace_dump, trace_gfd;
+    if (!trace_initialized) {
+        const char* desc = getenv("SPURS_JOB_DESCDUMP");
+        trace_desc = desc != NULL;
+        trace_desc_level = desc ? atoi(desc) : 0;
+        trace_dump = getenv("SPURS_JOB_DUMP") != NULL;
+        trace_gfd = getenv("GFD_QUEUE_TRACE") != NULL;
+        trace_initialized = 1;
+    }
 
     /* ---- descriptor ---------------------------------------------------- */
     uint32_t ea_bin   = (uint32_t)(g64(job_ea + JH_EA_BINARY) & ~1ull);
@@ -253,13 +266,18 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
         ls32(ls, ctx_ls + JC_CACHE_BUFFER + (uint32_t)i * 4u, cache_ls[i]);
     /* sizeJobDescriptor:4 is the first bitfield of a big-endian u32, so it
      * occupies the TOP 4 bits. 0 means 64 bytes, otherwise n*128. */
-    /* The low 28 bits are not padding to a "JOBCRT Ver13" crt (WWS/Edge jobs,
-     * Twisted Metal's JobQueue jobs): jm2 parks an LS pointer to its kernel
-     * block there, and the crt returns 0x80410A11 and STOPs before main when
-     * it is 0 -- so the job never runs and never clears its completion
-     * counter. Hand it the free 16 bytes after the context (zeroed); the crt
-     * only stashes the pointer and clears the field again. */
-    uint32_t jm_iface = memcmp(ls + 0x30, "JOBCRT Ver13", 12) == 0 ? ctx_ls + 0x30 : 0;
+    /* The low 28 bits carry a manager interface pointer for JOBCRT Ver13.
+     * P5's image 103 uses a different service table at 0x3FB80. */
+    const int jobcrt_ver13 = memcmp(ls + 0x30, "JOBCRT Ver13", 12) == 0;
+    /* Captured P5 jobs use the same Context2 manager interface without the
+     * Ver13 text signature. Their CRT rejects a zero low-28-bit pointer
+     * (for example image 0x5000 at LS 0x4078), before calling job main. */
+    const int p5_captured_job = image_id == 101 || image_id == 102 ||
+                              (image_id >= 0x5000 && image_id <= 0x5011);
+    uint32_t jm_iface = (jobcrt_ver13 || p5_captured_job) ? ctx_ls + 0x30
+                       : image_id == 103 ? 0x3FB80u : 0u;
+    if (p5_captured_job)
+        ls32(ls, jm_iface + 4u, 0x3FF10u);
     /* The same crt also reads the SPURS kernel context with ABSOLUTE loads
      * (lqa): spuNum at 0x1C8 (cellSpursGetCurrentSpuId), the trace buffer at
      * 0x210, a trace-enable byte at 0x175. On hardware the kernel owns
@@ -267,20 +285,27 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
      * job's own instruction words and it indexed per-SPU tables with an opcode
      * and halted. The lifted code never reads those bytes as data, so overlay
      * the kernel's view: SPU 0, our DMA tag, tracing off. */
-    if (jm_iface) {
+    if (jobcrt_ver13 || p5_captured_job) {
         memset(ls + 0x170, 0, 0x10);
         memset(ls + 0x1C0, 0, 0x10);
         ls32(ls, 0x1C8, g_spurs_job_spu_num);
-        ls32(ls, 0x1CC, JOB_DMA_TAG);
+        ls32(ls, 0x1CC, spu_workload_job_context_tag(image_id));
         memset(ls + 0x210, 0, 0x10);
     }
+    if (image_id == 103)
+        ls32(ls, 0x3FB84u, 0x3FF10u);
     ls32(ls, ctx_ls + JC_SIZE_JOB_DESC,
          ((dsz == 64 ? 0u : (dsz / 128u) & 0xFu) << 28) | jm_iface);
     ls16(ls, ctx_ls + JC_NUM_IO_BUFFER,    (uint16_t)n_dma);
     ls16(ls, ctx_ls + JC_NUM_CACHE_BUFFER, (uint16_t)n_cache);
     ls32(ls, ctx_ls + JC_O_BUFFER, out_ls);
     ls32(ls, ctx_ls + JC_S_BUFFER, s_ls);
-    ls32(ls, ctx_ls + JC_DMA_TAG,  JOB_DMA_TAG);
+    /* Normal CellSpursJobContext2 jobs use the SDK-reserved DMA tag 20.
+     * P5's GFD worker image 103 uses this same word as a 0-based worker-slot
+     * index into its four-entry DMA-tag table (SPU image table at 0xCEE0),
+     * so this single-worker host runner must pass slot 0 for that image. */
+    ls32(ls, ctx_ls + JC_DMA_TAG,
+         image_id == 103 ? 0u : spu_workload_job_context_tag(image_id));
     ls32(ls, ctx_ls + JC_EA_JOB_DESCRIPTOR,     0);
     ls32(ls, ctx_ls + JC_EA_JOB_DESCRIPTOR + 4, job_ea);
 
@@ -298,7 +323,7 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
      * its DMA and atomic EAs from these words, so when a job spins on a
      * lock-line address that is not backed, this is what to read first. */
     { static int _d = 0;
-      if (getenv("SPURS_JOB_DESCDUMP") && PS3_LOG_FIRST(_d, 4)) {
+      if (trace_desc && PS3_LOG_FIRST(_d, 4)) {
           fprintf(stderr, "[spurs-job] desc @0x%08X (%u bytes):", job_ea, dsz);
           for (uint32_t o = 0; o < dsz && o < 128; o += 4) {
               if ((o & 31) == 0) fprintf(stderr, "\n    +%02X:", o);
@@ -309,7 +334,7 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
            * data (past JH_SIZE) and dump what they point at. The job reads its
            * parameters from there, so a wild DMA/atomic address usually
            * originates in one of these blocks. */
-          if (atoi(getenv("SPURS_JOB_DESCDUMP")) >= 2) {
+          if (trace_desc_level >= 2) {
               for (uint32_t o = JH_SIZE; o < dsz && o < 128; o += 4) {
                   uint32_t v = g32(job_ea + o);
                   if (v < 0x10000u || v >= 0xD0000000u) continue;
@@ -328,7 +353,7 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
      * The header's input-DMA-list/io fields are legitimately zero for it. Dump
      * the user data + that command block so the bail path is attributable. */
     uint32_t dump_cmd = 0;
-    if (getenv("SPURS_JOB_DUMP")) {
+    if (trace_dump) {
         uint64_t ud  = g64(job_ea + JH_SIZE);        /* desc+0x30 */
         uint32_t cmd = (uint32_t)ud;                 /* low word = EA */
         fprintf(stderr, "[spurs-job] job 0x%08X userdata: %016llX %016llX %016llX %016llX\n",
@@ -366,6 +391,7 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
     spu_context ctx;
     spu_context_init(&ctx, 0);
     ctx.image_id = image_id;
+    ctx.spurs_job_services = 1;
     memcpy(ctx.ls, ls, SPU_LS_SIZE);
     /* SPU stack grows down. A function saves its link register in its
      * caller's frame, at 16($sp), so the entry's first store lands 16 bytes
@@ -393,7 +419,66 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
      * and trips its parameter guard, which HALTS -- ending the run. So the
      * HALT-ASSERT heqi 0x1650 seen once per jm2 job is NORMAL COMPLETION
      * noise, not a failure: the job's real work finished before the jump. */
-    spu_run_with_halt(entry, &ctx);
+    const int halted = spu_run_with_halt(entry, &ctx);
+    const uint32_t exit_pc = ctx.pc & SPU_LS_MASK;
+    /* The manager return trampolines terminate via spu_halt without being an
+     * SPU halt instruction. A STOP or halt at any other PC is not completion. */
+    const int manager_return = halted &&
+        (exit_pc == 0x3FF00u || exit_pc == 0u) &&
+        ctx.status != SPU_STATUS_STOPPED_BY_STOP &&
+        ctx.status != SPU_STATUS_STOPPED_BY_HALT;
+    const int completed = manager_return || (!halted &&
+        ctx.status != SPU_STATUS_STOPPED_BY_STOP &&
+        ctx.status != SPU_STATUS_STOPPED_BY_HALT);
+    if (!completed) {
+        static unsigned failures;
+        if (failures++ < 32)
+            fprintf(stderr, "[spurs-job] execution failed image=%d job=%08X "
+                    "pc=%05X status=%X stop=%X halted=%d\n", image_id,
+                    job_ea, exit_pc, ctx.status, ctx.stop_code, halted);
+    }
+    static int gfd_job_trace_count;
+    if (trace_gfd && image_id == 103 && gfd_job_trace_count++ < 16)
+    {
+        fprintf(stderr, "[gfd-spu-job] job=%08X pc=%05X status=%X stop=%X r3=%08X\n",
+                job_ea, ctx.pc, ctx.status, ctx.stop_code, ctx.gpr[3]._u32[0]);
+    }
+    if (trace_gfd && image_id == 103 &&
+        ctx.status == SPU_STATUS_STOPPED_BY_HALT) {
+        static unsigned gfd_halt_trace_count;
+        if (gfd_halt_trace_count++ < 4) {
+            fprintf(stderr,
+                    "[gfd-spu-guard] r1=%08X r6=%08X r90=%08X/%08X/%08X/%08X "
+                    "r101=%08X/%08X/%08X/%08X r61=%08X/%08X/%08X/%08X "
+                    "r66=%08X r69=%08X r75=%08X r96=%08X\n",
+                    ctx.gpr[1]._u32[0], ctx.gpr[6]._u32[0],
+                    ctx.gpr[90]._u32[0], ctx.gpr[90]._u32[1],
+                    ctx.gpr[90]._u32[2], ctx.gpr[90]._u32[3],
+                    ctx.gpr[101]._u32[0], ctx.gpr[101]._u32[1],
+                    ctx.gpr[101]._u32[2], ctx.gpr[101]._u32[3],
+                    ctx.gpr[61]._u32[0], ctx.gpr[61]._u32[1],
+                    ctx.gpr[61]._u32[2], ctx.gpr[61]._u32[3],
+                    ctx.gpr[66]._u32[0], ctx.gpr[69]._u32[0],
+                    ctx.gpr[75]._u32[0], ctx.gpr[96]._u32[0]);
+            const uint32_t p = ctx.gpr[101]._u32[0] + 0x10u;
+            if (p <= SPU_LS_SIZE - 16u) {
+                fprintf(stderr, "[gfd-spu-guard] LS[%05X..%05X]:",
+                        p, p + 15u);
+                for (uint32_t i = 0; i < 16; ++i)
+                    fprintf(stderr, " %02X", ctx.ls[p + i]);
+                fprintf(stderr, "\n");
+            }
+            fprintf(stderr,
+                    "[gfd-spu-desc] ea=%08X binary=%08X size16=%04X dmaBytes=%04X "
+                    "io=%08X in=%08X out=%08X stack/scratch=%04X/%04X\n",
+                    job_ea, (uint32_t)g64(job_ea + JH_EA_BINARY),
+                    g16(job_ea + JH_SIZE_BINARY), g16(job_ea + JH_SIZE_DMA_LIST),
+                    g32(job_ea + JH_USE_INOUT_BUFFER),
+                    g32(job_ea + JH_SIZE_IN_OR_INOUT), g32(job_ea + JH_SIZE_OUT),
+                    g16(job_ea + JH_SIZE_STACK), g16(job_ea + JH_SIZE_SCRATCH));
+            fflush(stderr);
+        }
+    }
 
     /* Capture the job's outbound mailbox. These are LS POINTERS TO STRINGS for
      * the SPU printf service, NOT query results -- value 0x83C0 from the sound
@@ -433,7 +518,7 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
           fprintf(stderr, "[spurs-job] job 0x%08X posted mbox=0x%08X intr=0x%08X\n",
                   job_ea, g_spurs_job_mbox, g_spurs_job_mbox_intr); }
 
-    if (getenv("SPURS_JOB_DUMP")) {
+    if (trace_dump) {
         fprintf(stderr, "[spurs-job] job 0x%08X exit: status=0x%X stop=0x%X pc=0x%05X\n",
                 job_ea, ctx.status, ctx.stop_code, ctx.pc);
         /* Post-run view of the same command block: the game polls result/status
@@ -454,5 +539,5 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
     spu_coh_unregister(&ctx);   /* stack local: out of the reserver set */
     { extern void spu_mfc_release(spu_context*); spu_mfc_release(&ctx); }
     free(ls);
-    return 0;
+    return completed ? 0 : -1;
 }

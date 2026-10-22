@@ -1,47 +1,55 @@
 /*
- * ps3recomp - cellRemotePlay HLE implementation
+ * ps3recomp - cellRemotePlay HLE
  *
- * Stub. Init/term work, remote play is never available.
+ * RPCS3_REFERENCE_REVIEWED (RPCS3 commit 2ba2f75bc): the currently registered
+ * calls are TODO handlers returning CELL_OK, except GetComparativeVolume,
+ * which writes 1.0 when its output pointer is non-null. This file expresses
+ * those observed contracts through ps3recomp's guest-memory API. No RPCS3
+ * function body or host streaming implementation is copied.
  */
 
 #include "cellRemotePlay.h"
-#include <stdio.h>
-#include "../../runtime/ppu/ppu_memory.h"   /* vm_write*: guest EA -> host, byte-swapped */
+#include "../../runtime/ppu/ppu_memory.h"
 
-/* Internal state */
-
-static int s_initialized = 0;
-
-/* API */
-
-s32 cellRemotePlayInit(void)
+s32 cellRemotePlayGetStatus(void)
 {
-    printf("[cellRemotePlay] Init()\n");
-    if (s_initialized)
-        return (s32)CELL_REMOTE_PLAY_ERROR_ALREADY_INITIALIZED;
-    s_initialized = 1;
     return CELL_OK;
 }
 
-s32 cellRemotePlayEnd(void)
+s32 cellRemotePlaySetComparativeVolume(float comparative_audio_volume)
 {
-    printf("[cellRemotePlay] End()\n");
-    s_initialized = 0;
+    (void)comparative_audio_volume;
     return CELL_OK;
 }
 
-s32 cellRemotePlayIsAvailable(void)
+s32 cellRemotePlayGetPeerInfo(void)
 {
-    if (!s_initialized)
-        return (s32)CELL_REMOTE_PLAY_ERROR_NOT_INITIALIZED;
-    return 0; /* Never available */
+    return CELL_OK;
 }
 
-s32 cellRemotePlayGetStatus(u32* status)
+s32 cellRemotePlayGetSharedMemory(void)
 {
-    if (!s_initialized)
-        return (s32)CELL_REMOTE_PLAY_ERROR_NOT_INITIALIZED;
-    if (!status) return (s32)CELL_REMOTE_PLAY_ERROR_INVALID_ARGUMENT;
-    vm_write32((u32)(uintptr_t)status, (u32)0); /* Disconnected */
+    return CELL_OK;
+}
+
+s32 cellRemotePlayEncryptAllData(void)
+{
+    return CELL_OK;
+}
+
+s32 cellRemotePlayStopPeerVideoOut(void)
+{
+    return CELL_OK;
+}
+
+s32 cellRemotePlayGetComparativeVolume(float* volume)
+{
+    if (volume)
+        vm_write32((u32)(uintptr_t)volume, 0x3F800000u); /* 1.0f */
+    return CELL_OK;
+}
+
+s32 cellRemotePlayBreak(void)
+{
     return CELL_OK;
 }
