@@ -269,14 +269,21 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
     /* The low 28 bits carry a manager interface pointer for JOBCRT Ver13.
      * P5's image 103 uses a different service table at 0x3FB80. */
     const int jobcrt_ver13 = memcmp(ls + 0x30, "JOBCRT Ver13", 12) == 0;
+    const int registered_context2 = spu_workload_job_uses_context2(image_id);
     /* Captured P5 jobs use the same Context2 manager interface without the
      * Ver13 text signature. Their CRT rejects a zero low-28-bit pointer
-     * (for example image 0x5000 at LS 0x4078), before calling job main. */
+     * before calling job main. This includes the debug captures (101/102 and
+     * 0x5000..0x5011) and two raw jobs captured from the release build
+     * (150/151); image 150 reaches STOPD at LS 0x42CC if this word is zero.
+     * Release image 152 is the exact same GFD worker as debug image 103 and
+     * uses that worker's service table and slot convention instead. */
+    const int p5_gfd_worker = image_id == 103 || image_id == 152;
     const int p5_captured_job = image_id == 101 || image_id == 102 ||
-                              (image_id >= 0x5000 && image_id <= 0x5011);
-    uint32_t jm_iface = (jobcrt_ver13 || p5_captured_job) ? ctx_ls + 0x30
-                       : image_id == 103 ? 0x3FB80u : 0u;
-    if (p5_captured_job)
+                              (image_id >= 0x5000 && image_id <= 0x5011) ||
+                              (image_id >= 150 && image_id <= 151);
+    uint32_t jm_iface = (jobcrt_ver13 || p5_captured_job || registered_context2) ? ctx_ls + 0x30
+                       : p5_gfd_worker ? 0x3FB80u : 0u;
+    if (p5_captured_job || registered_context2)
         ls32(ls, jm_iface + 4u, 0x3FF10u);
     /* The same crt also reads the SPURS kernel context with ABSOLUTE loads
      * (lqa): spuNum at 0x1C8 (cellSpursGetCurrentSpuId), the trace buffer at
@@ -285,14 +292,14 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
      * job's own instruction words and it indexed per-SPU tables with an opcode
      * and halted. The lifted code never reads those bytes as data, so overlay
      * the kernel's view: SPU 0, our DMA tag, tracing off. */
-    if (jobcrt_ver13 || p5_captured_job) {
+    if (jobcrt_ver13 || p5_captured_job || registered_context2) {
         memset(ls + 0x170, 0, 0x10);
         memset(ls + 0x1C0, 0, 0x10);
         ls32(ls, 0x1C8, g_spurs_job_spu_num);
         ls32(ls, 0x1CC, spu_workload_job_context_tag(image_id));
         memset(ls + 0x210, 0, 0x10);
     }
-    if (image_id == 103)
+    if (p5_gfd_worker)
         ls32(ls, 0x3FB84u, 0x3FF10u);
     ls32(ls, ctx_ls + JC_SIZE_JOB_DESC,
          ((dsz == 64 ? 0u : (dsz / 128u) & 0xFu) << 28) | jm_iface);
@@ -301,11 +308,11 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
     ls32(ls, ctx_ls + JC_O_BUFFER, out_ls);
     ls32(ls, ctx_ls + JC_S_BUFFER, s_ls);
     /* Normal CellSpursJobContext2 jobs use the SDK-reserved DMA tag 20.
-     * P5's GFD worker image 103 uses this same word as a 0-based worker-slot
+     * P5's GFD worker images 103/152 use this word as a 0-based worker-slot
      * index into its four-entry DMA-tag table (SPU image table at 0xCEE0),
      * so this single-worker host runner must pass slot 0 for that image. */
     ls32(ls, ctx_ls + JC_DMA_TAG,
-         image_id == 103 ? 0u : spu_workload_job_context_tag(image_id));
+         p5_gfd_worker ? 0u : spu_workload_job_context_tag(image_id));
     ls32(ls, ctx_ls + JC_EA_JOB_DESCRIPTOR,     0);
     ls32(ls, ctx_ls + JC_EA_JOB_DESCRIPTOR + 4, job_ea);
 
@@ -438,12 +445,12 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
                     job_ea, exit_pc, ctx.status, ctx.stop_code, halted);
     }
     static int gfd_job_trace_count;
-    if (trace_gfd && image_id == 103 && gfd_job_trace_count++ < 16)
+    if (trace_gfd && p5_gfd_worker && gfd_job_trace_count++ < 16)
     {
         fprintf(stderr, "[gfd-spu-job] job=%08X pc=%05X status=%X stop=%X r3=%08X\n",
                 job_ea, ctx.pc, ctx.status, ctx.stop_code, ctx.gpr[3]._u32[0]);
     }
-    if (trace_gfd && image_id == 103 &&
+    if (trace_gfd && p5_gfd_worker &&
         ctx.status == SPU_STATUS_STOPPED_BY_HALT) {
         static unsigned gfd_halt_trace_count;
         if (gfd_halt_trace_count++ < 4) {

@@ -229,6 +229,16 @@ add_executable(${PROJECT_NAME}
     ${LIBSRE_SPU_SOURCES}
 )
 
+if(WIN32)
+    get_property(_sdl2_runtime GLOBAL PROPERTY PS3RECOMP_SDL2_RUNTIME)
+    if(_sdl2_runtime AND EXISTS "${_sdl2_runtime}")
+        add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${_sdl2_runtime}"
+                "$<TARGET_FILE_DIR:${PROJECT_NAME}>")
+    endif()
+endif()
+
 include("${PS3RECOMP_DIR}/cmake/PS3RecompBootImage.cmake")
 ps3recomp_configure_boot_image(${PROJECT_NAME} "${CMAKE_CURRENT_SOURCE_DIR}"
     CANDIDATES

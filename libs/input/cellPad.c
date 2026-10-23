@@ -64,7 +64,11 @@ static double pad_clock(unsigned long long t0_ms)
 #endif
 
 #if PAD_BACKEND_SDL2
-  #include <SDL2/SDL.h>
+  #if defined(_WIN32)
+    #include <SDL.h>
+  #else
+    #include <SDL2/SDL.h>
+  #endif
 #endif
 
 /* ---------------------------------------------------------------------------
@@ -75,6 +79,7 @@ static double pad_clock(unsigned long long t0_ms)
 
 typedef struct {
     int  connected;
+    int  keyboard_fallback;
     u16  buttons;           /* CELL_PAD_CTRL_* bitmask */
     int  ps_button;         /* PS button lives in digital1's high byte */
     u8   analog_lx;         /* 0-255, center=128 */
@@ -291,22 +296,125 @@ static void pad_poll_scp_extended(PadHostState* hs, const PadScpExtendedState* s
     hs->press_square = square;
 }
 
-/* Keyboard fallback for port 0.
- *
- * The only backend here is XInput, so on a machine with no controller plugged
- * in a title gets a pad that is reported present and never presses anything --
- * it can be watched but not played. That is what The Simpsons Arcade Game hit:
- * it reached its attract loop and no input existed to start a game.
- *
- * Only fills in for port 0 when no host controller is detected in any slot, so
- * a real controller always wins. Keys are read only while a window of THIS
- * process is in the foreground, so typing in another application does not
- * drive the game. Set PAD_NO_KEYBOARD=1 to disable it entirely.
- *
- * Arrows = d-pad, Z/X/A/S = cross/circle/square/triangle, Q/W = L1/R1,
- * 1/2 = L2/R2, Enter = START, Tab = SELECT. The left stick mirrors the d-pad
- * so a title that reads the stick instead is playable too. */
+#endif /* PAD_BACKEND_XINPUT */
+
+/* Keyboard fallback is used on port 0 only when no host controller is
+ * connected. Bindings use SDL-style key names in PAD_KEY_<ACTION>, for example
+ * PAD_KEY_CROSS=SDLK_z. Set PAD_NO_KEYBOARD=1 to disable the fallback. */
 #ifdef _WIN32
+static const struct {
+    const char* name;
+    const char* default_key;
+    u16 button;
+} s_pad_keyboard_bindings[] = {
+    { "UP", "Up", CELL_PAD_CTRL_UP },
+    { "RIGHT", "Right", CELL_PAD_CTRL_RIGHT },
+    { "DOWN", "Down", CELL_PAD_CTRL_DOWN },
+    { "LEFT", "Left", CELL_PAD_CTRL_LEFT },
+    { "L2", "1", CELL_PAD_CTRL_L2 },
+    { "R2", "2", CELL_PAD_CTRL_R2 },
+    { "L1", "q", CELL_PAD_CTRL_L1 },
+    { "R1", "w", CELL_PAD_CTRL_R1 },
+    { "TRIANGLE", "s", CELL_PAD_CTRL_TRIANGLE },
+    { "CIRCLE", "x", CELL_PAD_CTRL_CIRCLE },
+    { "CROSS", "z", CELL_PAD_CTRL_CROSS },
+    { "SQUARE", "a", CELL_PAD_CTRL_SQUARE },
+    { "SELECT", "Tab", CELL_PAD_CTRL_SELECT },
+    { "L3", "none", CELL_PAD_CTRL_L3 },
+    { "R3", "none", CELL_PAD_CTRL_R3 },
+    { "START", "Return", CELL_PAD_CTRL_START },
+};
+
+static int s_pad_keyboard_keys[sizeof s_pad_keyboard_bindings / sizeof s_pad_keyboard_bindings[0]];
+static int s_pad_keyboard_keys_initialized;
+
+static int pad_ascii_equal_ci(const char* a, const char* b)
+{
+    if (!a || !b) return 0;
+    while (*a && *b) {
+        unsigned char ca = (unsigned char)*a++;
+        unsigned char cb = (unsigned char)*b++;
+        if (ca >= 'A' && ca <= 'Z') ca = (unsigned char)(ca + ('a' - 'A'));
+        if (cb >= 'A' && cb <= 'Z') cb = (unsigned char)(cb + ('a' - 'A'));
+        if (ca != cb) return 0;
+    }
+    return *a == *b;
+}
+
+static int pad_ascii_starts_with_ci(const char* value, const char* prefix)
+{
+    if (!value || !prefix) return 0;
+    while (*prefix) {
+        unsigned char a = (unsigned char)*value++;
+        unsigned char b = (unsigned char)*prefix++;
+        if (a >= 'A' && a <= 'Z') a = (unsigned char)(a + ('a' - 'A'));
+        if (b >= 'A' && b <= 'Z') b = (unsigned char)(b + ('a' - 'A'));
+        if (a != b) return 0;
+    }
+    return 1;
+}
+
+static int pad_keyboard_virtual_key(const char* name)
+{
+    if (!name || !*name || pad_ascii_equal_ci(name, "none")) return 0;
+    if (pad_ascii_starts_with_ci(name, "SDLK_")) name += 5;
+
+    const size_t length = strlen(name);
+    if (length == 1) {
+        unsigned char ch = (unsigned char)name[0];
+        if (ch >= 'a' && ch <= 'z') return ch - ('a' - 'A');
+        if ((ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9')) return ch;
+    }
+
+    if (length == 4 && pad_ascii_equal_ci(name, "KP_0")) return VK_NUMPAD0;
+    if (length == 4 && pad_ascii_equal_ci(name, "KP_1")) return VK_NUMPAD1;
+    if (length == 4 && pad_ascii_equal_ci(name, "KP_2")) return VK_NUMPAD2;
+    if (length == 4 && pad_ascii_equal_ci(name, "KP_3")) return VK_NUMPAD3;
+    if (length == 4 && pad_ascii_equal_ci(name, "KP_4")) return VK_NUMPAD4;
+    if (length == 4 && pad_ascii_equal_ci(name, "KP_5")) return VK_NUMPAD5;
+    if (length == 4 && pad_ascii_equal_ci(name, "KP_6")) return VK_NUMPAD6;
+    if (length == 4 && pad_ascii_equal_ci(name, "KP_7")) return VK_NUMPAD7;
+    if (length == 4 && pad_ascii_equal_ci(name, "KP_8")) return VK_NUMPAD8;
+    if (length == 4 && pad_ascii_equal_ci(name, "KP_9")) return VK_NUMPAD9;
+    if (length >= 2 && (name[0] == 'F' || name[0] == 'f')) {
+        char* end = NULL;
+        long function_number = strtol(name + 1, &end, 10);
+        if (end != name + 1 && *end == '\0' && function_number >= 1 && function_number <= 24)
+            return VK_F1 + (int)function_number - 1;
+    }
+
+    static const struct { const char* name; int key; } named_keys[] = {
+        { "up", VK_UP }, { "uparrow", VK_UP },
+        { "right", VK_RIGHT }, { "rightarrow", VK_RIGHT },
+        { "down", VK_DOWN }, { "downarrow", VK_DOWN },
+        { "left", VK_LEFT }, { "leftarrow", VK_LEFT },
+        { "return", VK_RETURN }, { "enter", VK_RETURN },
+        { "escape", VK_ESCAPE }, { "esc", VK_ESCAPE },
+        { "tab", VK_TAB }, { "space", VK_SPACE },
+        { "backspace", VK_BACK }, { "delete", VK_DELETE },
+        { "insert", VK_INSERT }, { "home", VK_HOME }, { "end", VK_END },
+        { "pageup", VK_PRIOR }, { "pagedown", VK_NEXT },
+        { "capslock", VK_CAPITAL }, { "numlockclear", VK_NUMLOCK },
+        { "scrolllock", VK_SCROLL }, { "printscreen", VK_SNAPSHOT }, { "pause", VK_PAUSE },
+        { "leftshift", VK_LSHIFT }, { "rightshift", VK_RSHIFT }, { "shift", VK_SHIFT },
+        { "leftctrl", VK_LCONTROL }, { "rightctrl", VK_RCONTROL }, { "ctrl", VK_CONTROL },
+        { "leftalt", VK_LMENU }, { "rightalt", VK_RMENU }, { "alt", VK_MENU },
+        { "minus", VK_OEM_MINUS }, { "equals", VK_OEM_PLUS },
+        { "leftbracket", VK_OEM_4 }, { "rightbracket", VK_OEM_6 },
+        { "backslash", VK_OEM_5 }, { "semicolon", VK_OEM_1 },
+        { "apostrophe", VK_OEM_7 }, { "quote", VK_OEM_7 },
+        { "comma", VK_OEM_COMMA }, { "period", VK_OEM_PERIOD },
+        { "slash", VK_OEM_2 }, { "grave", VK_OEM_3 },
+        { "-", VK_OEM_MINUS }, { "=", VK_OEM_PLUS },
+        { "[", VK_OEM_4 }, { "]", VK_OEM_6 }, { "\\", VK_OEM_5 },
+        { ";", VK_OEM_1 }, { "'", VK_OEM_7 }, { ",", VK_OEM_COMMA },
+        { ".", VK_OEM_PERIOD }, { "/", VK_OEM_2 }, { "`", VK_OEM_3 },
+    };
+    for (unsigned i = 0; i < sizeof named_keys / sizeof named_keys[0]; ++i)
+        if (pad_ascii_equal_ci(name, named_keys[i].name)) return named_keys[i].key;
+    return 0;
+}
+
 static int pad_host_window_focused(void)
 {
     HWND fg = GetForegroundWindow();
@@ -319,8 +427,24 @@ static int pad_host_window_focused(void)
 static void pad_poll_keyboard(void)
 {
     static int off = -1;
-    if (off < 0) off = getenv("PAD_NO_KEYBOARD") ? 1 : 0;
+    if (off < 0) {
+        const char* disabled = getenv("PAD_NO_KEYBOARD");
+        off = disabled && *disabled && strcmp(disabled, "0") != 0 &&
+              !pad_ascii_equal_ci(disabled, "false") && !pad_ascii_equal_ci(disabled, "off")
+            ? 1 : 0;
+    }
     if (off) return;
+
+    if (!s_pad_keyboard_keys_initialized) {
+        for (unsigned i = 0; i < sizeof s_pad_keyboard_bindings / sizeof s_pad_keyboard_bindings[0]; ++i) {
+            char variable[40];
+            snprintf(variable, sizeof variable, "PAD_KEY_%s", s_pad_keyboard_bindings[i].name);
+            const char* key_name = getenv(variable);
+            if (!key_name || !*key_name) key_name = s_pad_keyboard_bindings[i].default_key;
+            s_pad_keyboard_keys[i] = pad_keyboard_virtual_key(key_name);
+        }
+        s_pad_keyboard_keys_initialized = 1;
+    }
 
     PadHostState* hs = &s_host_state[0];
     if (!pad_host_window_focused()) {
@@ -331,23 +455,15 @@ static void pad_poll_keyboard(void)
         return;
     }
 
-    static const struct { int vk; u16 btn; } map[] = {
-        { VK_UP,     CELL_PAD_CTRL_UP },      { VK_DOWN,  CELL_PAD_CTRL_DOWN },
-        { VK_LEFT,   CELL_PAD_CTRL_LEFT },    { VK_RIGHT, CELL_PAD_CTRL_RIGHT },
-        { 'Z',       CELL_PAD_CTRL_CROSS },   { 'X',      CELL_PAD_CTRL_CIRCLE },
-        { 'A',       CELL_PAD_CTRL_SQUARE },  { 'S',      CELL_PAD_CTRL_TRIANGLE },
-        { 'Q',       CELL_PAD_CTRL_L1 },      { 'W',      CELL_PAD_CTRL_R1 },
-        { '1',       CELL_PAD_CTRL_L2 },      { '2',      CELL_PAD_CTRL_R2 },
-        { VK_RETURN, CELL_PAD_CTRL_START },   { VK_TAB,   CELL_PAD_CTRL_SELECT },
-    };
-
     u16 btns = 0;
-    for (unsigned i = 0; i < sizeof map / sizeof map[0]; i++)
-        if (GetAsyncKeyState(map[i].vk) & 0x8000) btns |= map[i].btn;
+    for (unsigned i = 0; i < sizeof s_pad_keyboard_bindings / sizeof s_pad_keyboard_bindings[0]; ++i)
+        if (s_pad_keyboard_keys[i] && (GetAsyncKeyState(s_pad_keyboard_keys[i]) & 0x8000))
+            btns |= s_pad_keyboard_bindings[i].button;
 
     hs->buttons   = btns;
     hs->ps_button = 0;
     hs->connected = 1;
+    hs->keyboard_fallback = 1;
     hs->analog_lx = (u8)((btns & CELL_PAD_CTRL_LEFT) ? 0 :
                          (btns & CELL_PAD_CTRL_RIGHT) ? 255 : 128);
     hs->analog_ly = (u8)((btns & CELL_PAD_CTRL_UP) ? 0 :
@@ -355,6 +471,16 @@ static void pad_poll_keyboard(void)
     hs->analog_rx = hs->analog_ry = 128;
     hs->trigger_l2 = (u8)((btns & CELL_PAD_CTRL_L2) ? 255 : 0);
     hs->trigger_r2 = (u8)((btns & CELL_PAD_CTRL_R2) ? 255 : 0);
+    hs->press_up = (u8)((btns & CELL_PAD_CTRL_UP) ? 255 : 0);
+    hs->press_right = (u8)((btns & CELL_PAD_CTRL_RIGHT) ? 255 : 0);
+    hs->press_down = (u8)((btns & CELL_PAD_CTRL_DOWN) ? 255 : 0);
+    hs->press_left = (u8)((btns & CELL_PAD_CTRL_LEFT) ? 255 : 0);
+    hs->press_l1 = (u8)((btns & CELL_PAD_CTRL_L1) ? 255 : 0);
+    hs->press_r1 = (u8)((btns & CELL_PAD_CTRL_R1) ? 255 : 0);
+    hs->press_triangle = (u8)((btns & CELL_PAD_CTRL_TRIANGLE) ? 255 : 0);
+    hs->press_circle = (u8)((btns & CELL_PAD_CTRL_CIRCLE) ? 255 : 0);
+    hs->press_cross = (u8)((btns & CELL_PAD_CTRL_CROSS) ? 255 : 0);
+    hs->press_square = (u8)((btns & CELL_PAD_CTRL_SQUARE) ? 255 : 0);
 
     { static int said = 0;
       if (!said && btns) { said = 1;
@@ -362,6 +488,159 @@ static void pad_poll_keyboard(void)
           fflush(stdout); } }
 }
 #endif
+
+/* Controller button remapping is applied after a backend has normalized its
+ * layout to PS3 actions. A means Cross on Xbox and DualSense, B means Circle,
+ * X means Square, and Y means Triangle. SDL GameController uses that same
+ * standard layout for supported devices. PAD_MAP_CROSS=B, for example, makes
+ * the physical B/Circle button send PS3 Cross. */
+static const struct {
+    const char* name;
+    u16 button;
+} s_pad_controller_actions[] = {
+    { "UP", CELL_PAD_CTRL_UP },
+    { "RIGHT", CELL_PAD_CTRL_RIGHT },
+    { "DOWN", CELL_PAD_CTRL_DOWN },
+    { "LEFT", CELL_PAD_CTRL_LEFT },
+    { "L2", CELL_PAD_CTRL_L2 },
+    { "R2", CELL_PAD_CTRL_R2 },
+    { "L1", CELL_PAD_CTRL_L1 },
+    { "R1", CELL_PAD_CTRL_R1 },
+    { "TRIANGLE", CELL_PAD_CTRL_TRIANGLE },
+    { "CIRCLE", CELL_PAD_CTRL_CIRCLE },
+    { "CROSS", CELL_PAD_CTRL_CROSS },
+    { "SQUARE", CELL_PAD_CTRL_SQUARE },
+    { "SELECT", CELL_PAD_CTRL_SELECT },
+    { "L3", CELL_PAD_CTRL_L3 },
+    { "R3", CELL_PAD_CTRL_R3 },
+    { "START", CELL_PAD_CTRL_START },
+};
+
+static int pad_controller_name_equal_ci(const char* a, const char* b)
+{
+    if (!a || !b) return 0;
+    while (*a && *b) {
+        unsigned char ca = (unsigned char)*a++;
+        unsigned char cb = (unsigned char)*b++;
+        if (ca >= 'A' && ca <= 'Z') ca = (unsigned char)(ca + ('a' - 'A'));
+        if (cb >= 'A' && cb <= 'Z') cb = (unsigned char)(cb + ('a' - 'A'));
+        if (ca != cb) return 0;
+    }
+    return *a == *b;
+}
+
+static int pad_controller_action_from_name(const char* name)
+{
+    if (!name || !*name || pad_controller_name_equal_ci(name, "none") ||
+        pad_controller_name_equal_ci(name, "off") || pad_controller_name_equal_ci(name, "disabled"))
+        return -1;
+
+    for (unsigned i = 0; i < sizeof s_pad_controller_actions / sizeof s_pad_controller_actions[0]; ++i)
+        if (pad_controller_name_equal_ci(name, s_pad_controller_actions[i].name)) return (int)i;
+
+    static const struct { const char* alias; int action; } aliases[] = {
+        { "DPAD_UP", 0 }, { "DPAD_RIGHT", 1 }, { "DPAD_DOWN", 2 }, { "DPAD_LEFT", 3 },
+        { "LT", 4 }, { "LEFT_TRIGGER", 4 }, { "LEFTTRIGGER", 4 },
+        { "RT", 5 }, { "RIGHT_TRIGGER", 5 }, { "RIGHTTRIGGER", 5 },
+        { "LB", 6 }, { "LEFT_BUMPER", 6 }, { "LEFTBUMPER", 6 },
+        { "RB", 7 }, { "RIGHT_BUMPER", 7 }, { "RIGHTBUMPER", 7 },
+        { "Y", 8 }, { "B", 9 }, { "A", 10 }, { "X", 11 },
+        { "BACK", 12 }, { "VIEW", 12 }, { "SHARE", 12 },
+        { "LEFT_STICK", 13 }, { "LEFTSTICK", 13 },
+        { "RIGHT_STICK", 14 }, { "RIGHTSTICK", 14 },
+        { "MENU", 15 },
+    };
+    for (unsigned i = 0; i < sizeof aliases / sizeof aliases[0]; ++i)
+        if (pad_controller_name_equal_ci(name, aliases[i].alias)) return aliases[i].action;
+    return -1;
+}
+
+static u8 pad_controller_action_pressure(const PadHostState* hs, int action)
+{
+    u8 pressure = 0;
+    switch (action) {
+        case 0: pressure = hs->press_up; break;
+        case 1: pressure = hs->press_right; break;
+        case 2: pressure = hs->press_down; break;
+        case 3: pressure = hs->press_left; break;
+        case 4: pressure = hs->trigger_l2; break;
+        case 5: pressure = hs->trigger_r2; break;
+        case 6: pressure = hs->press_l1; break;
+        case 7: pressure = hs->press_r1; break;
+        case 8: pressure = hs->press_triangle; break;
+        case 9: pressure = hs->press_circle; break;
+        case 10: pressure = hs->press_cross; break;
+        case 11: pressure = hs->press_square; break;
+        default: break;
+    }
+    if (!pressure && action >= 0 && action < (int)(sizeof s_pad_controller_actions / sizeof s_pad_controller_actions[0]) &&
+        (hs->buttons & s_pad_controller_actions[action].button))
+        pressure = 255;
+    return pressure;
+}
+
+static void pad_set_controller_action_pressure(PadHostState* hs, int action, u8 pressure)
+{
+    switch (action) {
+        case 0: hs->press_up = pressure; break;
+        case 1: hs->press_right = pressure; break;
+        case 2: hs->press_down = pressure; break;
+        case 3: hs->press_left = pressure; break;
+        case 4: hs->trigger_l2 = pressure; break;
+        case 5: hs->trigger_r2 = pressure; break;
+        case 6: hs->press_l1 = pressure; break;
+        case 7: hs->press_r1 = pressure; break;
+        case 8: hs->press_triangle = pressure; break;
+        case 9: hs->press_circle = pressure; break;
+        case 10: hs->press_cross = pressure; break;
+        case 11: hs->press_square = pressure; break;
+        default: break;
+    }
+}
+
+static void pad_apply_controller_mapping(PadHostState* hs)
+{
+    enum { ACTION_COUNT = sizeof s_pad_controller_actions / sizeof s_pad_controller_actions[0] };
+    static int initialized;
+    static u16 source_button[ACTION_COUNT];
+    if (!hs->connected || hs->keyboard_fallback) return;
+
+    if (!initialized) {
+        for (int target = 0; target < ACTION_COUNT; ++target) {
+            source_button[target] = s_pad_controller_actions[target].button;
+            char variable[40];
+            snprintf(variable, sizeof variable, "PAD_MAP_%s", s_pad_controller_actions[target].name);
+            const char* value = getenv(variable);
+            if (value && *value) {
+                int source = pad_controller_action_from_name(value);
+                source_button[target] = source >= 0 ? s_pad_controller_actions[source].button : 0;
+            }
+        }
+        initialized = 1;
+    }
+
+    const u16 original_buttons = hs->buttons;
+    const PadHostState original_state = *hs;
+    u16 mapped_buttons = 0;
+    u8 mapped_pressure[ACTION_COUNT];
+    memset(mapped_pressure, 0, sizeof mapped_pressure);
+    for (int target = 0; target < ACTION_COUNT; ++target) {
+        const u16 source = source_button[target];
+        if (!source || !(original_buttons & source)) continue;
+        mapped_buttons |= s_pad_controller_actions[target].button;
+        for (int action = 0; action < ACTION_COUNT; ++action) {
+            if (source == s_pad_controller_actions[action].button) {
+                mapped_pressure[target] = pad_controller_action_pressure(&original_state, action);
+                break;
+            }
+        }
+    }
+    hs->buttons = mapped_buttons;
+    for (int target = 0; target < ACTION_COUNT; ++target)
+        pad_set_controller_action_pressure(hs, target, mapped_pressure[target]);
+}
+
+#if PAD_BACKEND_XINPUT
 
 static void pad_poll_xinput(void)
 {
@@ -558,6 +837,7 @@ static void pad_poll_sdl2(void)
         }
 
         s_host_state[i].connected = 1;
+        s_host_state[i].keyboard_fallback = 0;
 
         /* Keep a rumble the title set going (see PAD_RUMBLE_HOLD_MS). */
         if (s_rumble[i].sent_ms && pad_now_ms() - s_rumble[i].sent_ms >= PAD_RUMBLE_RENEW_MS)
@@ -693,6 +973,8 @@ static void pad_poll_backend_locked(void)
 #elif PAD_BACKEND_SDL2
     pad_poll_sdl2();
 #endif
+    for (int i = 0; i < PAD_MAX_HOST_PORTS; ++i)
+        pad_apply_controller_mapping(&s_host_state[i]);
 #ifdef _WIN32
     int any_controller_connected = 0;
     for (int i = 0; i < PAD_MAX_HOST_PORTS; ++i)

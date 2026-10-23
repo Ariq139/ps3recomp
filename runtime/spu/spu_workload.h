@@ -64,6 +64,10 @@ uint32_t spu_workload_job_context_tag(int image_id);
 void spu_workload_register_raw_region(const uint8_t* bytes, uint32_t size,
                                      spu_lifted_entry_fn fn, int image_id,
                                      const char* name);
+/* Generated raw-region registrations can supply a verified Context2 CRT ABI.
+ * tag is either the ordinary DMA tag or a job-specific worker slot. */
+void spu_workload_set_raw_region_context2(int image_id, uint32_t tag);
+int spu_workload_job_uses_context2(int image_id);
 
 /* Look up a lifted entry by fingerprint; NULL if none registered. */
 spu_lifted_entry_fn spu_workload_find(uint64_t fingerprint);

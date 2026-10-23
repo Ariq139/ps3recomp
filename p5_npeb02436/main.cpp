@@ -191,12 +191,30 @@ static void present_guest_frame(void)
     InterlockedIncrement(&g_frames_presented);
 }
 
+static uint32_t window_dimension_from_environment(const char* name,
+                                                 uint32_t fallback,
+                                                 uint32_t minimum,
+                                                 uint32_t maximum)
+{
+    const char* value = getenv(name);
+    if (!value || !*value) return fallback;
+
+    char* end = nullptr;
+    const unsigned long parsed = strtoul(value, &end, 10);
+    if (end == value || *end != '\0' || parsed < minimum || parsed > maximum)
+        return fallback;
+    return (uint32_t)parsed;
+}
+
 static DWORD WINAPI frame_clock(LPVOID)
 {
     const char* title = getenv("PS3_TITLE");
     if (!title || !*title) title = "ps3recomp";
 
-    int rsx_ok = (rsx_backend_init(WINDOW_WIDTH, WINDOW_HEIGHT, title) == 0);
+    const uint32_t window_width = window_dimension_from_environment("RSX_W", WINDOW_WIDTH, 320, 7680);
+    const uint32_t window_height = window_dimension_from_environment("RSX_H", WINDOW_HEIGHT, 240, 4320);
+    printf("[rsx] window size: %ux%u\n", window_width, window_height);
+    int rsx_ok = (rsx_backend_init(window_width, window_height, title) == 0);
     fprintf(stderr, "[rsx] %s backend init %s\n", RSX_BACKEND_NAME,
             rsx_ok ? "OK -- window open" : "FAILED");
 

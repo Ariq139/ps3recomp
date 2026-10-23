@@ -4983,13 +4983,33 @@ static void vp_record_cb(u32 slot, int vs_idx, const D3D12DrawRecord* dr)
                       c[r*4+0], c[r*4+1], c[r*4+2], c[r*4+3], 10);
       } }
 
-    /* Viewport epilogue (see the render_frame notes this logic came from):
-     * x/y identity, z lane remaps GL clip z when the guest programs one. */
+    /* Convert the guest window transform back to D3D clip coordinates.
+     * D3D's viewport maps positive clip Y upward; RSX programs the sign
+     * explicitly. Shadow passes can use positive Y scale while the main
+     * scene uses negative Y scale, so an identity XY epilogue mirrors only
+     * the shadow map relative to its consumers. */
     float* vpx = (float*)(dst + RSX_MAX_VERTEX_CONSTANTS * 16);
     const float* vs_ = st->viewport_scale;
     const float* vo_ = st->viewport_offset;
     vpx[0] = vpx[1] = vpx[3] = 1.0f;
     vpx[4] = vpx[5] = vpx[7] = 0.0f;
+    {
+        float tw = st->surface_clip_w ? (float)st->surface_clip_w : (float)s_d3d.width;
+        float th = st->surface_clip_h ? (float)st->surface_clip_h : (float)s_d3d.height;
+        float vx = 0.0f, vy = 0.0f;
+        if (st->viewport_w >= 2 && st->viewport_h >= 2 &&
+            (float)(st->viewport_x + st->viewport_w) <= tw + 0.5f &&
+            (float)(st->viewport_y + st->viewport_h) <= th + 0.5f) {
+            vx = (float)st->viewport_x; vy = (float)st->viewport_y;
+            tw = (float)st->viewport_w; th = (float)st->viewport_h;
+        }
+        if (tw > 0.0f && th > 0.0f && vs_[0] != 0.0f && vs_[1] != 0.0f) {
+            vpx[0] = 2.0f * vs_[0] / tw;
+            vpx[1] = -2.0f * vs_[1] / th;
+            vpx[4] = 2.0f * (vo_[0] - vx) / tw - 1.0f;
+            vpx[5] = 1.0f - 2.0f * (vo_[1] - vy) / th;
+        }
+    }
     if (vs_[2] != 0.0f) { vpx[2] = vs_[2]; vpx[6] = vo_[2]; }
     else                { vpx[2] = 1.0f;   vpx[6] = 0.0f;   }
     /* DBG_ZOOM=<k> with DBG_CENTER="cx,cy": a debug camera applied in CLIP space,

@@ -117,6 +117,8 @@ typedef struct {
     spu_lifted_entry_fn fn;
     int image_id;
     const char* name;
+    uint32_t context2;
+    uint32_t job_context_tag;
 } spu_raw_region;
 static spu_raw_region s_raw_regions[SPU_WORKLOAD_MAX];
 static unsigned s_raw_region_count;
@@ -136,6 +138,26 @@ void spu_workload_register_raw_region(const uint8_t* bytes, uint32_t size,
     spu_raw_region* r = &s_raw_regions[s_raw_region_count++];
     r->bytes = bytes; r->size = size; r->fn = fn;
     r->image_id = image_id; r->name = name;
+    r->context2 = 0; r->job_context_tag = 20u;
+}
+
+void spu_workload_set_raw_region_context2(int image_id, uint32_t tag)
+{
+    if (tag > 31u) return;
+    for (unsigned i = 0; i < s_raw_region_count; ++i)
+        if (s_raw_regions[i].image_id == image_id) {
+            s_raw_regions[i].context2 = 1;
+            s_raw_regions[i].job_context_tag = tag;
+            return;
+        }
+}
+
+int spu_workload_job_uses_context2(int image_id)
+{
+    for (unsigned i = 0; i < s_raw_region_count; ++i)
+        if (s_raw_regions[i].image_id == image_id)
+            return s_raw_regions[i].context2 != 0;
+    return 0;
 }
 
 static spu_lifted_entry_fn find_raw_region(const uint8_t* bytes, uint32_t size,
@@ -202,6 +224,9 @@ uint32_t spu_workload_job_context_tag(int image_id)
     for (unsigned i = 0; i < s_registry_count; ++i)
         if (s_registry[i].image_id == image_id)
             return s_registry[i].job_context_tag;
+    for (unsigned i = 0; i < s_raw_region_count; ++i)
+        if (s_raw_regions[i].image_id == image_id)
+            return s_raw_regions[i].job_context_tag;
     return 20u;
 }
 

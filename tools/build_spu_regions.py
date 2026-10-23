@@ -6,6 +6,7 @@ checks the descriptor's whole image against these bytes before using a lift.
 Existing exact-fingerprint registrations take precedence and can be skipped.
 """
 import argparse
+import hashlib
 import json
 import re
 import subprocess
@@ -18,8 +19,11 @@ def main():
     ap.add_argument('inventory', type=Path)
     ap.add_argument('--out', type=Path, required=True)
     ap.add_argument('--existing', type=Path, action='append', default=[])
+    ap.add_argument('--job-abis', type=Path, help='Audited raw-region ABI metadata keyed by SHA-256')
     ap.add_argument('--first-id', type=lambda x: int(x, 0), default=0x6000)
     args = ap.parse_args()
+    abi_path = args.job_abis or args.out.parent/'spu_job_abis.json'
+    abis = json.loads(abi_path.read_text())['regions'] if abi_path.exists() else {}
     tools = Path(__file__).resolve().parent
     existing = set()
     for p in args.existing:
@@ -64,7 +68,16 @@ def main():
                           f'    {ident}_spu_recomp_register();',
                           f'    spu_workload_register_raw_region({ident}_bytes, sizeof({ident}_bytes),',
                           f'        {ident}_spu_func_00000000, {image_id}, "{ident}");']
-        manifest.append(dict(row, image_id=image_id, symbol_prefix=ident))
+        digest = hashlib.sha256(data).hexdigest()
+        if digest != sha:
+            raise ValueError(f'Region bytes changed since inventory: {binary}')
+        tag = abis.get(digest, {}).get('context2_tag')
+        if tag is not None and not 0 <= tag <= 31:
+            raise ValueError(f'Invalid context tag for {digest}: {tag}')
+        if tag is not None:
+            registrations += [f'    spu_workload_set_raw_region_context2({image_id}, {tag}u);']
+        manifest.append(dict(row, image_id=image_id, symbol_prefix=ident,
+                             context2_tag=tag))
         print(f'Lifted {ident}: {len(data)} bounded bytes', flush=True)
     lines += ['__attribute__((constructor)) static void register_prescanned_spu_regions(void)', '{']
     lines += registrations + ['    spu_begin_image(0);', '}']

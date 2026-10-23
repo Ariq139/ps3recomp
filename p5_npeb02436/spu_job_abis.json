@@ -1,0 +1,129 @@
+{
+  "description": "Audited NPEB02436 raw SPURS region ABIs. All listed CRTs require the low-28-bit manager pointer at Context2+0x14 and kernel state at LS 0x170/0x1C0/0x210. GFD overrides follow Context2+0x24 through the rotated word and stride-eight lookup into the three tag ranges (3,9), (12,9), (21,10). Serial host execution uses worker slot zero. Other jobs keep SDK DMA tag 20. Keys cover every immutable region byte, independent of generated image ids.",
+  "regions": {
+    "8e2d6097556673d50b0bcbaf256ef4a6a6a30a932719018ef4662bd3a80ff96e": {
+      "context2_tag": 20
+    },
+    "a938825d034ab405ee4732f724ba9415e89b079b3426c57f120854da8928a63e": {
+      "context2_tag": 20
+    },
+    "ff19d97a969f91aacade92e99f3ff99763f76058ad545203ed111b91e18a2d9c": {
+      "context2_tag": 20
+    },
+    "93a5164249004ee16fcab638a5216efcede8a896f92b809555497182212abe6f": {
+      "context2_tag": 20
+    },
+    "c69d0c047f2158ef4254935c7890769bbd7f302a9369a066b61e0d847ad7aab6": {
+      "context2_tag": 0,
+      "worker_tag_table_ls": "0x3D00"
+    },
+    "7e00316058039c5c16b5ffc6ac9ce2cf5e436ebfdb35a26266f8ea8248427530": {
+      "context2_tag": 0,
+      "worker_tag_table_ls": "0x47A0"
+    },
+    "4ce12b01d78a27ebca52a61424872716ef33a2b852ec8ded94db04cec2ca8e9c": {
+      "context2_tag": 0,
+      "worker_tag_table_ls": "0x98D0"
+    },
+    "e3017b51bde153ff1162b836b53b49138192bcf395255e352752643906cad546": {
+      "context2_tag": 0,
+      "worker_tag_table_ls": "0x8CB0"
+    },
+    "72d2d4be217e137cf64840eb26234dd28d2bb3bb48a3bd167ac77f379c966968": {
+      "context2_tag": 0,
+      "worker_tag_table_ls": "0x8E40"
+    },
+    "cf77a9261b28527e44490042284224f3e6d6b5c5c198ac6ab55aed47fc6dfda5": {
+      "context2_tag": 0,
+      "worker_tag_table_ls": "0x4D10"
+    },
+    "e96b20724428fdc8b851dd8dc658fc9f0ecbacad8d535f4cac736d90adf4e1f5": {
+      "context2_tag": 20
+    },
+    "26271c512c7087ff681da0318b2c872b872389eccde04f7d70fab03fcccd452f": {
+      "context2_tag": 0,
+      "worker_tag_table_ls": "0x6AB0"
+    },
+    "320cc6b6a2e3a9aae04d12da07b70b98e46fc223a0e7787b660f18487bcb09c6": {
+      "context2_tag": 0,
+      "worker_tag_table_ls": "0x34F0"
+    },
+    "dbe8e61f33684488a25c3baf4be83caa79f79155461499d1eedf1fc81430c20e": {
+      "context2_tag": 0,
+      "worker_tag_table_ls": "0x3DE0"
+    },
+    "0d7702450683089b975d414513460ad1d986909b67d764c984469a9433f2a440": {
+      "context2_tag": 0,
+      "worker_tag_table_ls": "0x4530"
+    },
+    "71d9b3a56872df3bda43ab904e4e8b6fa11097ab9dcfe3f5480598af702349c2": {
+      "context2_tag": 0,
+      "worker_tag_table_ls": "0x20E0"
+    },
+    "cd3d968432acaee666f355c174a06fef4d37fef20bd44f469486fbdea6e95ac8": {
+      "context2_tag": 0,
+      "worker_tag_table_ls": "0x2F70"
+    },
+    "cb1c1aa54e2aeb805c422d4c3f3b792946865ff16dc3840c25e86eb1248fd933": {
+      "context2_tag": 0,
+      "worker_tag_table_ls": "0x66A0"
+    },
+    "c0656986a0311f364fabf3144ca4f13594d183205af5a2fba2f37afcc98fac65": {
+      "context2_tag": 0,
+      "worker_tag_table_ls": "0x3D60"
+    },
+    "70ea29ea0cb16cac7472d52473dd5a3775b4052a4a412a3febdf9fd8ef0e5da0": {
+      "context2_tag": 0,
+      "worker_tag_table_ls": "0xF810",
+      "evidence": "EACC loads context+0x24 into r82; ED00 shifts r82 by 3 and indexes F810."
+    },
+    "d98de7843cafb2b1fa3e4a7d3c6ef3ce166d82b1137fd1bb0160496ed65e855c": {
+      "context2_tag": 0,
+      "worker_tag_table_ls": "0x5470"
+    },
+    "f79a77c7b0978c267fe20bb43bbce848046b6c3b630462bff377a64d4096e6d3": {
+      "context2_tag": 0,
+      "worker_tag_table_ls": "0x5040"
+    },
+    "f5a95a0a59a09a721a06dfc2cfa78afe15594155533f8dfb5ddba6ceea9175da": {
+      "context2_tag": 0,
+      "worker_tag_table_ls": "0x57E0"
+    },
+    "537d91e2bb62f83aca5e217155d03b3e71c5967294647bb58bf88672be8042e3": {
+      "context2_tag": 0,
+      "worker_tag_table_ls": "0x5C10"
+    },
+    "9ee6106cd8b82011dd9955cd0c6236b35c565f629d7c84a1729cac5c9fc72e96": {
+      "context2_tag": 0,
+      "worker_tag_table_ls": "0x5BB0"
+    },
+    "ecb95b16fd433691947551d84785878f8a4b6894b0708b0be834f48c50537a5b": {
+      "context2_tag": 0,
+      "worker_tag_table_ls": "0x5F30"
+    },
+    "0b5ef5e7cca8879233e4a4c4ba775302ad79d610406f71f57a87af34cd73bef0": {
+      "context2_tag": 0,
+      "worker_tag_table_ls": "0x5F30"
+    },
+    "4f74ad019abe8177176f5270ed6a4c93e8a1ca9281193ff0307d0dfb0f8e6a92": {
+      "context2_tag": 0,
+      "worker_tag_table_ls": "0x6650"
+    },
+    "f5a81f1a9bcde9c50d2bf05efaaa0fd7217283e1c0662274e8e0621efa838800": {
+      "context2_tag": 0,
+      "worker_tag_table_ls": "0x6AB0"
+    },
+    "d59511cee2c96a4453015753f1b54cc4f3551f57bfcbb23e356a5113dee74781": {
+      "context2_tag": 0,
+      "worker_tag_table_ls": "0x6A70"
+    },
+    "aa8999eb86fe64d265482be4d4fcb1f140b3f06a23730d969ed85a2749e5b09f": {
+      "context2_tag": 0,
+      "worker_tag_table_ls": "0x6A80"
+    },
+    "d86c0bc24345539515f1673344758e12eda17d8ed5a66394190149bab809e95d": {
+      "context2_tag": 0,
+      "worker_tag_table_ls": "0x6B60"
+    }
+  }
+}

@@ -130,6 +130,35 @@ target_include_directories(ps3recomp_runtime PRIVATE
 
 # Platform-specific link libraries
 if(WIN32)
+    # SDL GameController adds native support for DualSense and other HID pads.
+    # Keep XInput as the no-extra-dependency fallback for Xbox controllers.
+    find_package(SDL2 QUIET)
+    if(SDL2_FOUND)
+        if(TARGET SDL2::SDL2-static)
+            set(PS3RECOMP_SDL2_TARGET SDL2::SDL2-static)
+        elseif(TARGET SDL2::SDL2)
+            set(PS3RECOMP_SDL2_TARGET SDL2::SDL2)
+        endif()
+
+        if(PS3RECOMP_SDL2_TARGET)
+            target_link_libraries(ps3recomp_runtime PRIVATE ${PS3RECOMP_SDL2_TARGET})
+            get_target_property(_ps3recomp_sdl2_type ${PS3RECOMP_SDL2_TARGET} TYPE)
+            if(_ps3recomp_sdl2_type STREQUAL "SHARED_LIBRARY")
+                get_target_property(_ps3recomp_sdl2_runtime
+                    ${PS3RECOMP_SDL2_TARGET} IMPORTED_LOCATION)
+                set_property(GLOBAL PROPERTY PS3RECOMP_SDL2_RUNTIME
+                    "${_ps3recomp_sdl2_runtime}")
+            endif()
+        else()
+            target_include_directories(ps3recomp_runtime PRIVATE ${SDL2_INCLUDE_DIRS})
+            target_link_libraries(ps3recomp_runtime PRIVATE ${SDL2_LIBRARIES})
+        endif()
+        target_compile_definitions(ps3recomp_runtime PRIVATE PS3RECOMP_PAD_USE_SDL2=1)
+        message(STATUS "  SDL2:         found (Xbox and DualSense GameController input enabled)")
+    else()
+        message(STATUS "  SDL2:         not found (using XInput; install SDL2 for direct DualSense input)")
+    endif()
+
     target_link_libraries(ps3recomp_runtime PRIVATE
         ws2_32      # Winsock for network modules
         ole32       # COM for WASAPI audio
