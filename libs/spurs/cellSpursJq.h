@@ -27,6 +27,7 @@ extern "C" {
 #define CELL_SPURS_JQ_ERROR_QUEUE_EMPTY         0x80410A08
 #define CELL_SPURS_JQ_ERROR_AGAIN               0x80410A09
 #define CELL_SPURS_JQ_ERROR_ABORT               0x80410A0A
+#define CELL_SPURS_JQ_ERROR_ALIGN               0x80410A10
 
 /* Job types */
 #define CELL_SPURS_JQ_JOB_TYPE_DEFAULT  0
@@ -41,6 +42,8 @@ extern "C" {
 /* Limits */
 #define CELL_SPURS_JQ_MAX_QUEUES    16
 #define CELL_SPURS_JQ_MAX_JOBS      256
+#define CELL_SPURS_JQ_PORT2_ALIGN  128u
+#define CELL_SPURS_JQ_PORT2_SIZE   128u
 
 /* Opaque handle types */
 typedef u32 CellSpursJobQueue;
@@ -98,7 +101,8 @@ s32 cellSpursJobQueuePushJob(CellSpursJobQueue* jq, const CellSpursJob256* job,
 
 s32 cellSpursJobQueuePort2Create(CellSpursJobQueuePort* port, CellSpursJobQueue* jq);
 s32 cellSpursJobQueuePort2Destroy(CellSpursJobQueuePort* port);
-s32 cellSpursJobQueuePort2PushFlush(void);
+u64 cellSpursJobQueuePort2PushFlush(
+    u64 a0, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5, u64 a6, u64 a7);
 
 s32 cellSpursJobQueueSendSignal(CellSpursJobQueue* jq, CellSpursJobId id);
 s32 cellSpursJobQueueWait(CellSpursJobQueue* jq, CellSpursJobId id);

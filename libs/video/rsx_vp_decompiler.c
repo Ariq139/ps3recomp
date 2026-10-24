@@ -289,8 +289,9 @@ int rsx_vp_decompile_textures(const u8* ucode, u32 max_bytes,
         0, 0xFFFFu, out, out_size);
 }
 
-int rsx_vp_decompile_compact_ex(
-    const u8* ucode, u32 max_bytes, u32 vtex_mask, u32 input_mask,
+int rsx_vp_decompile_compact_textures(
+    const u8* ucode, u32 max_bytes, u32 vtex_mask,
+    u32 vtex_cube_mask, u32 vtex_1d_mask, u32 input_mask,
     char* out, u32 out_size)
 {
     rsx_vp_input_analysis analysis;
@@ -301,7 +302,16 @@ int rsx_vp_decompile_compact_ex(
     else
         input_mask = analysis.input_mask;
     return rsx_vp_decompile_impl(
-        ucode, max_bytes, vtex_mask, 0u, 0u, 1, input_mask, out, out_size);
+        ucode, max_bytes, vtex_mask, vtex_cube_mask, vtex_1d_mask,
+        1, input_mask, out, out_size);
+}
+
+int rsx_vp_decompile_compact_ex(
+    const u8* ucode, u32 max_bytes, u32 vtex_mask, u32 input_mask,
+    char* out, u32 out_size)
+{
+    return rsx_vp_decompile_compact_textures(
+        ucode, max_bytes, vtex_mask, 0u, 0u, input_mask, out, out_size);
 }
 
 static int rsx_vp_decompile_impl(

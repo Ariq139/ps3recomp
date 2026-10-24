@@ -124,6 +124,10 @@ def build_programs(args, registry_writer):
                          fingerprint=f'{fnv1a64(blob):016X}', status='discovered', occurrences=[occurrence])
                 unique[digest], blobs[digest], layouts[digest] = p, blob, info
                 report['programs'].append(p)
+        if not report['programs'] and not report['errors']:
+            report['errors'].append(
+                'No embedded SPU ELF programs found. Raw SPURS captures need '
+                'verified load/entry metadata and cannot be registered through --input/--input-dir.')
         # Runtime keys cannot distinguish collisions, including identical text
         # with differing data or one image's text matching another's full ELF.
         owners = {}

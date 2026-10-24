@@ -31,6 +31,7 @@
 /* The lifter's generated header, which declares ppu_context and the function
  * table. It comes first: everything below is written against that struct. */
 #include "ppu_recomp.h"
+#include "boot_program_dump.h"
 
 /* The Win32 names -- Sleep, GetTickCount64, CreateThread, InterlockedIncrement,
  * VirtualAlloc, the scalar typedefs -- from one place. On Windows this is a
@@ -388,6 +389,7 @@ int main(int argc, char** argv)
 
     derive_vfs_root(elf_path);
     printf("[boot] VFS root: %s\n", ppu_vfs_root);
+    ps3_boot_collect_programs(ppu_vfs_root, elf_path, argv[0]);
 
     ppu_recomp_register();   /* lifted function table -> address map */
     ps3_load_prx_modules();  /* this game's lifted system PRX, if it has any */

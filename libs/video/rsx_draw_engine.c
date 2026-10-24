@@ -6,9 +6,9 @@
  * below are that file's, so the two can be read side by side; the file itself
  * is vendored and stays exactly as it is.
  *
- * What is deliberately left out, because it is not renderer behaviour a title
- * needs: the shader disk cache, movie mode and its compositor, the a010
- * probe, and every YZ_PERF_PROFILE block.
+ * Persistent shader and PSO caches live in the D3D12 backend, not this shared
+ * draw engine. Movie mode and its compositor, the a010 probe, and every
+ * YZ_PERF_PROFILE block are also outside this module.
  */
 #include "rsx_draw_engine.h"
 

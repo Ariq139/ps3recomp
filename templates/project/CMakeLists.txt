@@ -212,6 +212,7 @@ endif()
 target_include_directories(${PROJECT_NAME} PRIVATE
     "${RECOMP_DIR}"                            # the generated ppu_recomp.h
     "${PS3RECOMP_DIR}/include"
+    "${PS3RECOMP_DIR}/runtime/cache"
     "${PS3RECOMP_DIR}/runtime/ppu"
     "${PS3RECOMP_DIR}/runtime/spu"
     "${PS3RECOMP_DIR}/runtime/memory"

@@ -37,6 +37,14 @@ typedef struct rsx_vp_input_analysis {
 int rsx_vp_analyze_inputs(const u8* ucode, u32 max_bytes,
                           rsx_vp_input_analysis* analysis);
 
+/* Texture-aware decompilation with a compact input signature. The analyzer
+ * must prove the requested mask; otherwise the generated shader declares all
+ * 16 guest inputs so the caller can retain the full vertex layout. */
+int rsx_vp_decompile_compact_textures(
+    const u8* ucode, u32 max_bytes, u32 vtex_mask,
+    u32 vtex_cube_mask, u32 vtex_1d_mask, u32 input_mask,
+    char* out, u32 out_size);
+
 /* Decompile an NV40 vertex program into an HLSL vertex shader.
  *   ucode    : VP bytecode (little-endian words, as in RPCS3's shader cache).
  *   max_bytes: safety bound.

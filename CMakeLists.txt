@@ -81,7 +81,7 @@ set_source_files_properties(${AT3_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")  # u
 list(APPEND HLE_SOURCES ${AT3_SOURCES})
 
 # Runtime core (syscalls, PPU, SPU, memory)
-file(GLOB_RECURSE RUNTIME_SOURCES
+file(GLOB_RECURSE RUNTIME_SOURCES CONFIGURE_DEPENDS
     "runtime/*.c"
     "runtime/*.cpp"
 )

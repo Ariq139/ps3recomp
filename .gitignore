@@ -83,7 +83,6 @@ recompiled/
 # while leaving replaceable game inputs and generated analysis/lift output local.
 p5_*/game/
 p5_*/recompiled/
-p5_*/spu/
 p5_*/symbols/
 p5_*/src/
 p5_*/tools/

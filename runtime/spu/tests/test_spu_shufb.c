@@ -13,6 +13,24 @@ int main(void)
     return 0;
 #else
     srand(12345);
+    /* Every selector in every destination position, with unique source bytes.
+     * This catches endian mapping and adjacent-byte contamination in SIMD masks. */
+    for (int sel = 0; sel < 256; ++sel) {
+        for (int lane = 0; lane < 16; ++lane) {
+            u128 a, b, c;
+            for (int i = 0; i < 16; ++i) {
+                a._u8[i] = (uint8_t)(i + 1);
+                b._u8[i] = (uint8_t)(i + 33);
+                c._u8[i] = (uint8_t)(i * 17);
+            }
+            c._u8[lane] = (uint8_t)sel;
+            u128 x = spu_shufb(a, b, c), y = spu_shufb_ref(a, b, c);
+            if (memcmp(&x, &y, 16)) {
+                printf("test_spu_shufb: selector %02X lane %d mismatch\n", sel, lane);
+                return 1;
+            }
+        }
+    }
     for (int it = 0; it < 200000; it++) {
         u128 a, b, c;
         for (int i = 0; i < 16; i++) {

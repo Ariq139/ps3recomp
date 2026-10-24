@@ -14,6 +14,7 @@
 #include <time.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <stdatomic.h>
 #include "ps3emu/log_first.h"
 #ifdef _WIN32
@@ -21,6 +22,7 @@
 #else
 #include <pthread.h>
 #include <errno.h>
+#include <unistd.h>
 #include "../platform/win32_compat.h"   /* LONG, InterlockedExchange, Sleep */
 #endif
 
@@ -96,6 +98,220 @@ static void spu_job_audit(uint64_t fp, uint32_t size, int image_id, int result)
     atomic_flag_clear_explicit(&lock, memory_order_release);
 }
 
+/* Runtime job images are dynamic: archives may be compressed/encrypted and
+ * some workloads assemble overlays before dispatch. Capture is enabled by
+ * default; SPU_DUMP_JOB_IMAGES=0 disables it and a path value selects another
+ * directory. Each distinct dispatched image is retained in the shared cache. SPU_DUMP_MISS uses the same
+ * uncapped writer for unknown-only captures. */
+typedef struct SpuDumpSeen {
+    struct SpuDumpSeen* next;
+    uint64_t fingerprint;
+    uint64_t directory_hash;
+    uint32_t size;
+} SpuDumpSeen;
+
+#define SPU_DUMP_SEEN_BUCKETS 1024u
+static SpuDumpSeen* s_spu_dump_seen[SPU_DUMP_SEEN_BUCKETS];
+static atomic_flag s_spu_dump_lock = ATOMIC_FLAG_INIT;
+static atomic_flag s_spu_dump_dir_lock = ATOMIC_FLAG_INIT;
+static atomic_uint s_spu_dump_temp_sequence;
+static atomic_int s_spu_dump_dir_configured;
+static char s_spu_dump_dir[512];
+static int s_spu_dump_dir_enabled;
+
+static void spu_job_dump_mkdirs(char* path)
+{
+    if (!path || !*path) return;
+    const size_t prefix = strlen(path) >= 3 && path[1] == ':' ? 3 : 0;
+    for (char* p = path + prefix; *p; ++p) {
+        if (*p != '/' && *p != '\\') continue;
+        char saved = *p;
+        *p = '\0';
+#ifdef _WIN32
+        if (*path) CreateDirectoryA(path, NULL);
+#else
+        if (*path) mkdir(path, 0755);
+#endif
+        *p = saved;
+    }
+#ifdef _WIN32
+    CreateDirectoryA(path, NULL);
+#else
+    mkdir(path, 0755);
+#endif
+}
+
+static const char* spu_job_dump_directory(void)
+{
+    if (atomic_load_explicit(&s_spu_dump_dir_configured, memory_order_acquire))
+        return s_spu_dump_dir_enabled ? s_spu_dump_dir : NULL;
+    while (atomic_flag_test_and_set_explicit(&s_spu_dump_dir_lock,
+                                              memory_order_acquire)) { }
+    if (!atomic_load_explicit(&s_spu_dump_dir_configured, memory_order_relaxed)) {
+        const char* setting = getenv("SPU_DUMP_JOB_IMAGES");
+        if (!setting || !*setting) setting = "1";
+        if (setting && *setting && strcmp(setting, "0") &&
+            strcmp(setting, "false")) {
+            if (!strcmp(setting, "1") || !strcmp(setting, "true")) {
+                const char* cache = getenv("PS3RECOMP_CACHE_DIR");
+                if (cache && *cache) {
+#ifdef _WIN32
+                    snprintf(s_spu_dump_dir, sizeof(s_spu_dump_dir),
+                             "%s\\spu_jobs", cache);
+#else
+                    snprintf(s_spu_dump_dir, sizeof(s_spu_dump_dir),
+                             "%s/spu_jobs", cache);
+#endif
+                } else {
+#ifdef _WIN32
+                    char local[MAX_PATH] = {0};
+                    DWORD n = GetEnvironmentVariableA("LOCALAPPDATA", local,
+                                                       (DWORD)sizeof(local));
+                    if (!n || n >= sizeof(local)) {
+                        n = GetTempPathA((DWORD)sizeof(local), local);
+                        if (n && n < sizeof(local) &&
+                            (local[n - 1] == '\\' || local[n - 1] == '/'))
+                            local[n - 1] = '\0';
+                    }
+                    if (n && n < sizeof(local))
+                        snprintf(s_spu_dump_dir, sizeof(s_spu_dump_dir),
+                                 "%s\\ps3recomp\\cache\\spu_jobs", local);
+#else
+                    const char* cache = getenv("XDG_CACHE_HOME");
+                    const char* home = getenv("HOME");
+                    if (cache && *cache)
+                        snprintf(s_spu_dump_dir, sizeof(s_spu_dump_dir),
+                                 "%s/ps3recomp/cache/spu_jobs", cache);
+                    else if (home && *home)
+                        snprintf(s_spu_dump_dir, sizeof(s_spu_dump_dir),
+                                 "%s/.cache/ps3recomp/cache/spu_jobs", home);
+#endif
+                }
+            } else {
+                snprintf(s_spu_dump_dir, sizeof(s_spu_dump_dir), "%s", setting);
+            }
+            s_spu_dump_dir_enabled = s_spu_dump_dir[0] != '\0';
+            if (s_spu_dump_dir_enabled) spu_job_dump_mkdirs(s_spu_dump_dir);
+        }
+        atomic_store_explicit(&s_spu_dump_dir_configured, 1, memory_order_release);
+    }
+    atomic_flag_clear_explicit(&s_spu_dump_dir_lock, memory_order_release);
+    return s_spu_dump_dir_enabled ? s_spu_dump_dir : NULL;
+}
+
+static int spu_dump_file_matches(const char* path, const uint8_t* image,
+                                 uint32_t image_size)
+{
+    FILE* file = fopen(path, "rb");
+    if (!file) return 0;
+    int matches = 1;
+    uint8_t chunk[4096];
+    uint32_t offset = 0;
+    while (offset < image_size) {
+        size_t want = image_size - offset;
+        if (want > sizeof(chunk)) want = sizeof(chunk);
+        size_t got = fread(chunk, 1, want, file);
+        if (got != want || memcmp(chunk, image + offset, want) != 0) {
+            matches = 0;
+            break;
+        }
+        offset += (uint32_t)got;
+    }
+    if (matches && fgetc(file) != EOF) matches = 0;
+    fclose(file);
+    return matches;
+}
+
+static void spu_dump_seen_remove(unsigned bucket, SpuDumpSeen* entry)
+{
+    while (atomic_flag_test_and_set_explicit(&s_spu_dump_lock,
+                                              memory_order_acquire)) { }
+    SpuDumpSeen** link = &s_spu_dump_seen[bucket];
+    while (*link && *link != entry) link = &(*link)->next;
+    if (*link) {
+        *link = entry->next;
+        free(entry);
+    }
+    atomic_flag_clear_explicit(&s_spu_dump_lock, memory_order_release);
+}
+
+static void spu_dump_job_image(const char* dir, uint64_t fingerprint,
+                               const uint8_t* image, uint32_t image_size)
+{
+    if (!dir || !*dir || !image || !image_size) return;
+    char directory[768];
+    snprintf(directory, sizeof(directory), "%s", dir);
+    dir = directory;
+    uint64_t directory_hash = spu_workload_fingerprint(dir, strlen(dir));
+    unsigned bucket = (unsigned)(fingerprint ^ (fingerprint >> 32) ^
+                                 directory_hash ^ image_size) % SPU_DUMP_SEEN_BUCKETS;
+    while (atomic_flag_test_and_set_explicit(&s_spu_dump_lock,
+                                              memory_order_acquire)) { }
+    for (SpuDumpSeen* e = s_spu_dump_seen[bucket]; e; e = e->next) {
+        if (e->fingerprint == fingerprint && e->directory_hash == directory_hash &&
+            e->size == image_size) {
+            atomic_flag_clear_explicit(&s_spu_dump_lock, memory_order_release);
+            return;
+        }
+    }
+    SpuDumpSeen* seen = (SpuDumpSeen*)malloc(sizeof(*seen));
+    if (!seen) {
+        atomic_flag_clear_explicit(&s_spu_dump_lock, memory_order_release);
+        return;
+    }
+    seen->fingerprint = fingerprint;
+    seen->directory_hash = directory_hash;
+    seen->size = image_size;
+    seen->next = s_spu_dump_seen[bucket];
+    s_spu_dump_seen[bucket] = seen;
+    atomic_flag_clear_explicit(&s_spu_dump_lock, memory_order_release);
+
+    spu_job_dump_mkdirs(directory);
+
+    char path[768], temp[832];
+    unsigned collision = 0;
+    for (;;) {
+        if (!collision)
+            snprintf(path, sizeof(path), "%s/spujob_%016llX_%u.bin", dir,
+                     (unsigned long long)fingerprint, image_size);
+        else
+            snprintf(path, sizeof(path), "%s/spujob_%016llX_%u_c%u.bin", dir,
+                     (unsigned long long)fingerprint, image_size, collision);
+        if (spu_dump_file_matches(path, image, image_size)) return;
+        FILE* exists = fopen(path, "rb");
+        if (!exists) break;
+        fclose(exists);
+        if (++collision == 1000) return;
+    }
+#ifdef _WIN32
+    const unsigned long process_id = (unsigned long)GetCurrentProcessId();
+#else
+    const unsigned long process_id = (unsigned long)getpid();
+#endif
+    const unsigned sequence = atomic_fetch_add_explicit(&s_spu_dump_temp_sequence,
+                                  1u, memory_order_relaxed);
+    snprintf(temp, sizeof(temp), "%s.tmp.%lu.%u", path, process_id, sequence);
+    FILE* file = fopen(temp, "wb");
+    if (!file) { spu_dump_seen_remove(bucket, seen); return; }
+    int ok = fwrite(image, 1, image_size, file) == image_size &&
+             fflush(file) == 0;
+    if (fclose(file) != 0) ok = 0;
+#ifdef _WIN32
+    if (ok) ok = MoveFileExA(temp, path,
+             MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+    if (!ok) DeleteFileA(temp);
+#else
+    if (ok) ok = rename(temp, path) == 0;
+    if (!ok) remove(temp);
+#endif
+    if (ok)
+        fprintf(stderr, "[spu-capture] saved %s (%u bytes)\n", path, image_size);
+    else {
+        spu_dump_seen_remove(bucket, seen);
+        fprintf(stderr, "[spu-capture] could not write %s\n", path);
+    }
+}
+
 #ifndef SPU_WORKLOAD_MAX
 #define SPU_WORKLOAD_MAX 256
 #endif
@@ -105,7 +321,7 @@ typedef struct {
     spu_lifted_entry_fn fn;
     int                 image_id;
     const char*         name;
-    uint32_t            job_context_tag;
+    spu_job_abi         job_abi;
 } spu_workload_entry;
 
 static spu_workload_entry s_registry[SPU_WORKLOAD_MAX];
@@ -117,8 +333,7 @@ typedef struct {
     spu_lifted_entry_fn fn;
     int image_id;
     const char* name;
-    uint32_t context2;
-    uint32_t job_context_tag;
+    spu_job_abi job_abi;
 } spu_raw_region;
 static spu_raw_region s_raw_regions[SPU_WORKLOAD_MAX];
 static unsigned s_raw_region_count;
@@ -138,16 +353,40 @@ void spu_workload_register_raw_region(const uint8_t* bytes, uint32_t size,
     spu_raw_region* r = &s_raw_regions[s_raw_region_count++];
     r->bytes = bytes; r->size = size; r->fn = fn;
     r->image_id = image_id; r->name = name;
-    r->context2 = 0; r->job_context_tag = 20u;
+    memset(&r->job_abi, 0, sizeof(r->job_abi));
+    r->job_abi.context_tag = 20u;
 }
 
 void spu_workload_set_raw_region_context2(int image_id, uint32_t tag)
 {
     if (tag > 31u) return;
+    const spu_job_abi abi = {
+        SPU_JOB_ABI_CONTEXT2 | SPU_JOB_ABI_KERNEL_CONTEXT,
+        tag, 0u, 0u, 0x3FF10u
+    };
+    spu_workload_set_raw_region_job_abi(image_id, &abi);
+}
+
+static int spu_job_abi_valid(const spu_job_abi* abi)
+{
+    const uint32_t valid_flags = SPU_JOB_ABI_CONTEXT2 | SPU_JOB_ABI_KERNEL_CONTEXT;
+    if (!abi || (abi->flags & ~valid_flags) || abi->context_tag > 31u ||
+        abi->manager_interface_ls > SPU_LS_SIZE - 4u ||
+        abi->manager_entry_slot_ls > SPU_LS_SIZE - 4u ||
+        abi->manager_entry_ls >= SPU_LS_SIZE)
+        return 0;
+    if ((abi->manager_interface_ls || abi->manager_entry_slot_ls ||
+         abi->manager_entry_ls) && !(abi->flags & SPU_JOB_ABI_CONTEXT2))
+        return 0;
+    return 1;
+}
+
+void spu_workload_set_raw_region_job_abi(int image_id, const spu_job_abi* abi)
+{
+    if (!spu_job_abi_valid(abi)) return;
     for (unsigned i = 0; i < s_raw_region_count; ++i)
         if (s_raw_regions[i].image_id == image_id) {
-            s_raw_regions[i].context2 = 1;
-            s_raw_regions[i].job_context_tag = tag;
+            s_raw_regions[i].job_abi = *abi;
             return;
         }
 }
@@ -156,12 +395,13 @@ int spu_workload_job_uses_context2(int image_id)
 {
     for (unsigned i = 0; i < s_raw_region_count; ++i)
         if (s_raw_regions[i].image_id == image_id)
-            return s_raw_regions[i].context2 != 0;
+            return (s_raw_regions[i].job_abi.flags & SPU_JOB_ABI_CONTEXT2) != 0;
     return 0;
 }
 
 static spu_lifted_entry_fn find_raw_region(const uint8_t* bytes, uint32_t size,
-                                          int* image_id)
+                                          int* image_id,
+                                          spu_job_abi* job_abi_out)
 {
     static atomic_uint reported[SPU_WORKLOAD_MAX];
     if (size < 64) return NULL;
@@ -170,6 +410,7 @@ static spu_lifted_entry_fn find_raw_region(const uint8_t* bytes, uint32_t size,
         if (size <= r->size && !memcmp(bytes, r->bytes, 16) &&
             !memcmp(bytes, r->bytes, size)) {
             *image_id = r->image_id;
+            if (job_abi_out) *job_abi_out = r->job_abi;
             if (getenv("SPU_IMAGE_MATCH_TRACE") &&
                 !atomic_exchange_explicit(&reported[i], 1, memory_order_relaxed))
                 fprintf(stderr, "[SPU] raw-region match image=%d size=%u name='%s'\n",
@@ -204,7 +445,9 @@ void spu_workload_register_img(uint64_t fingerprint, spu_lifted_entry_fn fn,
     s_registry[s_registry_count].fn       = fn;
     s_registry[s_registry_count].image_id = image_id;
     s_registry[s_registry_count].name     = name;
-    s_registry[s_registry_count].job_context_tag = 20u;
+    memset(&s_registry[s_registry_count].job_abi, 0,
+           sizeof(s_registry[s_registry_count].job_abi));
+    s_registry[s_registry_count].job_abi.context_tag = 20u;
     s_registry_count++;
 }
 
@@ -213,20 +456,49 @@ void spu_workload_set_job_context_tag(uint64_t fingerprint, uint32_t value)
     if (value > 31u) return;
     for (unsigned i = 0; i < s_registry_count; ++i) {
         if (s_registry[i].fp == fingerprint) {
-            s_registry[i].job_context_tag = value;
+            s_registry[i].job_abi.context_tag = value;
             return;
         }
     }
+}
+
+void spu_workload_set_job_abi(uint64_t fingerprint, const spu_job_abi* abi)
+{
+    if (!spu_job_abi_valid(abi)) return;
+    for (unsigned i = 0; i < s_registry_count; ++i) {
+        if (s_registry[i].fp == fingerprint) {
+            s_registry[i].job_abi = *abi;
+            return;
+        }
+    }
+}
+
+int spu_workload_get_job_abi(int image_id, spu_job_abi* abi_out)
+{
+    if (!abi_out) return 0;
+    for (unsigned i = 0; i < s_registry_count; ++i)
+        if (s_registry[i].image_id == image_id) {
+            *abi_out = s_registry[i].job_abi;
+            return 1;
+        }
+    for (unsigned i = 0; i < s_raw_region_count; ++i)
+        if (s_raw_regions[i].image_id == image_id) {
+            *abi_out = s_raw_regions[i].job_abi;
+            return 1;
+        }
+    memset(abi_out, 0, sizeof(*abi_out));
+    abi_out->context_tag = 20u;
+    return 0;
 }
 
 uint32_t spu_workload_job_context_tag(int image_id)
 {
     for (unsigned i = 0; i < s_registry_count; ++i)
         if (s_registry[i].image_id == image_id)
-            return s_registry[i].job_context_tag;
+            return s_registry[i].job_abi.context_tag;
     for (unsigned i = 0; i < s_raw_region_count; ++i)
         if (s_raw_regions[i].image_id == image_id)
-            return s_raw_regions[i].job_context_tag;
+            return s_raw_regions[i].job_abi.context_tag;
     return 20u;
 }
 
@@ -359,6 +631,7 @@ int spu_workload_dispatch(const uint8_t* image, uint32_t image_size,
     if (!image || image_size == 0) return 0;
 
     uint64_t fp = spu_workload_fingerprint(image, image_size);
+    spu_dump_job_image(spu_job_dump_directory(), fp, image, image_size);
     spu_lifted_entry_fn fn = NULL;
     int image_id = 0;
     for (unsigned i = 0; i < s_registry_count; i++)
@@ -1036,56 +1309,211 @@ static DWORD WINAPI spu_async_thread(LPVOID p) {
 static void* spu_async_thread(void* p) { spu_async_run((spu_async_job*)p); return NULL; }
 #endif
 
-int spu_workload_dispatch_job(const uint8_t* image, uint32_t image_size,
-                              uint32_t job_ea, uint32_t job_desc_size)
+#define SPU_JOB_PROFILE_SLOTS 512u
+typedef struct {
+    uint64_t fingerprint;
+    uint32_t image_size;
+    int image_id;
+    uint64_t dispatches, lookup_misses, failed_runs;
+    double total_seconds, max_seconds;
+} spu_job_profile_entry;
+
+static spu_job_profile_entry s_job_profiles[SPU_JOB_PROFILE_SLOTS];
+static atomic_flag s_job_profile_lock = ATOMIC_FLAG_INIT;
+static atomic_int s_job_profile_period = ATOMIC_VAR_INIT(-2);
+static double s_job_profile_last_report;
+static unsigned s_job_profile_overflow;
+
+static int spu_job_profile_period_seconds(void)
+{
+    int period = atomic_load_explicit(&s_job_profile_period, memory_order_acquire);
+    if (period != -2) return period;
+
+    const char* value = getenv("SPU_JOBPROF");
+    int parsed = value ? atoi(value) : 0;
+    if (parsed < 0) parsed = 0;
+    int expected = -2;
+    (void)atomic_compare_exchange_strong_explicit(
+        &s_job_profile_period, &expected, parsed,
+        memory_order_release, memory_order_relaxed);
+    return atomic_load_explicit(&s_job_profile_period, memory_order_acquire);
+}
+
+static double spu_job_profile_now(void)
+{
+#ifdef _WIN32
+    static LARGE_INTEGER frequency;
+    static volatile LONG frequency_state;
+    LONG state = InterlockedCompareExchange(&frequency_state, 1, 0);
+    if (state == 0) {
+        LARGE_INTEGER value;
+        frequency.QuadPart = QueryPerformanceFrequency(&value)
+            ? value.QuadPart : 0;
+        InterlockedExchange(&frequency_state, 2);
+    } else {
+        while (InterlockedCompareExchange(&frequency_state, 2, 2) != 2)
+            SwitchToThread();
+    }
+    LARGE_INTEGER counter;
+    if (frequency.QuadPart > 0 && QueryPerformanceCounter(&counter))
+        return (double)counter.QuadPart / (double)frequency.QuadPart;
+#else
+    struct timespec now = { 0, 0 };
+    if (clock_gettime(CLOCK_MONOTONIC, &now) == 0)
+        return (double)now.tv_sec + (double)now.tv_nsec * 1e-9;
+#endif
+    return 0.0;
+}
+
+static void spu_job_profile_record(uint64_t fingerprint, uint32_t image_size,
+                                   int image_id, int matched, int completed,
+                                   double elapsed, int report_period)
+{
+    spu_job_profile_entry report[SPU_JOB_PROFILE_SLOTS];
+    unsigned report_overflow = 0;
+    int should_report = 0;
+    uint64_t key = fingerprint ^ ((uint64_t)image_size << 17) ^
+                   (uint32_t)image_id;
+    unsigned first = (unsigned)((key ^ (key >> 32)) % SPU_JOB_PROFILE_SLOTS);
+
+    while (atomic_flag_test_and_set_explicit(&s_job_profile_lock,
+                                              memory_order_acquire)) { }
+    unsigned slot = first;
+    for (unsigned probe = 0; probe < SPU_JOB_PROFILE_SLOTS; ++probe) {
+        spu_job_profile_entry* entry = &s_job_profiles[slot];
+        if (entry->image_size == 0 ||
+            (entry->fingerprint == fingerprint &&
+             entry->image_size == image_size && entry->image_id == image_id))
+            break;
+        slot = (slot + 1u) % SPU_JOB_PROFILE_SLOTS;
+    }
+
+    spu_job_profile_entry* entry = &s_job_profiles[slot];
+    if (entry->image_size == 0) {
+        entry->fingerprint = fingerprint;
+        entry->image_size = image_size;
+        entry->image_id = image_id;
+    }
+    if (entry->fingerprint != fingerprint || entry->image_size != image_size ||
+        entry->image_id != image_id) {
+        s_job_profile_overflow++;
+    } else if (!matched) {
+        entry->lookup_misses++;
+    } else {
+        entry->dispatches++;
+        if (!completed) entry->failed_runs++;
+        if (elapsed > 0.0) {
+            entry->total_seconds += elapsed;
+            if (elapsed > entry->max_seconds) entry->max_seconds = elapsed;
+        }
+    }
+
+    const double now = spu_job_profile_now();
+    if (s_job_profile_last_report == 0.0)
+        s_job_profile_last_report = now;
+    else if (now - s_job_profile_last_report >= report_period) {
+        for (unsigned i = 0; i < SPU_JOB_PROFILE_SLOTS; ++i) {
+            report[i] = s_job_profiles[i];
+            s_job_profiles[i].dispatches = 0;
+            s_job_profiles[i].lookup_misses = 0;
+            s_job_profiles[i].failed_runs = 0;
+            s_job_profiles[i].total_seconds = 0.0;
+            s_job_profiles[i].max_seconds = 0.0;
+        }
+        report_overflow = s_job_profile_overflow;
+        s_job_profile_overflow = 0;
+        s_job_profile_last_report = now;
+        should_report = 1;
+    }
+    atomic_flag_clear_explicit(&s_job_profile_lock, memory_order_release);
+
+    if (!should_report) return;
+    for (unsigned i = 0; i < SPU_JOB_PROFILE_SLOTS; ++i) {
+        const spu_job_profile_entry* item = &report[i];
+        if (!item->dispatches && !item->lookup_misses) continue;
+        const double average_ms = item->dispatches
+            ? item->total_seconds * 1e3 / (double)item->dispatches : 0.0;
+        fprintf(stderr,
+                "[jobprof] image=%d fp=%016llX size=%u runs=%llu misses=%llu "
+                "failed=%llu total=%.2fs avg=%.2fms max=%.2fms\n",
+                item->image_id, (unsigned long long)item->fingerprint,
+                item->image_size, (unsigned long long)item->dispatches,
+                (unsigned long long)item->lookup_misses,
+                (unsigned long long)item->failed_runs, item->total_seconds,
+                average_ms, item->max_seconds * 1e3);
+    }
+    if (report_overflow)
+        fprintf(stderr, "[jobprof] profile table full; omitted=%u\n",
+                report_overflow);
+}
+
+/* JQ workers are long-lived, but may be stopped and restarted. Free the
+ * per-thread binary fingerprints when a worker exits. */
+#if defined(_MSC_VER)
+static __declspec(thread) spu_image_fingerprint_cache s_job_image_cache;
+#else
+static _Thread_local spu_image_fingerprint_cache s_job_image_cache;
+#endif
+void spu_workload_job_cache_thread_cleanup(void)
+{
+    for (unsigned i = 0; i < SPU_IMAGE_FINGERPRINT_SLOTS; ++i) {
+        free(s_job_image_cache.entries[i].snapshot);
+        memset(&s_job_image_cache.entries[i], 0,
+               sizeof(s_job_image_cache.entries[i]));
+    }
+    s_job_image_cache.clock = 0;
+}
+
+static int spu_workload_dispatch_job_internal(const uint8_t* image,
+                                              uint32_t image_size,
+                                              uint32_t job_ea,
+                                              uint32_t job_desc_size,
+                                              const uint8_t* desc_copy)
 {
     if (!image || image_size == 0) return 0;
 
-#ifdef _MSC_VER
-    static __declspec(thread) spu_image_fingerprint_cache image_cache;
-#else
-    static _Thread_local spu_image_fingerprint_cache image_cache;
-#endif
-    uint64_t fp = spu_image_fingerprint_cached(&image_cache, image, image_size,
+    const int profile_period = spu_job_profile_period_seconds();
+    const double profile_start = profile_period ? spu_job_profile_now() : 0.0;
+
+    uint64_t fp = spu_image_fingerprint_cached(&s_job_image_cache, image, image_size,
                                                spu_workload_fingerprint);
+    spu_dump_job_image(spu_job_dump_directory(), fp, image, image_size);
     spu_lifted_entry_fn fn = NULL;
     int image_id = 0;
-    for (unsigned i = 0; i < s_registry_count; i++)
-        if (s_registry[i].fp == fp) { fn = s_registry[i].fn; image_id = s_registry[i].image_id; break; }
-    if (!fn) fn = find_raw_region(image, image_size, &image_id);
+    spu_job_abi job_abi = { 0u, 20u, 0u, 0u, 0u };
+    for (unsigned i = 0; i < s_registry_count; i++) {
+        if (s_registry[i].fp == fp) {
+            fn = s_registry[i].fn;
+            image_id = s_registry[i].image_id;
+            job_abi = s_registry[i].job_abi;
+            break;
+        }
+    }
+    if (!fn) fn = find_raw_region(image, image_size, &image_id, &job_abi);
     if (!fn) {
+        if (profile_period)
+            spu_job_profile_record(fp, image_size, -1, 0, 0,
+                                   spu_job_profile_now() - profile_start,
+                                   profile_period);
         spu_job_audit(fp, image_size, 0, 0);
         /* Capped: an unlifted job a title dispatches every frame (Tornado
          * Outbreak's Wwise audio jobs) wrote 2 GB of these in three minutes,
          * and the logging itself distorts guest timing. */
-        { static unsigned long long miss_n = 0;
-          if (++miss_n <= 32 || miss_n % 100000 == 0)
+        { static atomic_ullong miss_n;
+          const unsigned long long n = atomic_fetch_add_explicit(
+              &miss_n, 1, memory_order_relaxed) + 1;
+          if (n <= 32 || n % 100000 == 0)
             fprintf(stderr, "[spurs-job] dispatch MISS fp=0x%016llX size=%u job=0x%08X (#%llu)\n",
-                    (unsigned long long)fp, image_size, job_ea, miss_n); }
+                    (unsigned long long)fp, image_size, job_ea, n); }
         /* SPU_DUMP_MISS=<dir>: write the unrecognised image out so it can be
          * lifted and registered. SPURS job binaries are raw code+data blobs
          * the title loads from its own data files -- unlike sys_spu_image
          * programs they are NOT embedded ELFs in the EBOOT, so
-         * tools/extract_spu_images.py cannot find them and this is the only
-         * place the bytes exist. One file per fingerprint. */
+         * tools/extract_spu_images.py cannot find them. The uncapped writer
+         * preserves every distinct image, not just the first 64. */
         { const char* _dir = getenv("SPU_DUMP_MISS");
-          if (_dir && *_dir) {
-              static uint64_t _seen[64]; static unsigned _nseen = 0;
-              unsigned _k = 0;
-              for (; _k < _nseen; _k++) if (_seen[_k] == fp) break;
-              if (_k == _nseen && _nseen < 64) {
-                  char _path[512];
-                  _seen[_nseen++] = fp;
-                  snprintf(_path, sizeof(_path), "%s/spujob_%016llX_%u.bin",
-                           _dir, (unsigned long long)fp, image_size);
-                  FILE* _f = fopen(_path, "wb");
-                  if (_f) {
-                      fwrite(image, 1, image_size, _f);
-                      fclose(_f);
-                      fprintf(stderr, "[spurs-job] dumped -> %s\n", _path);
-                  }
-              }
-          } }
+          if (_dir && *_dir)
+              spu_dump_job_image(_dir, fp, image, image_size); }
         return 0;
     }
     /* Two lines plus two explicit flushes PER JOB. A title running its audio
@@ -1099,34 +1527,38 @@ int spu_workload_dispatch_job(const uint8_t* image, uint32_t image_size,
                 (unsigned long long)fp, image_id, job_ea);
         fflush(stderr);
     }
-    /* SPU_JOBPROF=<secs>: host time spent per job image, printed every <secs>.
-     * Jobs run synchronously on the pushing thread, so this is frame time. */
-    static int s_prof = -1;
-    if (s_prof < 0) { const char* e = getenv("SPU_JOBPROF"); s_prof = e ? atoi(e) : 0; }
-    struct timespec t0, t1;
-    if (s_prof) timespec_get(&t0, TIME_UTC);
-    int rc = spu_run_spurs_job(fn, image_id, job_ea, job_desc_size);
+    int rc = desc_copy
+        ? spu_run_spurs_job_with_abi_snapshot(
+            fn, image_id, job_ea, job_desc_size, &job_abi, image, desc_copy)
+        : spu_run_spurs_job_with_abi(
+            fn, image_id, job_ea, job_desc_size, &job_abi);
+    if (profile_period)
+        spu_job_profile_record(fp, image_size, image_id, 1, rc == 0,
+                               spu_job_profile_now() - profile_start,
+                               profile_period);
     spu_job_audit(fp, image_size, image_id, rc == 0 ? 1 : -1);
-    if (s_prof) {
-        static double acc[64], last; static unsigned cnt[64];
-        timespec_get(&t1, TIME_UTC);
-        double now = t1.tv_sec + t1.tv_nsec * 1e-9;
-        unsigned k = (unsigned)image_id & 63;
-        acc[k] += now - (t0.tv_sec + t0.tv_nsec * 1e-9); cnt[k]++;
-        if (now - last >= s_prof) {
-            last = now;
-            for (unsigned i = 0; i < 64; i++) if (cnt[i]) {
-                fprintf(stderr, "[jobprof] image=%u n=%u total=%.2fs avg=%.2fms\n",
-                        i, cnt[i], acc[i], acc[i] * 1e3 / cnt[i]);
-                acc[i] = 0; cnt[i] = 0;
-            }
-        }
-    }
     if (verbose) {
         fprintf(stderr, "[spurs-job] job 0x%08X RETURNED rc=%d\n", job_ea, rc);
         fflush(stderr);
     }
     return rc == 0 ? 1 : 0;
+}
+
+/* The asynchronous queue owns immutable copies until this function returns. */
+int spu_workload_dispatch_job_snapshot(const uint8_t* image, uint32_t image_size,
+                                       uint32_t job_ea, uint32_t job_desc_size,
+                                       const uint8_t* job_desc_copy)
+{
+    if (!job_desc_copy) return 0;
+    return spu_workload_dispatch_job_internal(image, image_size, job_ea,
+                                               job_desc_size, job_desc_copy);
+}
+
+int spu_workload_dispatch_job(const uint8_t* image, uint32_t image_size,
+                              uint32_t job_ea, uint32_t job_desc_size)
+{
+    return spu_workload_dispatch_job_internal(image, image_size, job_ea,
+                                               job_desc_size, NULL);
 }
 
 /* RPCS3_REFERENCE_REVIEWED: this host wait/wake path implements the documented
@@ -1470,6 +1902,7 @@ int spu_workload_dispatch_async(const uint8_t* image, uint32_t image_size,
     if (!image || image_size == 0) return 0;
 
     uint64_t fp = spu_workload_fingerprint(image, image_size);
+    spu_dump_job_image(spu_job_dump_directory(), fp, image, image_size);
     spu_lifted_entry_fn fn = NULL;
     int image_id = 0;
     for (unsigned i = 0; i < s_registry_count; i++)
@@ -1482,20 +1915,8 @@ int spu_workload_dispatch_async(const uint8_t* image, uint32_t image_size,
          * way to resolve. These blobs are not ELFs in the EBOOT, so this dump
          * is the only place their bytes exist. */
         { const char* _dir = getenv("SPU_DUMP_MISS");
-          if (_dir && *_dir) {
-              static uint64_t _seen[64]; static unsigned _nseen = 0;
-              unsigned _k = 0;
-              for (; _k < _nseen; _k++) if (_seen[_k] == fp) break;
-              if (_k == _nseen && _nseen < 64) {
-                  char _path[512];
-                  _seen[_nseen++] = fp;
-                  snprintf(_path, sizeof(_path), "%s/spujob_%016llX_%u.bin",
-                           _dir, (unsigned long long)fp, image_size);
-                  FILE* _f = fopen(_path, "wb");
-                  if (_f) { fwrite(image, 1, image_size, _f); fclose(_f);
-                      fprintf(stderr, "[spu_workload] wrote %s\n", _path); }
-              }
-          } }
+          if (_dir && *_dir)
+              spu_dump_job_image(_dir, fp, image, image_size); }
         fprintf(stderr, "[spu_workload] async dispatch MISS fp=0x%016llX size=%u\n",
                 (unsigned long long)fp, image_size);
         return 0;

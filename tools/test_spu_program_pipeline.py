@@ -61,18 +61,71 @@ class Pipeline(unittest.TestCase):
     def manifest(self):
         return json.loads((self.output / 'inventory.json').read_text())
 
+    def test_empty_input_directory_reports_usage_error(self):
+        assets = self.root / 'empty'
+        assets.mkdir()
+        result = subprocess.run([sys.executable, str(TOOLS / 'build_spu_workloads.py'),
+                                 '--input-dir', str(assets), '--lifted', str(self.output),
+                                 '--out', str(self.output / 'registry.c')],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn('contains no input files', result.stderr)
+        self.assertNotIn('Traceback', result.stderr)
+
+    def test_recursive_input_excludes_generated_output(self):
+        assets = self.root / 'assets'
+        (assets / 'nested').mkdir(parents=True)
+        (assets / 'nested' / 'image.bin').write_bytes(elf())
+        self.output = assets / 'generated'
+        self.output.mkdir()
+        result = subprocess.run([sys.executable, str(TOOLS / 'build_spu_workloads.py'),
+                                 '--input-dir', str(assets), '--lifted', str(self.output),
+                                 '--out', str(self.output / 'registry.c')],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        # A second scan must exclude the previous extracted image and C files.
+        result = subprocess.run([sys.executable, str(TOOLS / 'build_spu_workloads.py'),
+                                 '--input-dir', str(assets), '--lifted', str(self.output),
+                                 '--out', str(self.output / 'registry.c')],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(len(self.manifest()['inputs']), 1)
+
+    def test_inventory_accepts_truncated_jobcrt_as_unknown(self):
+        blob = bytearray(0x3c)
+        blob[:16] = b'\x42\x00\x00\x02' * 4
+        blob[0x30:0x3c] = b'JOBCRT Ver14'
+        source = self.root / 'truncated.bin'
+        source.write_bytes(blob)
+        result = subprocess.run([sys.executable, str(TOOLS / 'inventory_spu_jobs.py'),
+                                 str(source), '--out', str(self.output)],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        row, = self.manifest()['candidates']
+        self.assertIsNone(row['size'])
+        self.assertFalse(row['ready_to_lift'])
+
+    def test_raw_capture_cannot_publish_an_empty_successful_registry(self):
+        result = self.run_pipeline(('spujob.bin', b'\x42\x00\x00\x02' * 4 + bytes(64)))
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(self.manifest()['complete'])
+        self.assertIn('Raw SPURS captures', self.manifest()['errors'][0])
+        self.assertFalse((self.output / 'spu_workloads.c').exists())
+
     def write_runtime_blocks(self):
         runtime = TOOLS.parent / 'runtime' / 'spu'
         # Compile the runtime's actual registry/fingerprint/ELF-size blocks
         # unchanged, without the unrelated DMA/job/platform dependency graph.
         workload = (runtime / 'spu_workload.c').read_text()
-        workload = workload[workload.index('uint64_t spu_workload_fingerprint('):
-                            workload.index('/* ---- dispatch')]
-        (self.root / 'workload.c').write_text('#include "spu_workload.h"\n#include <stdio.h>\n#include <string.h>\n' + workload)
+        fingerprint = workload[workload.index('uint64_t spu_workload_fingerprint('):
+                               workload.index('/* ---- registry')]
+        registry_start = workload.index('#ifndef SPU_WORKLOAD_MAX')
+        workload = fingerprint + workload[registry_start:workload.index('/* ---- dispatch')]
+        (self.root / 'workload.c').write_text('#include "spu_workload.h"\n#include <stdio.h>\n#include <string.h>\n#include <stdatomic.h>\n' + workload)
         channels = (runtime / 'spu_channels.c').read_text()
         channels = channels[channels.index('typedef void (*spu_fn)'):
                             channels.index('/* Which image registered')]
-        (self.root / 'registry.c').write_text('#include "spu_context.h"\n#include <stdio.h>\n' + channels)
+        (self.root / 'registry.c').write_text('#include "spu_context.h"\n#include <stdio.h>\n#include <stdatomic.h>\n' + channels)
         return runtime
 
     def test_exact_dedup_and_same_address_isolation(self):

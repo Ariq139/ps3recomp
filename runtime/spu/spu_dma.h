@@ -170,6 +170,30 @@ static inline int mfc_is_fence(uint32_t cmd)
 static inline int mfc_do_transfer(spu_context* spu, uint32_t lsa, uint64_t ea,
                                    uint32_t size, uint32_t cmd)
 {
+    /* SPU_SPURS_LOAD_TRACE=1: capture the actual MFC operands and payload for
+     * the kernel's dynamic workload fetch into LS 0xA00. The workload
+     * descriptor at LS 0x3FFE0 can be valid while this second GET still uses
+     * a bad EA, is rejected, or reads an empty source page. Keep this narrow
+     * and opt-in because the kernel retries the dispatch continuously. */
+    int spurs_load_trace = 0;
+    const uint32_t trace_lsa = lsa & SPU_LS_MASK;
+    if (spu->image_id == 104 && trace_lsa < 0x2C00u &&
+        (uint64_t)trace_lsa + size > 0xA00u &&
+        getenv("SPU_SPURS_LOAD_TRACE")) {
+        static _Thread_local unsigned trace_count;
+        if (trace_count < 12) {
+            ++trace_count;
+            spurs_load_trace = 1;
+            fprintf(stderr, "[spurs-load] begin spu=%u pc=0x%05X cmd=0x%08X"
+                            " lsa=0x%05X ea=0x%016llX size=0x%X ls-before=",
+                    spu->spu_id & 7u, (uint32_t)spu->pc & SPU_LS_MASK, cmd,
+                    lsa, (unsigned long long)ea, size);
+            for (unsigned i = 0; i < 16; ++i) fprintf(stderr, "%02X", spu->ls[(lsa + i) & SPU_LS_MASK]);
+            fputc('\n', stderr);
+            fflush(stderr);
+        }
+    }
+
     /* Upper16 command-channel bits carry replacement/transfer class IDs. */
     if ((cmd & 0xFFFFu) == MFC_SDCRZ_CMD) {
         /* CBEA 1.02 section 7.7.3: SDCRZ writes zeros in EA space, without an
@@ -417,6 +441,10 @@ static inline int mfc_do_transfer(spu_context* spu, uint32_t lsa, uint64_t ea,
      * so a garbage EA (e.g. from an incomplete SPURS context) is a failed DMA
      * rather than a host segfault. */
     if (!mfc_ea_range_committed(ea, size)) {
+        if (spurs_load_trace) {
+            fprintf(stderr, "[spurs-load] rejected: source EA range is uncommitted\n");
+            fflush(stderr);
+        }
         static int s_warned = 0;
         if (PS3_LOG_FIRST(s_warned, 32))
             fprintf(stderr, "[spu-dma] SKIP %s img=%d pc=0x%05X lsa=0x%05X ea=0x%08X "
@@ -440,6 +468,12 @@ static inline int mfc_do_transfer(spu_context* spu, uint32_t lsa, uint64_t ea,
 
     uint8_t* ls_ptr = &spu->ls[lsa];
     uint8_t* ea_ptr = vm_base + (uint32_t)ea; /* PS3 uses 32-bit effective addresses for SPU DMA */
+    if (spurs_load_trace && mfc_is_get(cmd)) {
+        fprintf(stderr, "[spurs-load] source=");
+        for (unsigned i = 0; i < 16; ++i) fprintf(stderr, "%02X", ea_ptr[i]);
+        fputc('\n', stderr);
+        fflush(stderr);
+    }
 
     /* SPU_STACKEA_WATCH=1: the LBP JobManagerWorker completion protocol hands the
      * SPU job a completion-word EA (param[4]) that lives on the PPU stack
@@ -597,6 +631,14 @@ static inline int mfc_do_transfer(spu_context* spu, uint32_t lsa, uint64_t ea,
           } }
         /* GET: main memory -> local store */
         memcpy(ls_ptr, ea_ptr, size);
+        if (spurs_load_trace) {
+            fprintf(stderr, "[spurs-load] complete spu=%u pc=0x%05X"
+                            " ls-after=",
+                    spu->spu_id & 7u, (uint32_t)spu->pc & SPU_LS_MASK);
+            for (unsigned i = 0; i < 16; ++i) fprintf(stderr, "%02X", ls_ptr[i]);
+            fputc('\n', stderr);
+            fflush(stderr);
+        }
         /* SPU_STACKEA_WATCH (b): scan the just-loaded payload for a 0xD00Cxxxx
          * dword = the completion-word EA arriving in a job buffer. */
         { static int s_se = -1; if (s_se < 0) s_se = getenv("SPU_STACKEA_WATCH") ? 1 : 0;

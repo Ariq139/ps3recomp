@@ -81,7 +81,8 @@ def scan(path, known, output):
                     row.update(size=len(blob), extent='exact-runtime-capture',
                                capture=source, ready_to_lift=True)
                     break
-            if row['size'] is None and data[offset+0x30:offset+0x3c] == b'JOBCRT Ver14':
+            if (row['size'] is None and offset + 0x40 <= len(data) and
+                    data[offset+0x30:offset+0x3c] == b'JOBCRT Ver14'):
                 # Observed JOBCRT layout: initialized-end field + fixed 64B
                 # tail. Verified against runtime sizes 32064 and 31232. Keep
                 # the inferred extent labelled until a runtime match proves it.
@@ -116,15 +117,34 @@ def scan(path, known, output):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument('inputs', nargs='+', type=Path)
+    ap.add_argument('inputs', nargs='*', type=Path,
+                    help='Files to scan (repeatable positional arguments)')
+    ap.add_argument('--input-dir', action='append', default=[], type=Path,
+                    help='Recursively scan every file in a game/assets directory')
     ap.add_argument('--known', action='append', default=[], type=Path,
                     help='Runtime dump file or directory (repeatable)')
     ap.add_argument('--out', type=Path, required=True)
     args = ap.parse_args()
+    paths = [path.resolve() for path in args.inputs]
+    output = args.out.resolve()
+    for root in args.input_dir:
+        root = root.resolve()
+        if not root.is_dir():
+            ap.error(f'--input-dir is not a directory: {root}')
+        for path in root.rglob('*'):
+            if not path.is_file() or path.is_symlink():
+                continue
+            resolved = path.resolve()
+            if resolved.is_relative_to(output):
+                continue
+            paths.append(resolved)
+    paths = sorted(set(paths))
+    if not paths:
+        ap.error('provide one or more input files or --input-dir')
     args.out.mkdir(parents=True, exist_ok=True)
     known = known_images(args.known)
     rows, sources = [], []
-    for path in args.inputs:
+    for path in paths:
         print(f'Scanning {path} ({path.stat().st_size:,} bytes)', flush=True)
         found = scan(path, known, args.out)
         rows.extend(found)

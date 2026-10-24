@@ -41,6 +41,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 #include <string.h>
 #include "ps3emu/log_first.h"
 
@@ -154,8 +155,41 @@ SPURS_JOB_TLS int g_spurs_job_mbox_valid;
 SPURS_JOB_TLS uint32_t g_spurs_job_spu_num;
 void spurs_job_set_spu_num(uint32_t n) { g_spurs_job_spu_num = n; }
 
-int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
-                      uint32_t job_ea, uint32_t job_desc_size)
+/* Immutable copies supplied by the asynchronous JQ. Addresses in DMA entries
+ * remain guest EAs; only the descriptor itself and initial binary are snapped. */
+static uint32_t job_g32(uint32_t job_ea, const uint8_t* snapshot,
+                        uint32_t snapshot_size, uint32_t ea)
+{
+    if (snapshot && ea >= job_ea && ea - job_ea <= snapshot_size &&
+        snapshot_size - (ea - job_ea) >= 4u) {
+        const uint8_t* p = snapshot + (ea - job_ea);
+        return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+               ((uint32_t)p[2] << 8) | (uint32_t)p[3];
+    }
+    return g32(ea);
+}
+static uint16_t job_g16(uint32_t job_ea, const uint8_t* snapshot,
+                        uint32_t snapshot_size, uint32_t ea)
+{
+    if (snapshot && ea >= job_ea && ea - job_ea <= snapshot_size &&
+        snapshot_size - (ea - job_ea) >= 2u) {
+        const uint8_t* p = snapshot + (ea - job_ea);
+        return (uint16_t)(((uint16_t)p[0] << 8) | p[1]);
+    }
+    return g16(ea);
+}
+static uint64_t job_g64(uint32_t job_ea, const uint8_t* snapshot,
+                        uint32_t snapshot_size, uint32_t ea)
+{
+    return ((uint64_t)job_g32(job_ea, snapshot, snapshot_size, ea) << 32) |
+           job_g32(job_ea, snapshot, snapshot_size, ea + 4u);
+}
+
+static int spu_run_spurs_job_internal(spu_lifted_entry_fn entry, int image_id,
+                                     uint32_t job_ea, uint32_t job_desc_size,
+                                     const spu_job_abi* job_abi_in,
+                                     const uint8_t* image_copy,
+                                     const uint8_t* desc_copy)
 {
     if (!entry || !job_ea) return -1;
 
@@ -163,26 +197,27 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
      * getenv takes the CRT environment lock on Windows, and this path runs
      * for every submitted job on several host threads. */
     static SPURS_JOB_TLS int trace_initialized;
-    static SPURS_JOB_TLS int trace_desc, trace_desc_level, trace_dump, trace_gfd;
+    static SPURS_JOB_TLS int trace_desc, trace_desc_level, trace_dump, trace_manager;
     if (!trace_initialized) {
         const char* desc = getenv("SPURS_JOB_DESCDUMP");
         trace_desc = desc != NULL;
         trace_desc_level = desc ? atoi(desc) : 0;
         trace_dump = getenv("SPURS_JOB_DUMP") != NULL;
-        trace_gfd = getenv("GFD_QUEUE_TRACE") != NULL;
+        trace_manager = getenv("SPURS_JOB_MANAGER_TRACE") != NULL ||
+                        getenv("GFD_QUEUE_TRACE") != NULL;
         trace_initialized = 1;
     }
 
     /* ---- descriptor ---------------------------------------------------- */
-    uint32_t ea_bin   = (uint32_t)(g64(job_ea + JH_EA_BINARY) & ~1ull);
-    uint32_t size_bin = (uint32_t)g16(job_ea + JH_SIZE_BINARY) << 4;
-    uint32_t n_dma    = (uint32_t)g16(job_ea + JH_SIZE_DMA_LIST) / 8u;
-    uint32_t use_io   = g32(job_ea + JH_USE_INOUT_BUFFER);
-    uint32_t size_io  = g32(job_ea + JH_SIZE_IN_OR_INOUT);
-    uint32_t size_out = g32(job_ea + JH_SIZE_OUT);
-    uint32_t size_stk = (uint32_t)g16(job_ea + JH_SIZE_STACK) << 4;
-    uint32_t size_scr = (uint32_t)g16(job_ea + JH_SIZE_SCRATCH) << 4;
-    uint32_t n_cache  = g32(job_ea + JH_SIZE_CACHE_DMA_LIST) / 8u;
+    uint32_t ea_bin   = (uint32_t)(job_g64(job_ea, desc_copy, job_desc_size, job_ea + JH_EA_BINARY) & ~1ull);
+    uint32_t size_bin = (uint32_t)job_g16(job_ea, desc_copy, job_desc_size, job_ea + JH_SIZE_BINARY) << 4;
+    uint32_t n_dma    = (uint32_t)job_g16(job_ea, desc_copy, job_desc_size, job_ea + JH_SIZE_DMA_LIST) / 8u;
+    uint32_t use_io   = job_g32(job_ea, desc_copy, job_desc_size, job_ea + JH_USE_INOUT_BUFFER);
+    uint32_t size_io  = job_g32(job_ea, desc_copy, job_desc_size, job_ea + JH_SIZE_IN_OR_INOUT);
+    uint32_t size_out = job_g32(job_ea, desc_copy, job_desc_size, job_ea + JH_SIZE_OUT);
+    uint32_t size_stk = (uint32_t)job_g16(job_ea, desc_copy, job_desc_size, job_ea + JH_SIZE_STACK) << 4;
+    uint32_t size_scr = (uint32_t)job_g16(job_ea, desc_copy, job_desc_size, job_ea + JH_SIZE_SCRATCH) << 4;
+    uint32_t n_cache  = job_g32(job_ea, desc_copy, job_desc_size, job_ea + JH_SIZE_CACHE_DMA_LIST) / 8u;
 
     if (n_cache > 4) n_cache = 4;                    /* jm2 caps at 4 */
     if (!size_stk) size_stk = JOB_STACK_DEFAULT;
@@ -192,11 +227,16 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
         return -1;
     }
 
-    uint8_t* ls = (uint8_t*)calloc(1, SPU_LS_SIZE);
-    if (!ls) return -1;
+    /* Stage directly into the execution context. The old path zeroed a
+     * separate 256 KB buffer, zeroed the context's own local store, then
+     * copied the full buffer into it for every synchronous job. */
+    spu_context* ctx = (spu_context*)malloc(sizeof(*ctx));
+    if (!ctx) return -1;
+    spu_context_init(ctx, 0);
+    uint8_t* ls = ctx->ls;
 
     /* ---- binary at LS 0 (PIC, so delta 0 keeps the lifted addresses) ---- */
-    memcpy(ls, vm_base + ea_bin, size_bin);
+    memcpy(ls, image_copy ? image_copy : vm_base + ea_bin, size_bin);
 
     /* ---- regions, following _cellSpursCheckJob's own arithmetic --------- */
     uint32_t p         = ALIGN1024(size_bin);
@@ -226,7 +266,7 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
     uint32_t cache_base = dma_base + n_dma * 8u;     /* ... then cache list */
     uint32_t cache_ls[4] = { 0, 0, 0, 0 };
     for (uint32_t i = 0; i < n_cache; i++) {
-        uint64_t e   = g64(cache_base + i * 8u);
+        uint64_t e   = job_g64(job_ea, desc_copy, job_desc_size, cache_base + i * 8u);
         uint32_t sz  = (uint32_t)(e >> 32);
         uint32_t eal = (uint32_t)e;
         if (!sz || !eal) continue;
@@ -239,7 +279,7 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
     /* ---- input DMA list -> ioBuffer, each entry 16-byte aligned ---------- */
     uint32_t io_cur = io_ls, io_used = 0;
     for (uint32_t i = 0; i < n_dma; i++) {
-        uint64_t e   = g64(dma_base + i * 8u);
+        uint64_t e   = job_g64(job_ea, desc_copy, job_desc_size, dma_base + i * 8u);
         uint32_t sz  = (uint32_t)((e >> 32) & 0x7FFFu);
         uint32_t eal = (uint32_t)e;
         if (!sz || !eal) continue;
@@ -259,32 +299,35 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
     if (p > ctx_ls)
         fprintf(stderr, "[spurs-job] job 0x%08X: WARNING regions reach 0x%X, "
                         "past the context at 0x%X\n", job_ea, p, ctx_ls);
-    memcpy(ls + desc_ls, vm_base + job_ea, dsz);
+    memcpy(ls + desc_ls, desc_copy ? desc_copy : vm_base + job_ea, dsz);
 
     ls32(ls, ctx_ls + JC_IO_BUFFER, io_ls);
     for (int i = 0; i < 4; i++)
         ls32(ls, ctx_ls + JC_CACHE_BUFFER + (uint32_t)i * 4u, cache_ls[i]);
     /* sizeJobDescriptor:4 is the first bitfield of a big-endian u32, so it
      * occupies the TOP 4 bits. 0 means 64 bytes, otherwise n*128. */
-    /* The low 28 bits carry a manager interface pointer for JOBCRT Ver13.
-     * P5's image 103 uses a different service table at 0x3FB80. */
+    /* The low 28 bits carry the job manager interface for Context2 CRTs.
+     * Exact-image ABI metadata supplies validated per-binary exceptions. */
     const int jobcrt_ver13 = memcmp(ls + 0x30, "JOBCRT Ver13", 12) == 0;
-    const int registered_context2 = spu_workload_job_uses_context2(image_id);
-    /* Captured P5 jobs use the same Context2 manager interface without the
-     * Ver13 text signature. Their CRT rejects a zero low-28-bit pointer
-     * before calling job main. This includes the debug captures (101/102 and
-     * 0x5000..0x5011) and two raw jobs captured from the release build
-     * (150/151); image 150 reaches STOPD at LS 0x42CC if this word is zero.
-     * Release image 152 is the exact same GFD worker as debug image 103 and
-     * uses that worker's service table and slot convention instead. */
-    const int p5_gfd_worker = image_id == 103 || image_id == 152;
-    const int p5_captured_job = image_id == 101 || image_id == 102 ||
-                              (image_id >= 0x5000 && image_id <= 0x5011) ||
-                              (image_id >= 150 && image_id <= 151);
-    uint32_t jm_iface = (jobcrt_ver13 || p5_captured_job || registered_context2) ? ctx_ls + 0x30
-                       : p5_gfd_worker ? 0x3FB80u : 0u;
-    if (p5_captured_job || registered_context2)
-        ls32(ls, jm_iface + 4u, 0x3FF10u);
+    spu_job_abi job_abi = { 0u, 20u, 0u, 0u, 0u };
+    if (job_abi_in) job_abi = *job_abi_in;
+    if (jobcrt_ver13) {
+        job_abi.flags |= SPU_JOB_ABI_CONTEXT2 | SPU_JOB_ABI_KERNEL_CONTEXT;
+        if (!job_abi.manager_entry_ls) job_abi.manager_entry_ls = 0x3FF10u;
+    }
+    const int use_context2 =
+        (job_abi.flags & SPU_JOB_ABI_CONTEXT2) != 0;
+    const int overlay_kernel_context =
+        (job_abi.flags & SPU_JOB_ABI_KERNEL_CONTEXT) != 0;
+    const int fixed_manager_interface = job_abi.manager_interface_ls != 0;
+    uint32_t jm_iface = use_context2
+        ? (fixed_manager_interface ? job_abi.manager_interface_ls : ctx_ls + 0x30u)
+        : 0u;
+    if (jm_iface && job_abi.manager_entry_ls) {
+        const uint32_t entry_slot = job_abi.manager_entry_slot_ls
+            ? job_abi.manager_entry_slot_ls : jm_iface + 4u;
+        ls32(ls, entry_slot, job_abi.manager_entry_ls);
+    }
     /* The same crt also reads the SPURS kernel context with ABSOLUTE loads
      * (lqa): spuNum at 0x1C8 (cellSpursGetCurrentSpuId), the trace buffer at
      * 0x210, a trace-enable byte at 0x175. On hardware the kernel owns
@@ -292,27 +335,22 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
      * job's own instruction words and it indexed per-SPU tables with an opcode
      * and halted. The lifted code never reads those bytes as data, so overlay
      * the kernel's view: SPU 0, our DMA tag, tracing off. */
-    if (jobcrt_ver13 || p5_captured_job || registered_context2) {
+    if (overlay_kernel_context) {
         memset(ls + 0x170, 0, 0x10);
         memset(ls + 0x1C0, 0, 0x10);
         ls32(ls, 0x1C8, g_spurs_job_spu_num);
-        ls32(ls, 0x1CC, spu_workload_job_context_tag(image_id));
+        ls32(ls, 0x1CC, job_abi.context_tag);
         memset(ls + 0x210, 0, 0x10);
     }
-    if (p5_gfd_worker)
-        ls32(ls, 0x3FB84u, 0x3FF10u);
     ls32(ls, ctx_ls + JC_SIZE_JOB_DESC,
          ((dsz == 64 ? 0u : (dsz / 128u) & 0xFu) << 28) | jm_iface);
     ls16(ls, ctx_ls + JC_NUM_IO_BUFFER,    (uint16_t)n_dma);
     ls16(ls, ctx_ls + JC_NUM_CACHE_BUFFER, (uint16_t)n_cache);
     ls32(ls, ctx_ls + JC_O_BUFFER, out_ls);
     ls32(ls, ctx_ls + JC_S_BUFFER, s_ls);
-    /* Normal CellSpursJobContext2 jobs use the SDK-reserved DMA tag 20.
-     * P5's GFD worker images 103/152 use this word as a 0-based worker-slot
-     * index into its four-entry DMA-tag table (SPU image table at 0xCEE0),
-     * so this single-worker host runner must pass slot 0 for that image. */
-    ls32(ls, ctx_ls + JC_DMA_TAG,
-         p5_gfd_worker ? 0u : spu_workload_job_context_tag(image_id));
+    /* The SDK default is DMA tag 20. A verified per-image ABI can use the
+     * Context2 word as a worker-slot selector instead. */
+    ls32(ls, ctx_ls + JC_DMA_TAG, job_abi.context_tag);
     ls32(ls, ctx_ls + JC_EA_JOB_DESCRIPTOR,     0);
     ls32(ls, ctx_ls + JC_EA_JOB_DESCRIPTOR + 4, job_ea);
 
@@ -334,7 +372,7 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
           fprintf(stderr, "[spurs-job] desc @0x%08X (%u bytes):", job_ea, dsz);
           for (uint32_t o = 0; o < dsz && o < 128; o += 4) {
               if ((o & 31) == 0) fprintf(stderr, "\n    +%02X:", o);
-              fprintf(stderr, " %08X", g32(job_ea + o));
+              fprintf(stderr, " %08X", job_g32(job_ea, desc_copy, job_desc_size, job_ea + o));
           }
           fprintf(stderr, "\n");
           /* SPURS_JOB_DESCDUMP=2: follow plausible guest EAs in the job user
@@ -343,7 +381,7 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
            * originates in one of these blocks. */
           if (trace_desc_level >= 2) {
               for (uint32_t o = JH_SIZE; o < dsz && o < 128; o += 4) {
-                  uint32_t v = g32(job_ea + o);
+                  uint32_t v = job_g32(job_ea, desc_copy, job_desc_size, job_ea + o);
                   if (v < 0x10000u || v >= 0xD0000000u) continue;
                   fprintf(stderr, "[spurs-job]   user+0x%02X -> 0x%08X:", o, v);
                   for (uint32_t q = 0; q < 8; q++)
@@ -361,13 +399,13 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
      * the user data + that command block so the bail path is attributable. */
     uint32_t dump_cmd = 0;
     if (trace_dump) {
-        uint64_t ud  = g64(job_ea + JH_SIZE);        /* desc+0x30 */
+        uint64_t ud  = job_g64(job_ea, desc_copy, job_desc_size, job_ea + JH_SIZE);        /* desc+0x30 */
         uint32_t cmd = (uint32_t)ud;                 /* low word = EA */
         fprintf(stderr, "[spurs-job] job 0x%08X userdata: %016llX %016llX %016llX %016llX\n",
                 job_ea, (unsigned long long)ud,
-                (unsigned long long)g64(job_ea + JH_SIZE + 8),
-                (unsigned long long)g64(job_ea + JH_SIZE + 16),
-                (unsigned long long)g64(job_ea + JH_SIZE + 24));
+                (unsigned long long)job_g64(job_ea, desc_copy, job_desc_size, job_ea + JH_SIZE + 8),
+                (unsigned long long)job_g64(job_ea, desc_copy, job_desc_size, job_ea + JH_SIZE + 16),
+                (unsigned long long)job_g64(job_ea, desc_copy, job_desc_size, job_ea + JH_SIZE + 24));
         if (cmd && cmd < 0x50000000u) {
             dump_cmd = cmd;
             fprintf(stderr, "[spurs-job]   cmdblock @0x%08X:", cmd);
@@ -395,11 +433,8 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
     }
 
     /* ---- enter the job -------------------------------------------------- */
-    spu_context ctx;
-    spu_context_init(&ctx, 0);
-    ctx.image_id = image_id;
-    ctx.spurs_job_services = 1;
-    memcpy(ctx.ls, ls, SPU_LS_SIZE);
+    ctx->image_id = image_id;
+    ctx->spurs_job_services = 1;
     /* SPU stack grows down. A function saves its link register in its
      * caller's frame, at 16($sp), so the entry's first store lands 16 bytes
      * above $sp. The cache buffers start right at stack_top: with $sp at
@@ -407,18 +442,18 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
      * cacheBuffer[0] (Twisted Metal's Edge jobs read their viewport there and
      * got width = height = 0). Leave the caller's 32-byte frame inside the
      * stack. */
-    ctx.gpr[1]._u32[0] = (stack_top - 32u) & ~15u;
+    ctx->gpr[1]._u32[0] = (stack_top - 32u) & ~15u;
     /* Link register: where the job returns when it is done. The job manager
      * would pass an address inside itself; 0 makes the job re-enter its own
      * entry at LS 0 and run a bogus second lap. */
-    ctx.gpr[0]._u32[0] = 0x3FF00u;                   /* SPU_JOB_RETURN_LS */
-    ctx.gpr[3]._u32[0] = ctx_ls;                     /* CellSpursJobContext2* */
-    ctx.gpr[4]._u32[0] = desc_ls;                    /* CellSpursJob256*      */
+    ctx->gpr[0]._u32[0] = 0x3FF00u;                   /* SPU_JOB_RETURN_LS */
+    ctx->gpr[3]._u32[0] = ctx_ls;                     /* CellSpursJobContext2* */
+    ctx->gpr[4]._u32[0] = desc_ls;                    /* CellSpursJob256*      */
 
     { static int _n = 0;
       if (PS3_LOG_FIRST(_n, 4))
           fprintf(stderr, "[spurs-job] ENTER r3=%08X r4=%08X r1=%08X entry-fn image=%d\n",
-                  ctx.gpr[3]._u32[0], ctx.gpr[4]._u32[0], ctx.gpr[1]._u32[0],
+                  ctx->gpr[3]._u32[0], ctx->gpr[4]._u32[0], ctx->gpr[1]._u32[0],
                   image_id); }
     /* NOTE: after its work the job's runtime jumps to LS 0 ("return to the
      * jm2 kernel" -- real layout has the kernel at 0, jobs above; we load the
@@ -426,63 +461,64 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
      * and trips its parameter guard, which HALTS -- ending the run. So the
      * HALT-ASSERT heqi 0x1650 seen once per jm2 job is NORMAL COMPLETION
      * noise, not a failure: the job's real work finished before the jump. */
-    const int halted = spu_run_with_halt(entry, &ctx);
-    const uint32_t exit_pc = ctx.pc & SPU_LS_MASK;
+    const int halted = spu_run_with_halt(entry, ctx);
+    const uint32_t exit_pc = ctx->pc & SPU_LS_MASK;
     /* The manager return trampolines terminate via spu_halt without being an
      * SPU halt instruction. A STOP or halt at any other PC is not completion. */
     const int manager_return = halted &&
         (exit_pc == 0x3FF00u || exit_pc == 0u) &&
-        ctx.status != SPU_STATUS_STOPPED_BY_STOP &&
-        ctx.status != SPU_STATUS_STOPPED_BY_HALT;
+        ctx->status != SPU_STATUS_STOPPED_BY_STOP &&
+        ctx->status != SPU_STATUS_STOPPED_BY_HALT;
     const int completed = manager_return || (!halted &&
-        ctx.status != SPU_STATUS_STOPPED_BY_STOP &&
-        ctx.status != SPU_STATUS_STOPPED_BY_HALT);
+        ctx->status != SPU_STATUS_STOPPED_BY_STOP &&
+        ctx->status != SPU_STATUS_STOPPED_BY_HALT);
     if (!completed) {
-        static unsigned failures;
-        if (failures++ < 32)
+        static atomic_uint failures;
+        if (atomic_fetch_add_explicit(&failures, 1, memory_order_relaxed) < 32)
             fprintf(stderr, "[spurs-job] execution failed image=%d job=%08X "
                     "pc=%05X status=%X stop=%X halted=%d\n", image_id,
-                    job_ea, exit_pc, ctx.status, ctx.stop_code, halted);
+                    job_ea, exit_pc, ctx->status, ctx->stop_code, halted);
     }
-    static int gfd_job_trace_count;
-    if (trace_gfd && p5_gfd_worker && gfd_job_trace_count++ < 16)
+    static atomic_int manager_trace_count;
+    if (trace_manager && fixed_manager_interface &&
+        atomic_fetch_add_explicit(&manager_trace_count, 1, memory_order_relaxed) < 16)
     {
-        fprintf(stderr, "[gfd-spu-job] job=%08X pc=%05X status=%X stop=%X r3=%08X\n",
-                job_ea, ctx.pc, ctx.status, ctx.stop_code, ctx.gpr[3]._u32[0]);
+        fprintf(stderr, "[spu-job-manager] job=%08X pc=%05X status=%X stop=%X r3=%08X\n",
+                job_ea, ctx->pc, ctx->status, ctx->stop_code, ctx->gpr[3]._u32[0]);
     }
-    if (trace_gfd && p5_gfd_worker &&
-        ctx.status == SPU_STATUS_STOPPED_BY_HALT) {
-        static unsigned gfd_halt_trace_count;
-        if (gfd_halt_trace_count++ < 4) {
+    if (trace_manager && fixed_manager_interface &&
+        ctx->status == SPU_STATUS_STOPPED_BY_HALT) {
+        static atomic_uint manager_halt_trace_count;
+        if (atomic_fetch_add_explicit(&manager_halt_trace_count, 1, memory_order_relaxed) < 4) {
             fprintf(stderr,
-                    "[gfd-spu-guard] r1=%08X r6=%08X r90=%08X/%08X/%08X/%08X "
+                    "[spu-job-manager-guard] r1=%08X r6=%08X r90=%08X/%08X/%08X/%08X "
                     "r101=%08X/%08X/%08X/%08X r61=%08X/%08X/%08X/%08X "
                     "r66=%08X r69=%08X r75=%08X r96=%08X\n",
-                    ctx.gpr[1]._u32[0], ctx.gpr[6]._u32[0],
-                    ctx.gpr[90]._u32[0], ctx.gpr[90]._u32[1],
-                    ctx.gpr[90]._u32[2], ctx.gpr[90]._u32[3],
-                    ctx.gpr[101]._u32[0], ctx.gpr[101]._u32[1],
-                    ctx.gpr[101]._u32[2], ctx.gpr[101]._u32[3],
-                    ctx.gpr[61]._u32[0], ctx.gpr[61]._u32[1],
-                    ctx.gpr[61]._u32[2], ctx.gpr[61]._u32[3],
-                    ctx.gpr[66]._u32[0], ctx.gpr[69]._u32[0],
-                    ctx.gpr[75]._u32[0], ctx.gpr[96]._u32[0]);
-            const uint32_t p = ctx.gpr[101]._u32[0] + 0x10u;
+                    ctx->gpr[1]._u32[0], ctx->gpr[6]._u32[0],
+                    ctx->gpr[90]._u32[0], ctx->gpr[90]._u32[1],
+                    ctx->gpr[90]._u32[2], ctx->gpr[90]._u32[3],
+                    ctx->gpr[101]._u32[0], ctx->gpr[101]._u32[1],
+                    ctx->gpr[101]._u32[2], ctx->gpr[101]._u32[3],
+                    ctx->gpr[61]._u32[0], ctx->gpr[61]._u32[1],
+                    ctx->gpr[61]._u32[2], ctx->gpr[61]._u32[3],
+                    ctx->gpr[66]._u32[0], ctx->gpr[69]._u32[0],
+                    ctx->gpr[75]._u32[0], ctx->gpr[96]._u32[0]);
+            const uint32_t p = ctx->gpr[101]._u32[0] + 0x10u;
             if (p <= SPU_LS_SIZE - 16u) {
-                fprintf(stderr, "[gfd-spu-guard] LS[%05X..%05X]:",
+                fprintf(stderr, "[spu-job-manager-guard] LS[%05X..%05X]:",
                         p, p + 15u);
                 for (uint32_t i = 0; i < 16; ++i)
-                    fprintf(stderr, " %02X", ctx.ls[p + i]);
+                    fprintf(stderr, " %02X", ctx->ls[p + i]);
                 fprintf(stderr, "\n");
             }
             fprintf(stderr,
-                    "[gfd-spu-desc] ea=%08X binary=%08X size16=%04X dmaBytes=%04X "
+                    "[spu-job-manager-desc] ea=%08X binary=%08X size16=%04X dmaBytes=%04X "
                     "io=%08X in=%08X out=%08X stack/scratch=%04X/%04X\n",
-                    job_ea, (uint32_t)g64(job_ea + JH_EA_BINARY),
-                    g16(job_ea + JH_SIZE_BINARY), g16(job_ea + JH_SIZE_DMA_LIST),
-                    g32(job_ea + JH_USE_INOUT_BUFFER),
-                    g32(job_ea + JH_SIZE_IN_OR_INOUT), g32(job_ea + JH_SIZE_OUT),
-                    g16(job_ea + JH_SIZE_STACK), g16(job_ea + JH_SIZE_SCRATCH));
+                    job_ea, (uint32_t)job_g64(job_ea, desc_copy, job_desc_size, job_ea + JH_EA_BINARY),
+                    job_g16(job_ea, desc_copy, job_desc_size, job_ea + JH_SIZE_BINARY), job_g16(job_ea, desc_copy, job_desc_size, job_ea + JH_SIZE_DMA_LIST),
+                    job_g32(job_ea, desc_copy, job_desc_size, job_ea + JH_USE_INOUT_BUFFER),
+                    job_g32(job_ea, desc_copy, job_desc_size, job_ea + JH_SIZE_IN_OR_INOUT), job_g32(job_ea, desc_copy, job_desc_size, job_ea + JH_SIZE_OUT),
+                    job_g16(job_ea, desc_copy, job_desc_size, job_ea + JH_SIZE_STACK), job_g16(job_ea, desc_copy, job_desc_size, job_ea + JH_SIZE_SCRATCH));
             fflush(stderr);
         }
     }
@@ -493,31 +529,33 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
      * comment here claimed they carried the title's bus counts; they do not,
      * and feeding them into the completion event turned 0x40000000 into a 1 GB
      * allocation request. Kept because the printf service needs them. */
-    memcpy(s_job_ls, ctx.ls, SPU_LS_SIZE);   /* keep the store readable */
+    /* Only legacy job chains publish a handle-addressable LS snapshot.
+     * Concurrent JQ jobs must not overwrite a job-chain's retained LS. */
+    if (!desc_copy) memcpy(s_job_ls, ctx->ls, SPU_LS_SIZE);
     /* TEMP SPURS_JOB_LSWORD=<img>:<lsa>: after a job of that image, print the
      * LS word at lsa and every other LS offset holding the same value. */
     { static int img = -2; static uint32_t lsa; static int n = 0;
       if (img == -2) { const char* e = getenv("SPURS_JOB_LSWORD"); img = -1;
           if (e) { img = atoi(e); const char* c = strchr(e, ':'); lsa = c ? (uint32_t)strtoul(c + 1, 0, 16) : 0; } }
       if (img == image_id && n++ < 3) {
-          const uint8_t* q = ctx.ls + (lsa & 0x3FFFC);
+          const uint8_t* q = ctx->ls + (lsa & 0x3FFFC);
           uint32_t v = ((uint32_t)q[0] << 24) | ((uint32_t)q[1] << 16) | ((uint32_t)q[2] << 8) | q[3];
           fprintf(stderr, "[lsword] img=%d job=0x%08X LS[0x%05X]=0x%08X io=0x%05X also at:", image_id, job_ea, lsa, v, io_ls);
           for (uint32_t o = 0; o + 4 <= SPU_LS_SIZE; o += 4) {
-              const uint8_t* p = ctx.ls + o;
+              const uint8_t* p = ctx->ls + o;
               if (o != (lsa & 0x3FFFC) && ((uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3]) == v)
                   fprintf(stderr, " 0x%05X", o);
           }
           fprintf(stderr, "\n");
       } }
-    s_job_ls_valid = 1;
+    if (!desc_copy) s_job_ls_valid = 1;
 
-    g_spurs_job_mbox      = spu_channel_has_data(&ctx.ch_out_mbox)
-                          ? ctx.ch_out_mbox.value : 0;
-    g_spurs_job_mbox_intr = spu_channel_has_data(&ctx.ch_out_intr_mbox)
-                          ? ctx.ch_out_intr_mbox.value : 0;
+    g_spurs_job_mbox      = spu_channel_has_data(&ctx->ch_out_mbox)
+                          ? ctx->ch_out_mbox.value : 0;
+    g_spurs_job_mbox_intr = spu_channel_has_data(&ctx->ch_out_intr_mbox)
+                          ? ctx->ch_out_intr_mbox.value : 0;
     g_spurs_job_mbox_valid = g_spurs_job_mbox || g_spurs_job_mbox_intr;
-    { uint32_t _cb = g32(job_ea + 0x4C);
+    { uint32_t _cb = job_g32(job_ea, desc_copy, job_desc_size, job_ea + 0x4C);
       g_spurs_job_cmd = _cb ? (g32(_cb) >> 16) : 0; }
     { static int s_t = -1; if (s_t < 0) s_t = getenv("SPURS_JOB_MBOX") ? 1 : 0;
       static int n = 0;
@@ -527,7 +565,7 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
 
     if (trace_dump) {
         fprintf(stderr, "[spurs-job] job 0x%08X exit: status=0x%X stop=0x%X pc=0x%05X\n",
-                job_ea, ctx.status, ctx.stop_code, ctx.pc);
+                job_ea, ctx->status, ctx->stop_code, ctx->pc);
         /* Post-run view of the same command block: the game polls result/status
          * fields the job writes back -- a before/after diff shows whether the
          * handler delivered its completion or the PPU waits on stale state. */
@@ -542,9 +580,36 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
         fflush(stderr);
     }
 
-    spu_mfc_release(&ctx);
-    spu_coh_unregister(&ctx);   /* stack local: out of the reserver set */
-    { extern void spu_mfc_release(spu_context*); spu_mfc_release(&ctx); }
-    free(ls);
+    spu_coh_unregister(ctx);   /* remove callbacks before releasing owned state */
+    spu_mfc_release(ctx);
+    free(ctx);
     return completed ? 0 : -1;
+}
+
+int spu_run_spurs_job_with_abi(spu_lifted_entry_fn entry, int image_id,
+                               uint32_t job_ea, uint32_t job_desc_size,
+                               const spu_job_abi* job_abi)
+{
+    return spu_run_spurs_job_internal(entry, image_id, job_ea, job_desc_size,
+                                      job_abi, NULL, NULL);
+}
+
+int spu_run_spurs_job_with_abi_snapshot(spu_lifted_entry_fn entry, int image_id,
+                                        uint32_t job_ea, uint32_t job_desc_size,
+                                        const spu_job_abi* job_abi,
+                                        const uint8_t* image_copy,
+                                        const uint8_t* desc_copy)
+{
+    if (!image_copy || !desc_copy) return -1;
+    return spu_run_spurs_job_internal(entry, image_id, job_ea, job_desc_size,
+                                      job_abi, image_copy, desc_copy);
+}
+
+int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
+                      uint32_t job_ea, uint32_t job_desc_size)
+{
+    spu_job_abi default_abi = { 0u, 20u, 0u, 0u, 0u };
+    (void)spu_workload_get_job_abi(image_id, &default_abi);
+    return spu_run_spurs_job_with_abi(entry, image_id, job_ea,
+                                      job_desc_size, &default_abi);
 }

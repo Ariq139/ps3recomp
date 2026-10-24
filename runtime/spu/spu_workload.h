@@ -59,6 +59,36 @@ void spu_workload_register_img(uint64_t fingerprint, spu_lifted_entry_fn fn,
 void spu_workload_set_job_context_tag(uint64_t fingerprint, uint32_t value);
 uint32_t spu_workload_job_context_tag(int image_id);
 
+/* Per-binary job CRT/manager ABI overrides. Lifted images are keyed by content
+ * fingerprint; raw-region metadata is attached to the matched registration.
+ * These describe verified binary requirements; the runner does not infer
+ * them from title names or generated image IDs. A zero manager_interface_ls
+ * means Context2+0x30 when SPU_JOB_ABI_CONTEXT2 is set. A zero
+ * manager_entry_slot_ls means +4 from the selected manager interface. */
+enum {
+    SPU_JOB_ABI_CONTEXT2       = 1u << 0,
+    SPU_JOB_ABI_KERNEL_CONTEXT = 1u << 1
+};
+typedef struct spu_job_abi {
+    uint32_t flags;
+    uint32_t context_tag;
+    uint32_t manager_interface_ls;
+    uint32_t manager_entry_slot_ls;
+    uint32_t manager_entry_ls;
+} spu_job_abi;
+void spu_workload_set_job_abi(uint64_t fingerprint, const spu_job_abi* abi);
+void spu_workload_set_raw_region_job_abi(int image_id, const spu_job_abi* abi);
+int spu_workload_get_job_abi(int image_id, spu_job_abi* abi_out);
+/* Run with ABI metadata already matched by binary dispatch. */
+int spu_run_spurs_job_with_abi(spu_lifted_entry_fn entry, int image_id,
+                               uint32_t job_ea, uint32_t job_desc_size,
+                               const spu_job_abi* job_abi);
+int spu_run_spurs_job_with_abi_snapshot(spu_lifted_entry_fn entry, int image_id,
+                                        uint32_t job_ea, uint32_t job_desc_size,
+                                        const spu_job_abi* job_abi,
+                                        const uint8_t* image_copy,
+                                        const uint8_t* desc_copy);
+
 /* Immutable, pre-scanned raw job region. Its exact initialized length may be
  * unknown. Dispatch requires every submitted image byte to match the region. */
 void spu_workload_register_raw_region(const uint8_t* bytes, uint32_t size,
@@ -116,6 +146,15 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
  * and ran, 0 if none is registered for this binary. */
 int spu_workload_dispatch_job(const uint8_t* image, uint32_t image_size,
                               uint32_t job_ea, uint32_t job_desc_size);
+/* Dispatch from an immutable job descriptor and binary snapshot. The guest EA
+ * is still used for DMA targets and the ABI's descriptor EA; callers must keep
+ * guest DMA payload buffers valid until completion. */
+int spu_workload_dispatch_job_snapshot(const uint8_t* image, uint32_t image_size,
+                                       uint32_t job_ea, uint32_t job_desc_size,
+                                       const uint8_t* job_desc_copy);
+void spurs_job_set_spu_num(uint32_t n);
+void spu_workload_job_cache_thread_cleanup(void);
+
 
 /* Load a 32-bit big-endian SPU ELF image into a 256 KB local store: each PT_LOAD
  * segment is copied to its p_vaddr (BSS zero-filled). Returns 1 on success and

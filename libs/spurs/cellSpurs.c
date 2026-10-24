@@ -456,7 +456,7 @@ static struct SpursInst {
     CONDITION_VARIABLE wake;
     HANDLE coordinator;
     struct SpursPmSlot slots[6];
-    u8 active[16], idle[16];
+    u8 active[16], idle[16], dispatch_idle[16];
     u32 cursor, pass_no;
 } s_inst[MAX_SPURS_INST];
 static SRWLOCK s_inst_directory_lock = SRWLOCK_INIT;
@@ -1680,22 +1680,49 @@ typedef struct {
     spu_lifted_entry_fn fn;
     int                 image_id;
     int                 resolved;   /* 0=not tried, 1=found, -1=missing */
+    u32                 pm_ea, pm_size, last_probe_pass;
+    uint64_t            fingerprint;
 } WklPm;
 static WklPm s_wkl_pm[CELL_SPURS_MAX_WORKLOAD];
 
-static WklPm* spurs_resolve_pm(u32 wid)
+#define SPURS_PM_FINGERPRINT_RECHECK_PASSES 256u
+
+static WklPm* spurs_resolve_pm(u32 wid, u32 pass_no)
 {
     WklPm* r = &s_wkl_pm[wid];
-    if (r->resolved) return r->resolved > 0 ? r : NULL;
     SpursWorkload* w = &s_workloads[wid];
+    const u32 pm_ea = (u32)(uintptr_t)w->pm;
+    if (r->pm_ea != pm_ea || r->pm_size != w->sizePm) {
+        memset(r, 0, sizeof(*r));
+        r->pm_ea = pm_ea;
+        r->pm_size = w->sizePm;
+    } else if (r->resolved &&
+               (u32)(pass_no - r->last_probe_pass) <
+                   SPURS_PM_FINGERPRINT_RECHECK_PASSES) {
+        return r->resolved > 0 ? r : NULL;
+    }
+
+    /* Cached misses must not be permanent, and a cached lift must not survive
+     * an in-place guest image replacement. Recheck at a bounded cadence; the
+     * fingerprint is over the current bytes, not just the guest address. */
+    const int previous_resolved = r->resolved;
+    const uint64_t previous_fingerprint = r->fingerprint;
     uint64_t fp = spu_workload_fingerprint(vm_base + (uint32_t)(uintptr_t)w->pm,
                                            w->sizePm);
+    const int same_fingerprint = previous_resolved && previous_fingerprint == fp;
+    if (previous_resolved > 0 && same_fingerprint) {
+        r->last_probe_pass = pass_no;
+        return r;
+    }
+
     r->fn = spu_workload_find_img(fp, &r->image_id);
     r->resolved = r->fn ? 1 : -1;
+    r->fingerprint = fp;
+    r->last_probe_pass = pass_no;
     if (r->fn)
         printf("[cellSpurs] wid=%u PM resolved (fp=0x%016llX image=%d)\n",
                wid, (unsigned long long)fp, r->image_id);
-    else {
+    else if (!(previous_resolved < 0 && same_fingerprint)) {
         printf("[cellSpurs] wid=%u PM NOT LIFTED (fp=0x%016llX size=%u) -- workload will not run\n",
                wid, (unsigned long long)fp, w->sizePm);
         /* SPU_DUMP_MISS=<dir>: write the PM exactly as fingerprinted, like the
@@ -1817,7 +1844,7 @@ static DWORD WINAPI spurs_kernel_thread(LPVOID p)
                 vm_write32(ea + SPURS_WKL_SIGNAL1,
                            (vm_read32(ea + SPURS_WKL_SIGNAL1) & ~((0x8000u >> wid) << 16)));
 
-            WklPm* r = spurs_resolve_pm(wid);
+            WklPm* r = spurs_resolve_pm(wid, si->pass_no);
             if (!r) continue;
 
             /* Idle backoff: running EVERY enabled workload's module EVERY 1ms
@@ -1828,12 +1855,12 @@ static DWORD WINAPI spurs_kernel_thread(LPVOID p)
              * ... up to 16th pass; an explicit kick (readyCount/signal) resets
              * it to every pass, so kick-driven latency is unchanged. */
             {
-                static u8 s_idle[CELL_SPURS_MAX_WORKLOAD];      /* idle streak (log2 cadence) */
-                static u32 s_pass_no;                            /* shared pass counter is fine */
-                if (wid == 0) s_pass_no++;
-                if (kicked) s_idle[wid] = 0;
-                u32 cad = 1u << (s_idle[wid] > 4 ? 4 : s_idle[wid]);
-                if (!kicked && (s_pass_no & (cad - 1)) != 0) continue;
+                /* This coordinator's backoff state is per SPURS instance.
+                 * `idle[]` belongs to persistent PM worker completion state,
+                 * so dispatch cadence has its own per-workload counters. */
+                if (kicked) si->dispatch_idle[wid] = 0;
+                u32 cad = 1u << (si->dispatch_idle[wid] > 4 ? 4 : si->dispatch_idle[wid]);
+                if (!kicked && (si->pass_no & (cad - 1)) != 0) continue;
             {   static int _n = 0;
                 if (_n < 8) { _n++;
                     fprintf(stderr, "[spurs-kern] \"%s\" dispatch wid=%u (enabled, state=2) "
@@ -1842,10 +1869,10 @@ static DWORD WINAPI spurs_kernel_thread(LPVOID p)
 
             /* Live workload arg from the real wklInfo (the game may update it). */
             u64 arg = vm_read64(ea + SPURS_WKL_INFO1 + wid * SPURS_WKL_INFO_SZ + 8);
-            /* Run one lane by default. Earlier experiments showed that running
-             * multiple WWS lanes concurrently races on the shared jobIndex
-             * atomic. Keep additional lanes as an explicit diagnostic override;
-             * execute them sequentially so they cannot race each other. */
+            /* Run one lane by default. Additional diagnostic lanes are still
+             * serialized here; never exceed the guest's contention request or
+             * the configured virtual SPU count because WWS rows are indexed by
+             * SPU number in guest memory. */
             u8 maxcont = *(vm_base + ea + SPURS_WKL_MAXCONT + wid);
             if (maxcont < 1) maxcont = 1;
             if (maxcont > 6) maxcont = 6;
@@ -1857,25 +1884,19 @@ static DWORD WINAPI spurs_kernel_thread(LPVOID p)
              * The earlier "4 lanes drains the queue" result was partly that
              * scribble. Correct progress comes from PERSISTENT PM contexts
              * (spurs_policy.c), not extra lanes. */
-            /* RPCS3_REFERENCE_REVIEWED: single-lane policy is based on observed
-             * RPCS3 jobmanager behavior; this local scheduling implementation
-             * was not established as a copied RPCS3 body by targeted review.
-             * See docs/RPCS3_LICENSE_AUDIT.md.
-             * SPURS_FORCE_SPUS=<n>: dispatch every workload for n virtual SPUs
-             * regardless of maxContention (A/B: LBP publishes its loading
-             * tickets on sync row 3, and the PM's row index = spuNum).
-             * 2026-07-23 FINDING: with the completion HLE (LBP_HLE_JOBDONE) in
-             * place, forcing 2+ lanes is now COUNTERPRODUCTIVE -- two host
-             * threads race on the shared jobIndex atomic in WwsJob_AllocateJob
-             * (GETLLAR 0xD0/PUTLLC 0xB4 on the joblist header), making the boot
-             * nondeterministic. Single-lane (leave SPURS_FORCE_SPUS unset) is
-             * both correct (RPCS3 oracle: jobmanager runs one SPU at a time) and
-             * far more stable -- it reaches the furthest boot yet (LBP renders to
-             * finish#922: glyphthread+network+camera up). PREFER single-lane. */
+            /* SPURS_FORCE_SPUS is a diagnostic override, not permission to
+             * violate guest contention or address a WWS sync row beyond nspus.
+             * Execution remains sequential; this does not claim RPCS3 uses the
+             * same scheduler implementation. */
             { static int s_fs = -2;
               if (s_fs == -2) { const char* e = getenv("SPURS_FORCE_SPUS");
                 s_fs = e ? atoi(e) : -1; }
-              if (s_fs > 0) maxcont = (u8)(s_fs > 6 ? 6 : s_fs);
+              if (s_fs > 0) {
+                u32 limit = maxcont;
+                if (limit > si->nspus) limit = si->nspus;
+                if (limit > 6) limit = 6;
+                maxcont = (u8)((u32)s_fs < limit ? (u32)s_fs : limit);
+              }
               else maxcont = 1; }
             *(vm_base + ea + SPURS_WKL_CURCONT + wid) = maxcont;
             {
@@ -1890,8 +1911,9 @@ static DWORD WINAPI spurs_kernel_thread(LPVOID p)
              * an idle module exits immediately with polls==0. Grow the idle
              * streak on the latter, reset on the former. */
             extern SPU_THREAD_LOCAL volatile unsigned g_spurs_pm_polls;
-            if (g_spurs_pm_polls == 0) { if (s_idle[wid] < 8) s_idle[wid]++; }
-            else s_idle[wid] = 0;
+            if (g_spurs_pm_polls == 0) {
+                if (si->dispatch_idle[wid] < 8) si->dispatch_idle[wid]++;
+            } else si->dispatch_idle[wid] = 0;
             }
         }
         ReleaseSRWLockExclusive(&s_workload_registry_lock);
@@ -1905,6 +1927,7 @@ static s32 spurs_scheduler_start(struct SpursInst* si)
     si->stopping = 0; si->cursor = si->pass_no = 0;
     memset(si->active, 0, sizeof(si->active));
     memset(si->idle, 0, sizeof(si->idle));
+    memset(si->dispatch_idle, 0, sizeof(si->dispatch_idle));
     for (u32 sn = 0; sn < si->nspus; sn++) {
         struct SpursPmSlot* slot = &si->slots[sn];
         memset(slot, 0, sizeof(*slot));

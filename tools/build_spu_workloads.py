@@ -31,6 +31,7 @@ Example:
       --register-fn port_spu_register_all --constructor --title <port>
 """
 import argparse, glob, os, re, subprocess, sys
+from pathlib import Path
 
 # ---- SPU ELF sizing + fingerprint (must match runtime/spu/spu_workload.c) ----
 
@@ -107,6 +108,8 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     inputs = ap.add_mutually_exclusive_group(required=True)
     inputs.add_argument("--input", action="append", help="Discover every embedded SPU ELF in supplied files (repeatable)")
+    inputs.add_argument("--input-dir", action="append",
+                        help="Recursively discover embedded SPU ELFs in game/assets files; raw captures require verified load/entry metadata")
     inputs.add_argument("--images", help="dir containing SPU ELFs (*.elf)")
     ap.add_argument("--lifted", required=True, help="output dir for per-image lifted C (one subdir per image)")
     ap.add_argument("--out", required=True, help="output registration C file")
@@ -129,8 +132,26 @@ def main():
     ap.add_argument("--skip-lift", action="store_true",
                     help="do not run the lifter; assume --lifted already populated (still fixes includes + emits registry)")
     ap.add_argument("--allow-partial", action="store_true",
-                    help="With --input, emit supported registrations despite incomplete coverage")
+                    help="With --input/--input-dir, emit supported registrations despite incomplete coverage")
     args = ap.parse_args()
+    if args.input_dir:
+        args.input = []
+        lifted_root = Path(args.lifted).resolve()
+        for root in args.input_dir:
+            root_path = Path(root).resolve()
+            if not root_path.is_dir():
+                sys.exit(f"[build_spu_workloads] --input-dir is not a directory: {root}")
+            for path in root_path.rglob("*"):
+                if not path.is_file() or path.is_symlink():
+                    continue
+                resolved = path.resolve()
+                if resolved.is_relative_to(lifted_root):
+                    continue
+                args.input.append(str(resolved))
+        args.input = sorted(set(args.input))
+        print(f"[build_spu_workloads] scanning {len(args.input)} files from --input-dir")
+        if not args.input:
+            ap.error('--input-dir contains no input files outside --lifted')
     if args.input:
         from spu_program_pipeline import build_programs
         sys.exit(build_programs(args, write_registry))
