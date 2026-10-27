@@ -145,7 +145,7 @@ static void jq_finish_locked(JqTask* t, s32 status)
 static void jq_free_task(JqTask* t)
 {
     if (!t) return;
-    free(t->binary);
+    /* The immutable binary snapshot is the tail of this allocation. */
     free(t);
 }
 static s32 jq_execute(JqTask* t)
@@ -476,24 +476,27 @@ static JqTask* jq_prepare(u32 job_ea, u32 descriptor_size)
     if (!vm_base || !job_ea ||
         (descriptor_size != 128u && descriptor_size != 256u) ||
         job_ea > UINT32_MAX - descriptor_size) return NULL;
-    JqTask* t = (JqTask*)calloc(1, sizeof(*t));
-    if (!t) return NULL;
-    /* Snapshot FIRST, then decode its fields. Otherwise a concurrent guest
-     * rewrite between header reads and memcpy could make the worker overread
-     * the captured binary. */
-    memcpy(t->descriptor, vm_base + job_ea, descriptor_size);
-    const uint8_t* h = t->descriptor;
+    uint8_t descriptor[256];
+    /* Capture before decoding, exactly as before. Never defer guest reads
+     * until the worker runs: the submitting thread may reuse the descriptor. */
+    memcpy(descriptor, vm_base + job_ea, descriptor_size);
+    const uint8_t* h = descriptor;
     u64 ea64 = 0;
     for (unsigned i = 0; i < 8; ++i) ea64 = (ea64 << 8) | h[i];
     ea64 &= ~1ull;
     const u32 binary_size = (((u32)h[8] << 8) | h[9]) << 4;
     if (ea64 > UINT32_MAX || ea64 == 0 || binary_size == 0 ||
-        binary_size > 0x40000u || ea64 > UINT32_MAX - binary_size) {
-        free(t);
+        binary_size > 0x40000u || ea64 > UINT32_MAX - binary_size)
         return NULL;
-    }
-    t->binary = (uint8_t*)malloc(binary_size);
-    if (!t->binary) { free(t); return NULL; }
+
+    /* One allocation instead of a header allocation plus a binary allocation.
+     * Keep a private byte-for-byte snapshot for every in-flight job. No
+     * shared-image lifetime, guest-memory, or completion rules change. */
+    JqTask* t = (JqTask*)malloc(sizeof(*t) + (size_t)binary_size);
+    if (!t) return NULL;
+    memset(t, 0, sizeof(*t));
+    memcpy(t->descriptor, descriptor, descriptor_size);
+    t->binary = (uint8_t*)(t + 1);
     t->binary_size = binary_size;
     t->job_ea = job_ea;
     t->descriptor_size = descriptor_size;

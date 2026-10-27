@@ -1,0 +1,2 @@
+include reconstruct.py Start.cmd Start.pyw
+recursive-include tests *.py

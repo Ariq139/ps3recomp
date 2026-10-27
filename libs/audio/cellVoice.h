@@ -132,6 +132,7 @@ s32 cellVoiceWriteToIPortEx2(CellVoicePortId portId, const void* data, u32* size
 s32 cellVoiceReadFromOPort(CellVoicePortId portId, void* data, u32* size);
 s32 cellVoiceDebugTopology(void);
 
+
 #ifdef __cplusplus
 }
 #endif

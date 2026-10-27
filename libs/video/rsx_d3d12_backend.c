@@ -3013,10 +3013,10 @@ static u32 dr_cube_mask(const D3D12DrawRecord* dr)
 
 /* RSX unnormalised (texel-addressed) coordinates need per-texture dimensions
  * folded into the PSO because this backend emits those scales as HLSL literals. */
-static u32 dr_unnorm_info(const D3D12DrawRecord* dr, u32 dims[RSX_TEXTURE_UNITS][2])
+static u32 dr_unnorm_info(const D3D12DrawRecord* dr, u32 dims[RSX_TEXTURE_UNITS][3])
 {
     u32 mask = 0;
-    memset(dims, 0, sizeof(u32) * RSX_TEXTURE_UNITS * 2u);
+    memset(dims, 0, sizeof(u32) * RSX_TEXTURE_UNITS * 3u);
     if (!dr) return 0;
     for (u32 u = 0; u < RSX_TEXTURE_UNITS; u++) {
         if (!dr->tex[u].set || !(dr->tex[u].fmt & 0x40u) || dr->tex[u].cube)
@@ -3024,6 +3024,7 @@ static u32 dr_unnorm_info(const D3D12DrawRecord* dr, u32 dims[RSX_TEXTURE_UNITS]
         if (!dr->tex[u].w || !dr->tex[u].h) continue;
         dims[u][0] = dr->tex[u].w;
         dims[u][1] = dr->tex[u].h;
+        dims[u][2] = 1;
         mask |= 1u << u;
     }
     return mask;
@@ -3108,7 +3109,7 @@ static void dr_capture_extended_rsx_state(D3D12DrawRecord* dr, const rsx_state* 
     memset(&dr->stencil, 0, sizeof dr->stencil);
     if (st) {
         dr->stencil.enable = st->stencil_test_enable ? 1u : 0u;
-        dr->stencil.two_sided = st->stencil_two_sided_enable ? 1u : 0u;
+        dr->stencil.two_sided = st->two_sided_stencil ? 1u : 0u;
         dr->stencil.front_func = st->stencil_func;
         dr->stencil.front_ref = st->stencil_ref;
         dr->stencil.front_read_mask = st->stencil_func_mask;
@@ -3118,7 +3119,7 @@ static void dr_capture_extended_rsx_state(D3D12DrawRecord* dr, const rsx_state* 
         dr->stencil.front_zpass = st->stencil_op_zpass;
         dr->stencil.back_func = st->back_stencil_func;
         dr->stencil.back_ref = st->back_stencil_ref;
-        dr->stencil.back_read_mask = st->back_stencil_func_mask;
+        dr->stencil.back_read_mask = st->back_stencil_mask;
         dr->stencil.back_write_mask = st->back_stencil_write_mask;
         dr->stencil.back_fail = st->back_stencil_op_fail;
         dr->stencil.back_zfail = st->back_stencil_op_zfail;
@@ -4031,7 +4032,7 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
                                           int depth_test, int depth_write, u32 depth_func,
                                           u32 zmin_max_control,
                                            u32 cube_mask, u32 unnorm_mask,
-                                           const u32 unnorm_dims[RSX_TEXTURE_UNITS][2],
+                                           const u32 unnorm_dims[RSX_TEXTURE_UNITS][3],
                                            u32 shadow_mask,
                                           u64 shadow_compare_key,
                                           const rsx_fp_shadow_desc shadow[RSX_TEXTURE_UNITS],
@@ -4050,7 +4051,7 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
 {
     static const RSXStencilState stencil_off = {0};
     static const u8 no_gamma[RSX_TEXTURE_UNITS] = {0};
-    static const u32 no_unnorm_dims[RSX_TEXTURE_UNITS][2] = {{0}};
+    static const u32 no_unnorm_dims[RSX_TEXTURE_UNITS][3] = {{0}};
     if (!gamma_masks) gamma_masks = no_gamma;
     if (!unnorm_dims) unnorm_dims = no_unnorm_dims;
     if (sampler_layout_out) {
@@ -4254,7 +4255,7 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
     if (n > 0 && !d3d12_hlsl_apply_fog(hlsl, sizeof hlsl,
             fog_mode, fog_param0_bits, fog_param1_bits)) return NULL;
     if (n > 0 && rsx_fp_apply_unnorm_scale(hlsl, sizeof hlsl,
-            active_unnorm_mask, unnorm_dims, cube_mask) < 0) return NULL;
+            active_unnorm_mask, unnorm_dims, cube_mask, 0u) < 0) return NULL;
     if (n > 0 && srgb_output && rsx_fp_apply_srgb_output(hlsl, sizeof hlsl) < 0)
         return NULL;
     if (n <= 0) { static int _e=0; if(PS3_LOG_FIRST(_e, 16)) printf("[FP] decompile fail (fp=0x%08X)\n", fp_addr); return NULL; }
@@ -7330,7 +7331,7 @@ static void render_frame_impl(void)
         }
         if (perf_on()) s_perf_srv += perf_now() - _sv0;
         double _ps0 = perf_on() ? perf_now() : 0.0;
-        u32 unnorm_dims[RSX_TEXTURE_UNITS][2];
+        u32 unnorm_dims[RSX_TEXTURE_UNITS][3];
         const u32 unnorm_mask = dr_unnorm_info(dr, unnorm_dims);
         if (dr->fp_addr) vp_get_fp_pso(dr->vs_idx, dr->fp_addr, dr->blend_key,
                                        dr_num_rts(dr),
@@ -7739,7 +7740,7 @@ static void render_frame_impl(void)
                 /* Per-draw pipeline: prefer the guest's own compiled FP; fall
                  * back to the hardcoded atlas/colour PS pair. */
                 D3D12FPSamplerLayout draw_sampler_layout = {0};
-                u32 unnorm_dims[RSX_TEXTURE_UNITS][2];
+                u32 unnorm_dims[RSX_TEXTURE_UNITS][3];
                 const u32 unnorm_mask = dr_unnorm_info(dr, unnorm_dims);
                 ID3D12PipelineState* dpso =
                     dr->fp_addr ? vp_get_fp_pso(dr->vs_idx, dr->fp_addr, dr->blend_key,
@@ -8802,13 +8803,22 @@ static DWORD WINAPI rsx_vertex_worker(void* parameter)
 static void rsx_vertex_workers_start(void)
 {
     if (s_vtx_worker_count) return;
-    const char* disabled = getenv("RSX_VERTEX_THREADS");
-    if (disabled && atoi(disabled) == 0) return;
+    const char* configured = getenv("RSX_VERTEX_THREADS");
+    long requested = -1;  /* unset/invalid: retain the existing auto policy */
+    if (configured) {
+        char* end = NULL;
+        const long parsed = strtol(configured, &end, 10);
+        if (end != configured && *end == '\0' && parsed >= 0)
+            requested = parsed;
+    }
+    if (requested == 0) return;
     SYSTEM_INFO info;
     GetSystemInfo(&info);
     if (info.dwNumberOfProcessors < 2) return;
     DWORD wanted = info.dwNumberOfProcessors - 1;
     if (wanted > RSX_VERTEX_WORKERS_MAX) wanted = RSX_VERTEX_WORKERS_MAX;
+    if (requested > 0 && (unsigned long)requested < wanted)
+        wanted = (DWORD)requested;
 
     AcquireSRWLockExclusive(&s_vtx_work_lock);
     s_vtx_work_generation = 0;
@@ -9072,19 +9082,27 @@ void rsx_vtx_pos_dbg(const rsx_state* state, const float* v, u32 n);
 static void read_vp_vertex_impl(const rsx_state* state, u32 vi,
                                VPSlot* out_packed, int trace_position)
 {
+    /* Finish conversion in normal cached CPU memory. The destination may
+     * be write-combined D3D12 upload memory: publish each packed vertex only
+     * once, and keep diagnostic reads off the mapped destination. */
+    VPSlot decoded[16];
     u32 slot = 0;
-    for (int i = 0; i < 16; i++) {
-        if (!(s_d3d.vp_upload_mask & (1u << i))) continue;
-        memcpy(&out_packed[slot], state->vertex_data4f[i], sizeof(*out_packed));
+    u32 remaining = s_d3d.vp_upload_mask & 0xFFFFu;
+    while (remaining) {
+        const u32 i = (u32)__builtin_ctz(remaining);
+        remaining &= remaining - 1u;
         if (state->vertex_attribs[i].enabled)
-            rsx_fetch_attrib(state, i, vi, out_packed[slot].v);
+            rsx_fetch_attrib(state, (int)i, vi, decoded[slot].v);
+        else
+            memcpy(&decoded[slot], state->vertex_data4f[i], sizeof(decoded[slot]));
         if (trace_position && i == 0) {
             const rsx_vertex_attrib* a = &state->vertex_attribs[0];
             u32 n = a->size ? a->size : 4; if (n > 4) n = 4;
-            rsx_vtx_pos_dbg(state, out_packed[slot].v, n);
+            rsx_vtx_pos_dbg(state, decoded[slot].v, n);
         }
         slot++;
     }
+    memcpy(out_packed, decoded, slot * sizeof(*out_packed));
 }
 
 static void read_vp_vertex(const rsx_state* state, u32 vi, VPSlot* out_packed)

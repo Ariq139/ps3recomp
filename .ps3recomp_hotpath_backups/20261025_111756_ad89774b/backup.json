@@ -1,0 +1,35 @@
+{
+  "root": "D:\\Other\\GitRepo\\ps3recomp",
+  "files": [
+    {
+      "path": "libs/spurs/cellSpurs.c",
+      "component": "scheduler",
+      "baseline_normalized_sha256": "6cad7ac31a60de213a8dc9cb714de08478619251f141b5b3779158e8416c1288",
+      "patched_normalized_sha256": "3ade886abf31d32870d607ca80ceae69785cbfa07ba00670fd0c22cb020d7749"
+    },
+    {
+      "path": "runtime/spu/spu_image_fingerprint_cache.h",
+      "component": "fingerprint",
+      "baseline_normalized_sha256": "537e0378a54f81e254c750b5e5b37442914df7cecb6f1bc614205fc5149d3410",
+      "patched_normalized_sha256": "fe2b36f35d95ffc9219cb62852e67741a64b96c70e6e42d701f75eca3134d90d"
+    },
+    {
+      "path": "runtime/spu/spu_channels.c",
+      "component": "lookup",
+      "baseline_normalized_sha256": "ef5bccf8c2598ae44e56dc3197c9dd0583970a6c069eb30b5d9e9ab38faae243",
+      "patched_normalized_sha256": "26686268a3a2f60259b99337a4c6156ebb1733d7caec6cdf46e98f2d767fdea8"
+    },
+    {
+      "path": "libs/spurs/cellSpursJq.c",
+      "component": "snapshot",
+      "baseline_normalized_sha256": "788b7c1cd08073dc1f90b2a156f54184feb1a5dbb6ee180ed7a69f47f76c5d51",
+      "patched_normalized_sha256": "9cfe5bdbd4d311752c403ef88dafd3c457e9b28c2ba337c5617e3021baff000b"
+    },
+    {
+      "path": "libs/video/rsx_d3d12_backend.c",
+      "component": "vertex",
+      "baseline_normalized_sha256": "1d907c6bb4b8cd7f7ee502e088436f0fae16ca74ab7cb57be9460c6f30c7b48c",
+      "patched_normalized_sha256": "b79b7b54f1b4f7c44b3440a1cc8fe016962c949ad152a732d117b106fbc31c02"
+    }
+  ]
+}

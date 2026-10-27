@@ -17,7 +17,7 @@ short version:
 # 1. load the title (function table, imports, TOC, segment manifest)
 python /path/to/ps3recomp/tools/ppu_loader.py game/EBOOT.ELF -o out/
 
-# 2. lift it (writes recompiled/ppu_recomp*.cpp and ppu_recomp.h)
+# 2. lift it (writes recompiled/ppu_recomp.h and recompiled/ppu_recomp_NNN.cpp)
 python /path/to/ps3recomp/tools/ppu_lifter.py game/EBOOT.ELF \
     --functions out/EBOOT.functions.json \
     --hle-stubs out/EBOOT.imports.json \
@@ -44,7 +44,7 @@ directory when lifted files are added.
 | `main.cpp` | Boots the runtime and runs the ELF entry point. |
 | `stubs.cpp` | Where you add HLE bridges for functions the runtime does not implement yet. |
 | `CMakeLists.txt` | Links `ps3recomp_runtime`, compiles the per-game PPU scaffold from `runtime/ppu/`, and sets `/bigobj` for the large generated translation units. |
-| `config.toml` | Lifter/porting settings for the title. |
+| `config.toml` | Reference settings for the title. Reference only: no tool or CMake file reads it yet. |
 
 ## Running
 

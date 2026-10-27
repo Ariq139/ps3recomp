@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+workspaces/
+*.egg-info/
+build/
+build_checks/
+dist/
+startup_error.log

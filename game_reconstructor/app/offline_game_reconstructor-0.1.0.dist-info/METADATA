@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: offline-game-reconstructor
+Version: 0.1.0
+Summary: Offline Ghidra analysis and validated game reconstruction
+Requires-Python: >=3.11

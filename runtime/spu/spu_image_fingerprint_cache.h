@@ -26,19 +26,35 @@ static inline uint64_t spu_image_fingerprint_cached(
 {
     if (!data || !size || size > 0x40000u) return hash(data, size);
     unsigned slot = 0;
+    unsigned changed = SPU_IMAGE_FINGERPRINT_SLOTS;
+    /* Prefer the original address fast path, but a fresh asynchronous job
+     * snapshot need not have the previous job's host address. Address is an
+     * accelerator only: every hit still validates ALL bytes. */
     for (unsigned i = 0; i < SPU_IMAGE_FINGERPRINT_SLOTS; ++i) {
         spu_image_fingerprint_entry* e = &cache->entries[i];
+        if (e->last_use < cache->entries[slot].last_use) slot = i;
         if (e->snapshot && e->source == data && e->size == size) {
             if (!memcmp(e->snapshot, data, size)) {
                 e->last_use = ++cache->clock;
                 return e->fingerprint;
             }
-            slot = i;
-            goto replace;
+            changed = i;
         }
-        if (e->last_use < cache->entries[slot].last_use) slot = i;
     }
-replace:;
+    /* Immutable snapshots often move between allocations. Reuse a known
+     * fingerprint by content, never by an address or a sparse checksum alone.
+     * A changed same-address entry must not prevent finding an equal image
+     * in another slot. */
+    for (unsigned i = 0; i < SPU_IMAGE_FINGERPRINT_SLOTS; ++i) {
+        spu_image_fingerprint_entry* e = &cache->entries[i];
+        if (i != changed && e->snapshot && e->size == size &&
+            !memcmp(e->snapshot, data, size)) {
+            e->source = data;
+            e->last_use = ++cache->clock;
+            return e->fingerprint;
+        }
+    }
+    if (changed != SPU_IMAGE_FINGERPRINT_SLOTS) slot = changed;
     const uint64_t fingerprint = hash(data, size);
     spu_image_fingerprint_entry* e = &cache->entries[slot];
     if (e->size != size || !e->snapshot) {

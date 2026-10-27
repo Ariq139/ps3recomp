@@ -88,6 +88,7 @@ p5_*/src/
 p5_*/tools/
 p5_*/docs/
 p5_npeb02436_gameonly/
+game_reconstructor/
 
 # Decryption keys
 *.keys

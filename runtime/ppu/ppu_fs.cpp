@@ -13,6 +13,7 @@
  * Context-aware HLE: guest pointers (path, buffers, out params) are read/written
  * through vm_base in big-endian.
  */
+#define PPU_NO_INLINE_STORES   /* declares its own out-of-line vm_write32/64 below */
 #include "ppu_recomp.h"      /* ppu_context */
 #include "../../libs/filesystem/edat.h"
 #include "../../include/ps3emu/error_codes.h"
@@ -24,6 +25,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <mutex>
 #include <atomic>
 #include <mutex>
 #include <sys/stat.h>
@@ -234,18 +236,56 @@ static FILE* g_files[FS_MAX];
 static uint8_t g_fd_usm[FS_MAX];
 static char    g_fd_path[FS_MAX][192];   /* guest path per fd (diagnostics) */   /* 1 if this fd is an open .usm movie (read tracker) */
 static DIR*  g_dirs[FS_MAX];
+/* Last transfer direction on each fd's stream: 0 none, 1 read, 2 write.
+ *
+ * C allows a read after a write on one stream only once it has been flushed or
+ * repositioned, and a write after a read only once it has been repositioned;
+ * otherwise the result is undefined. cellFs has no such rule, so a title may
+ * write and then read on one fd with nothing in between. FIOS does exactly
+ * that with its HDD cache: it writes a 512-byte header into a new cache.idx
+ * and reads on. On the MSVC CRT that read returned 3584 bytes of stale buffer
+ * and the header never reached the file (size still 0), so the index never
+ * validated and FIOS rebuilt it for good -- ICO stayed on a black screen.
+ * fs_set_dir() repositions in place (SEEK_CUR 0) when the direction changes. */
+static uint8_t g_fd_dir[FS_MAX];
+static void fs_set_dir(int fd, FILE* f, uint8_t dir)
+{
+    if (g_fd_dir[fd] && g_fd_dir[fd] != dir) FS_SEEK64(f, 0, SEEK_CUR);
+    g_fd_dir[fd] = dir;
+}
 static char  g_dir_path[FS_MAX][1024];   /* host path per open dir (for readdir stat) */
 static std::mutex g_fs_mutex; /* descriptor table and FILE/DIR stream operations */
 
+/* Guest threads open, read and close concurrently (FIOS media threads, audio
+ * streamers). Allocation and release take this lock, so two opens can no longer
+ * claim the same slot, and every handler reads its slot once (fd_file/fd_dir)
+ * rather than re-reading a pointer another thread's close may have cleared. */
+static std::mutex g_fd_lock;
 static int fd_alloc_file(FILE* f)
 {
-    for (int i = 3; i < FS_MAX; i++) if (!g_files[i] && !g_dirs[i]) { g_files[i] = f; return i; }
+    std::lock_guard<std::mutex> hold(g_fd_lock);
+    for (int i = 3; i < FS_MAX; i++)
+        if (!g_files[i] && !g_dirs[i]) {
+            g_fd_dir[i] = 0;
+            __atomic_store_n(&g_files[i], f, __ATOMIC_RELEASE);
+            return i;
+        }
     return -1;
 }
 static int fd_alloc_dir(DIR* d)
 {
-    for (int i = 3; i < FS_MAX; i++) if (!g_files[i] && !g_dirs[i]) { g_dirs[i] = d; return i; }
+    std::lock_guard<std::mutex> hold(g_fd_lock);
+    for (int i = 3; i < FS_MAX; i++)
+        if (!g_files[i] && !g_dirs[i]) { __atomic_store_n(&g_dirs[i], d, __ATOMIC_RELEASE); return i; }
     return -1;
+}
+static FILE* fd_file(int fd)
+{
+    return fd >= 0 && fd < FS_MAX ? __atomic_load_n(&g_files[fd], __ATOMIC_ACQUIRE) : nullptr;
+}
+static DIR* fd_dir(int fd)
+{
+    return fd >= 0 && fd < FS_MAX ? __atomic_load_n(&g_dirs[fd], __ATOMIC_ACQUIRE) : nullptr;
 }
 
 /* ---- handlers ---- */
@@ -435,10 +475,17 @@ static void cellFsClose(ppu_context* ctx)
     int fd = (int)(uint32_t)ctx->gpr[3];
     if (getenv("FS_CALLER")) { char w[64]="?"; ppu_guest_caller(w,sizeof w);
         fprintf(stderr, "[fs] close fd=%d  (by %s)\n", fd, w); }
-    if (fd >= 0 && fd < FS_MAX && g_files[fd]) {
-        if (g_fd_usm[fd] && getenv("PS3_FSLOG_READS")) fprintf(stderr, "[USMRD] CLOSE usm fd=%d\n", fd);
-        fclose(g_files[fd]); g_files[fd] = nullptr; g_fd_usm[fd] = 0;
+    FILE* f = nullptr;
+    if (fd >= 0 && fd < FS_MAX) {
+        std::lock_guard<std::mutex> hold(g_fd_lock);
+        f = g_files[fd];
+        if (f) {
+            if (g_fd_usm[fd] && getenv("PS3_FSLOG_READS")) fprintf(stderr, "[USMRD] CLOSE usm fd=%d\n", fd);
+            __atomic_store_n(&g_files[fd], (FILE*)nullptr, __ATOMIC_RELEASE);
+            g_fd_usm[fd] = 0; g_fd_dir[fd] = 0;
+        }
     }
+    if (f) fclose(f);
     ctx->gpr[3] = CELL_OK;
 }
 
@@ -471,12 +518,14 @@ static void cellFsRead(ppu_context* ctx)
     uint32_t buf    = (uint32_t)ctx->gpr[4];
     uint64_t nbytes = ctx->gpr[5];
     uint32_t nread_ptr = (uint32_t)ctx->gpr[6];
-    if (fd < 0 || fd >= FS_MAX || !g_files[fd]) { ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_EIO; return; }
+    FILE* f = fd_file(fd);
+    if (!f) { ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_EIO; return; }
     uint64_t raw_nbytes = ctx->gpr[5];
-    int64_t fpos_before = fs_tell64(g_files[fd]);
+    int64_t fpos_before = fs_tell64(f);
     if (ppu_vm_size && (uint64_t)buf + nbytes > ppu_vm_size) nbytes = ppu_vm_size - buf;
     fs_prefault(buf, nbytes);
-    size_t n = fread(vm_base + buf, 1, (size_t)nbytes, g_files[fd]);   /* raw bytes, no swap */
+    fs_set_dir(fd, f, 1);
+    size_t n = fread(vm_base + buf, 1, (size_t)nbytes, f);   /* raw bytes, no swap */
     /* PS3_FSLOG_EOF=<fd>,<bytes>: report end-of-file past <bytes> on one descriptor.
      * The intro cinematic is 28 seconds and this port renders it at a few frames
      * a second, so it cannot be watched to its end -- truncating the stream makes
@@ -500,7 +549,7 @@ static void cellFsRead(ppu_context* ctx)
       if (wfd >= 0 && fd == wfd)
           fprintf(stderr, "[fsread] fd=%d want=%llu got=%zu pos=%ld\n",
                   fd, (unsigned long long)nbytes, n, fpos_before); }
-    if (getenv("PS3_FSLOG")) { static int _fd=0; if(PS3_LOG_FIRST(_fd, 20)) fprintf(stderr,"[FSDBG] fd=%d raw_nbytes=0x%llX clamped=0x%llX buf=0x%08X fpos_before=%ld n=%zu eof=%d err=%d\n", fd,(unsigned long long)raw_nbytes,(unsigned long long)nbytes,buf,fpos_before,n,feof(g_files[fd]),ferror(g_files[fd])); }
+    if (getenv("PS3_FSLOG")) { static int _fd=0; if(PS3_LOG_FIRST(_fd, 20)) fprintf(stderr,"[FSDBG] fd=%d raw_nbytes=0x%llX clamped=0x%llX buf=0x%08X fpos_before=%lld n=%zu eof=%d err=%d\n", fd,(unsigned long long)raw_nbytes,(unsigned long long)nbytes,buf,fpos_before,n,feof(f),ferror(f)); }
 #ifdef _WIN32
     if (getenv("PS3_FSLOG") && buf==0 && raw_nbytes>0x10000) { static int _b=0; if(_b++<2){ void* fr[30]; unsigned short nn=RtlCaptureStackBackTrace(0,30,fr,0); uintptr_t mb=(uintptr_t)GetModuleHandleA(0); fprintf(stderr,"[FSBT] null-buf read caller rvas:"); for(unsigned short i=0;i<nn&&i<16;i++) fprintf(stderr," %llX",(unsigned long long)((uintptr_t)fr[i]-mb)); fprintf(stderr,"\n"); } }
 #endif
@@ -542,9 +591,11 @@ static void cellFsWrite(ppu_context* ctx)
     uint32_t buf    = (uint32_t)ctx->gpr[4];
     uint64_t nbytes = ctx->gpr[5];
     uint32_t nwr_ptr = (uint32_t)ctx->gpr[6];
-    if (fd < 0 || fd >= FS_MAX || !g_files[fd]) { ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_EIO; return; }
+    FILE* f = fd_file(fd);
+    if (!f) { ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_EIO; return; }
     fs_prefault(buf, nbytes);   /* kernel READS the buffer; same reserved-page trap */
-    size_t n = fwrite(vm_base + buf, 1, (size_t)nbytes, g_files[fd]);
+    fs_set_dir(fd, f, 2);
+    size_t n = fwrite(vm_base + buf, 1, (size_t)nbytes, f);
     /* DIAGNOSTIC (PS3_FSLOG_BT=1): dump the guest back-chain when the game logs the
      * render-config failure, to locate setScreenRenderTargetInternal & the config obj. */
     if (getenv("PS3_FSLOG_BT") && buf && nbytes > 0 && nbytes < 4096 && vm_base) {
@@ -603,7 +654,7 @@ static void cellFsFGetBlockSize(ppu_context* ctx)
 {
     std::lock_guard<std::mutex> fs_lock(g_fs_mutex);
     int fd = (int)(uint32_t)ctx->gpr[3];
-    if (fd < 0 || fd >= FS_MAX || !g_files[fd]) {
+    if (!fd_file(fd)) {
         ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_EIO;
         return;
     }
@@ -624,14 +675,15 @@ static void cellFsLseek(ppu_context* ctx)
     int64_t off   = (int64_t)ctx->gpr[4];
     uint32_t wh   = (uint32_t)ctx->gpr[5];
     uint32_t pos_ptr = (uint32_t)ctx->gpr[6];
-    if (fd < 0 || fd >= FS_MAX || !g_files[fd]) { ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_EIO; return; }
+    FILE* f = fd_file(fd);
+    if (!f) { ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_EIO; return; }
     if (getenv("FS_CALLER")) { char w[64]="?"; ppu_guest_caller(w,sizeof w);
         fprintf(stderr, "[fs] lseek fd=%d off=%lld whence=%u  (by %s)\n", fd, (long long)off, wh, w); }
     int worigin = (wh == CELL_FS_SEEK_END) ? SEEK_END : (wh == CELL_FS_SEEK_CUR) ? SEEK_CUR : SEEK_SET;
-    if (fs_seek64(g_files[fd], off, worigin) != 0) {
+    if (fs_seek64(f, off, worigin) != 0) {
         ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_EIO; return;
     }
-    int64_t p = fs_tell64(g_files[fd]);
+    int64_t p = fs_tell64(f);
     if (p < 0) { ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_EIO; return; }
     if (pos_ptr) vm_write64(pos_ptr, (uint64_t)p);
     ctx->gpr[3] = CELL_OK;
@@ -681,15 +733,16 @@ static void cellFsFstat(ppu_context* ctx)
     std::lock_guard<std::mutex> fs_lock(g_fs_mutex);
     int fd      = (int)(uint32_t)ctx->gpr[3];
     uint32_t sb = (uint32_t)ctx->gpr[4];
-    if (fd < 0 || fd >= FS_MAX || !g_files[fd]) { ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_EIO; return; }
+    FILE* f = fd_file(fd);
+    if (!f) { ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_EIO; return; }
     if (getenv("FS_CALLER")) { char w[64]="?"; ppu_guest_caller(w,sizeof w);
         fprintf(stderr, "[fs] fstat fd=%d  (by %s)\n", fd, w); }
-    int64_t cur = fs_tell64(g_files[fd]);
-    if (cur < 0 || fs_seek64(g_files[fd], 0, SEEK_END) != 0) {
+    int64_t cur = fs_tell64(f);
+    if (cur < 0 || fs_seek64(f, 0, SEEK_END) != 0) {
         ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_EIO; return;
     }
-    int64_t sz = fs_tell64(g_files[fd]);
-    if (sz < 0 || fs_seek64(g_files[fd], cur, SEEK_SET) != 0) {
+    int64_t sz = fs_tell64(f);
+    if (sz < 0 || fs_seek64(f, cur, SEEK_SET) != 0) {
         ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_EIO; return;
     }
     /* FS_FSTAT_CAP=<bytes>: DIAGNOSTIC. Report a smaller size than the file
@@ -736,8 +789,9 @@ static void cellFsReaddir(ppu_context* ctx)
     int fd          = (int)(uint32_t)ctx->gpr[3];
     uint32_t dirent = (uint32_t)ctx->gpr[4];
     uint32_t nread_ptr = (uint32_t)ctx->gpr[5];
-    if (fd < 0 || fd >= FS_MAX || !g_dirs[fd]) { ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_EIO; return; }
-    struct dirent* e = readdir(g_dirs[fd]);
+    DIR* d = fd_dir(fd);
+    if (!d) { ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_EIO; return; }
+    struct dirent* e = readdir(d);
     if (!e) { if (nread_ptr) vm_write64(nread_ptr, 0); ctx->gpr[3] = CELL_OK; return; }
     char full[1300]; struct stat st;
     snprintf(full, sizeof full, "%s/%s", g_dir_path[fd], e->d_name);
@@ -755,66 +809,66 @@ static void cellFsReaddir(ppu_context* ctx)
 static void cellFsGetDirectoryEntries(ppu_context* ctx)
 {
     std::lock_guard<std::mutex> fs_lock(g_fs_mutex);
-    int fd = (int)(uint32_t)ctx->gpr[3];
-    uint32_t entries = (uint32_t)ctx->gpr[4];
-    uint32_t entries_size = (uint32_t)ctx->gpr[5];
-    uint32_t count_ptr = (uint32_t)ctx->gpr[6];
-    const uint32_t record_size = 52u + 256u;
-    if (!entries || !count_ptr) {
-        ctx->gpr[3] = (uint64_t)(int64_t)CELL_EFAULT;
+    const uint32_t fd = (uint32_t)ctx->gpr[3];
+    const uint32_t entries = (uint32_t)ctx->gpr[4];
+    const uint32_t bytes = (uint32_t)ctx->gpr[5];
+    const uint32_t count_ptr = (uint32_t)ctx->gpr[6];
+    const uint64_t limit = ppu_vm_size ? ppu_vm_size : 0x100000000ull;
+    if (!vm_base || !entries || !count_ptr || uint64_t(entries) + bytes > limit ||
+        uint64_t(count_ptr) + 4 > limit) {
+        ctx->gpr[3] = 0x8001000Du;
         return;
     }
-    if (fd < 0 || fd >= FS_MAX || !g_dirs[fd]) {
+    DIR* d = fd_dir((int)fd);
+    if (!d) {
         vm_write32(count_ptr, 0);
-        ctx->gpr[3] = (uint64_t)(int64_t)CELL_EBADF;
+        ctx->gpr[3] = 0x8001002Au;
         return;
     }
-    if (entries_size > UINT32_MAX - entries ||
-        (ppu_vm_size && (uint64_t)entries + entries_size > ppu_vm_size)) {
-        vm_write32(count_ptr, 0);
-        ctx->gpr[3] = (uint64_t)(int64_t)CELL_EFAULT;
-        return;
-    }
-
-    uint32_t capacity = entries_size / record_size;
     uint32_t count = 0;
-    while (count < capacity) {
-        struct dirent* e = readdir(g_dirs[fd]);
-        if (!e) break;
-        uint32_t item = entries + count * record_size;
-        char full[1300];
+    ctx->gpr[3] = CELL_OK;
+    for (; count < bytes / 312; ++count) {
+        errno = 0;
+        struct dirent* entry = readdir(d);
+        if (!entry) {
+            if (errno) ctx->gpr[3] = 0x8001002Bu;
+            break;
+        }
+        char path[1300];
+        snprintf(path, sizeof path, "%s/%s", g_dir_path[fd], entry->d_name);
         struct stat st;
-        snprintf(full, sizeof full, "%s/%s", g_dir_path[fd], e->d_name);
-        memset(&st, 0, sizeof(st));
-        (void)stat(full, &st);
-        uint32_t mode = (st.st_mode & S_IFDIR) ? (CELL_FS_S_IFDIR | 0x1FFu)
-                                                : (CELL_FS_S_IFREG | 0x1B6u);
-        vm_write32(item + 0x00, mode);
-        vm_write32(item + 0x04, 0);
-        vm_write32(item + 0x08, 0);
-        vm_write64(item + 0x0C, (uint64_t)st.st_atime);
-        vm_write64(item + 0x14, (uint64_t)st.st_mtime);
-        vm_write64(item + 0x1C, (uint64_t)st.st_ctime);
-        vm_write64(item + 0x24, (uint64_t)st.st_size);
-        vm_write64(item + 0x2C, 4096u);
-        size_t name_len = strlen(e->d_name);
-        if (name_len >= 256u) name_len = 255u;
-        memcpy(vm_base + item + 52, e->d_name, name_len);
-        vm_base[item + 52 + name_len] = 0;
-        if (name_len + 1 < 256u)
-            memset(vm_base + item + 52 + name_len + 1, 0,
-                   256u - name_len - 1);
-        count++;
+        if (stat(path, &st) != 0) {
+            ctx->gpr[3] = 0x8001002Bu;
+            break;
+        }
+        const uint32_t out = entries + count * 312;
+        memset(vm_base + out, 0, 312);
+        const bool directory = (st.st_mode & S_IFDIR) != 0;
+        write_stat(out, (directory ? CELL_FS_S_IFDIR : CELL_FS_S_IFREG) |
+                        (uint32_t(st.st_mode) & 0777u), (uint64_t)st.st_size);
+        vm_write64(out + 0x0C, (uint64_t)st.st_atime);
+        vm_write64(out + 0x14, (uint64_t)st.st_mtime);
+        vm_write64(out + 0x1C, (uint64_t)st.st_ctime);
+        size_t length = strlen(entry->d_name);
+        if (length > 255u) length = 255u;
+        vm_base[out + 52] = directory ? CELL_FS_TYPE_DIR : CELL_FS_TYPE_REG;
+        vm_base[out + 53] = (uint8_t)length;
+        memcpy(vm_base + out + 54, entry->d_name, length);
     }
     vm_write32(count_ptr, count);
-    ctx->gpr[3] = CELL_OK;
 }
 
 static void cellFsClosedir(ppu_context* ctx)
 {
     std::lock_guard<std::mutex> fs_lock(g_fs_mutex);
     int fd = (int)(uint32_t)ctx->gpr[3];
-    if (fd >= 0 && fd < FS_MAX && g_dirs[fd]) { closedir(g_dirs[fd]); g_dirs[fd] = nullptr; }
+    DIR* d = nullptr;
+    if (fd >= 0 && fd < FS_MAX) {
+        std::lock_guard<std::mutex> hold(g_fd_lock);
+        d = g_dirs[fd];
+        __atomic_store_n(&g_dirs[fd], (DIR*)nullptr, __ATOMIC_RELEASE);
+    }
+    if (d) closedir(d);
     ctx->gpr[3] = CELL_OK;
 }
 
@@ -1017,18 +1071,16 @@ static void cellFsFsync(ppu_context* ctx)
 {
     std::lock_guard<std::mutex> fs_lock(g_fs_mutex);
     int fd = (int)(uint32_t)ctx->gpr[3];
-    if (fd < 0 || fd >= FS_MAX || !g_files[fd]) {
-        ctx->gpr[3] = (uint64_t)(int64_t)CELL_EBADF;
-        return;
-    }
-    if (fflush(g_files[fd]) != 0) {
+    FILE* f = fd_file(fd);
+    if (!f) { ctx->gpr[3] = (uint64_t)(int64_t)CELL_EBADF; return; }
+    if (fflush(f) != 0) {
         ctx->gpr[3] = (uint64_t)(int64_t)cell_fs_errno(errno);
         return;
     }
 #ifdef _WIN32
-    const int rc = _commit(_fileno(g_files[fd]));
+    const int rc = _commit(_fileno(f));
 #else
-    const int rc = fsync(fileno(g_files[fd]));
+    const int rc = fsync(fileno(f));
 #endif
     ctx->gpr[3] = rc == 0 ? CELL_OK : (uint64_t)(int64_t)cell_fs_errno(errno);
 }
@@ -1147,14 +1199,13 @@ static void cellFsAioRead(ppu_context* ctx)
     int32_t err = CELL_EBADF;
     {
         std::lock_guard<std::mutex> fs_lock(g_fs_mutex);
-        if (fd >= 0 && fd < FS_MAX && g_files[fd]) {
+        if (FILE* f = fd_file(fd)) {
             if (size > SIZE_MAX || (ppu_vm_size &&
                 ((uint64_t)buf > ppu_vm_size || size > ppu_vm_size - (uint64_t)buf))) {
                 err = CELL_EFAULT;
             } else {
                 fs_prefault(buf, size);
-                FILE* f = g_files[fd];
-                /* AIO offsets are absolute and must leave the shared FILE*
+                        /* AIO offsets are absolute and must leave the shared FILE*
                  * position untouched. Serialize against both file-table
                  * changes and concurrent stdio operations on this stream. */
                 HOST_LOCKFILE(f);

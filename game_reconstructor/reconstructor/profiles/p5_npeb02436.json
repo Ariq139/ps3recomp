@@ -1,0 +1,12 @@
+{
+  "project": "D:/Other/GitRepo/ps3recomp/p5_npeb02436_gameonly",
+  "ghidra": "D:/Other/Ghidra",
+  "workspace": "../../workspaces/p5_npeb02436",
+  "language": "PowerPC:BE:64:A2ALT-32addr",
+  "references": [
+    "D:/Other/Project/P5 Symbols Beta 2015.elf.gzf"
+  ],
+  "batch_size": 8,
+  "worker_timeout": 900,
+  "apply_verified": true
+}
