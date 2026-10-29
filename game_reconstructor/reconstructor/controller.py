@@ -24,7 +24,15 @@ def atomic_json(path, value):
     temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
     try:
         temporary.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
-        os.replace(temporary, path)
+        for attempt in range(8):
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError as error:
+                if (os.name != "nt" or getattr(error, "winerror", None) not in (5, 32)
+                        or attempt == 7):
+                    raise
+                time.sleep(min(0.02 * (2 ** attempt), 0.25))
     finally:
         temporary.unlink(missing_ok=True)
 

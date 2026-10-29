@@ -322,6 +322,7 @@ struct Fiber {
     int     state;
     int     signal_pending;      /* a SendSignal arrived before the WaitSignal */
     u32     join_ea;             /* F_WAIT_JOIN: the fiber waited for */
+    u32     join_waiters;
     s32     status;
 #ifdef _WIN32
     void*   host_fiber;
@@ -649,21 +650,35 @@ s32 cellFiberPpuCreateFiber(CellFiberPpuScheduler* scheduler, CellFiberPpu* fibe
     s32 rc = CELL_OK;
     if (!s) {
         rc = (s32)CELL_FIBER_ERROR_INVAL;
-    } else if (find_fiber(fiber_ea)) {
-        Fiber* previous = find_fiber(fiber_ea);
-        fprintf(stderr, "[fiber-life] create rejected ea=%08X entry=%08X "
-                "previous_state=%d previous_entry=%08X previous_status=%08X\n",
-                fiber_ea, entry, previous->state, previous->opd, (u32)previous->status);
-        rc = (s32)CELL_FIBER_ERROR_STAT;
     } else {
-        f->sched = s;
-        f->seq   = s_seq++;
-        f->next  = s_fibers;
-        s_fibers = f;
-        if (fiber_lifecycle_trace())
-            fprintf(stderr, "[fiber-life] create ea=%08X entry=%08X arg=%llX "
-                    "stack=%08X+%X scheduler=%08X\n", fiber_ea, entry,
-                    (unsigned long long)arg, stack_ea, sizeStack, sched_ea);
+        Fiber** previous_link = &s_fibers;
+        while (*previous_link && (*previous_link)->ea != fiber_ea)
+            previous_link = &(*previous_link)->next;
+        Fiber* previous = *previous_link;
+        if (previous && (previous->state != F_DONE || previous->join_waiters)) {
+            fprintf(stderr, "[fiber-life] create rejected ea=%08X entry=%08X "
+                    "previous_state=%d previous_entry=%08X previous_status=%08X joiners=%u\n",
+                    fiber_ea, entry, previous->state, previous->opd,
+                    (u32)previous->status, previous->join_waiters);
+            rc = (s32)CELL_FIBER_ERROR_STAT;
+        } else {
+            if (previous) {
+                *previous_link = previous->next;
+                host_destroy(previous);
+                free(previous);
+                if (fiber_lifecycle_trace())
+                    fprintf(stderr, "[fiber-life] reuse ea=%08X entry=%08X\n",
+                            fiber_ea, entry);
+            }
+            f->sched = s;
+            f->seq   = s_seq++;
+            f->next  = s_fibers;
+            s_fibers = f;
+            if (fiber_lifecycle_trace())
+                fprintf(stderr, "[fiber-life] create ea=%08X entry=%08X arg=%llX "
+                        "stack=%08X+%X scheduler=%08X\n", fiber_ea, entry,
+                        (unsigned long long)arg, stack_ea, sizeStack, sched_ea);
+        }
     }
     UNLOCK();
     if (rc != CELL_OK) {
@@ -793,6 +808,7 @@ s32 cellFiberPpuJoinFiber(CellFiberPpu* fiber, s32* status)
     LOCK();
     Fiber* f = find_fiber(ea);
     if (!f || f == self) { UNLOCK(); return (s32)CELL_FIBER_ERROR_INVAL; }
+    f->join_waiters++;
     if (self && f->state != F_DONE) {
         self->state   = F_WAIT_JOIN;
         self->join_ea = ea;
@@ -805,7 +821,10 @@ s32 cellFiberPpuJoinFiber(CellFiberPpu* fiber, s32* status)
         WAIT();
     s32 rc = CELL_OK;
     if (!f) rc = (s32)CELL_FIBER_ERROR_INVAL;      /* the scheduler was finalized under the join */
-    else if (status) vm_write32((u32)(uintptr_t)status, (u32)f->status);
+    else {
+        if (status) vm_write32((u32)(uintptr_t)status, (u32)f->status);
+        if (f->join_waiters) f->join_waiters--;
+    }
     if (fiber_lifecycle_trace())
         fprintf(stderr, "[fiber-life] join ea=%08X rc=%08X state=%d\n",
                 ea, (u32)rc, f ? f->state : -1);

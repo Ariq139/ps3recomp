@@ -271,6 +271,22 @@ int64_t sys_mutex_lock(ppu_context* ctx)
     __atomic_add_fetch(&m->waiters, 1, __ATOMIC_SEQ_CST);   /* see sys_mutex_destroy */
 #ifdef _WIN32
     if (timeout_us == 0) {
+        static int watch = -1;
+        static uint32_t watch_lr = 0;
+        if (watch < 0) {
+            const char* e = getenv("MUTEX_WATCH");
+            watch = e ? atoi(e) : 0;
+            e = getenv("MUTEX_WATCH_LR");
+            watch_lr = e ? (uint32_t)strtoul(e, NULL, 16) : 0;
+        }
+        if (watch && (!watch_lr || watch_lr == (uint32_t)ctx->lr)) {
+            fprintf(stderr,
+                    "[mutex] tid=%llu waiting on mutex %u '%.8s' owner tid=%llu count=%d waiters=%d recursive=%d lr=0x%08X\n",
+                    (unsigned long long)caller_tid, mutex_id, m->name,
+                    (unsigned long long)m->owner_tid, m->lock_count,
+                    m->waiters, m->recursive, (uint32_t)ctx->lr);
+            fflush(stderr);
+        }
         /* Infinite wait */
         EnterCriticalSection(&m->cs);
     } else {

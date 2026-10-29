@@ -1,0 +1,2201 @@
+{
+  "source_elf_sha256": "7384f437ad0471626cb9b84c5924c31142cdccc5b53d033f97ba6dc01ffdd2e1",
+  "target_elf_sha256": "3469cbc90ad533a8f0366772695f1206ea6f783d227a3cca7eb118b8191e15f8",
+  "closure_functions": 1857,
+  "source_conflicts_excluded": 1,
+  "target_collisions_excluded": 2,
+  "mapping_count": 313,
+  "mappings": [
+    {
+      "source": "0x00DF6318",
+      "target": "0x00F33114",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 3
+    },
+    {
+      "source": "0x00DF6368",
+      "target": "0x00F33164",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 3
+    },
+    {
+      "source": "0x00DF6444",
+      "target": "0x00F343C4",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 3
+    },
+    {
+      "source": "0x00DF6BE8",
+      "target": "0x00F33B68",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00DF73F0",
+      "target": "0x00F345E0",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00DF74A4",
+      "target": "0x00F34694",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E03684",
+      "target": "0x00F41AA4",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x00E036B4",
+      "target": "0x00F41AD4",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x00E038FC",
+      "target": "0x00F41C14",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E039E4",
+      "target": "0x00F41CD4",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E04214",
+      "target": "0x00F4205C",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 4
+    },
+    {
+      "source": "0x00E04244",
+      "target": "0x00F4208C",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E04254",
+      "target": "0x00F4209C",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E0425C",
+      "target": "0x00F420A4",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E04400",
+      "target": "0x00F421D0",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 3
+    },
+    {
+      "source": "0x00E04430",
+      "target": "0x00F42200",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x00E04438",
+      "target": "0x00F42208",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E0E250",
+      "target": "0x00F47578",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E0E2A8",
+      "target": "0x00F475B0",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E101C4",
+      "target": "0x00F4A820",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E10894",
+      "target": "0x00F4AF30",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E18990",
+      "target": "0x00F5D2F8",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 7
+    },
+    {
+      "source": "0x00E18A24",
+      "target": "0x00F5D364",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E18B44",
+      "target": "0x00F5D530",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E18B54",
+      "target": "0x00F5D540",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E18B8C",
+      "target": "0x00F5D5B4",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E18B98",
+      "target": "0x00F5D5C0",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E19494",
+      "target": "0x00F5E030",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E19AB8",
+      "target": "0x00F5E8B4",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E19B60",
+      "target": "0x00F5E970",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E19B68",
+      "target": "0x00F5E978",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E19B70",
+      "target": "0x00F5E980",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E19B78",
+      "target": "0x00F5E988",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E19B80",
+      "target": "0x00F5E990",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E19B88",
+      "target": "0x00F5E998",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E19B90",
+      "target": "0x00F5E9A0",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 38
+    },
+    {
+      "source": "0x00E19BB8",
+      "target": "0x00F5E9C8",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 12
+    },
+    {
+      "source": "0x00E19BCC",
+      "target": "0x00F5E9DC",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E19C14",
+      "target": "0x00F5E9E4",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E19EB0",
+      "target": "0x00F5ED44",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E19FC0",
+      "target": "0x00F5EDCC",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E19FE8",
+      "target": "0x00F5EDF4",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E1A090",
+      "target": "0x00F5EE80",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E1A0C0",
+      "target": "0x00F5EEB0",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E1A100",
+      "target": "0x00F5EEF0",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E1A120",
+      "target": "0x00F5EF10",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E1A13C",
+      "target": "0x00F5EF2C",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 4
+    },
+    {
+      "source": "0x00E1A14C",
+      "target": "0x00F5EF3C",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 4
+    },
+    {
+      "source": "0x00E1A15C",
+      "target": "0x00F5EF4C",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x00E1A1C0",
+      "target": "0x00F5EFB0",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E1A224",
+      "target": "0x00F5F014",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E1A290",
+      "target": "0x00F5F150",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E1A42C",
+      "target": "0x00F5F2E8",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 4
+    },
+    {
+      "source": "0x00E1A45C",
+      "target": "0x00F5F318",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E1A46C",
+      "target": "0x00F5F338",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E1A480",
+      "target": "0x00F5F328",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E1A4AC",
+      "target": "0x00F5F350",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x00E1BD08",
+      "target": "0x00F5F688",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E1BD48",
+      "target": "0x00F5F6C8",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E1BDAC",
+      "target": "0x00F5F5FC",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 6
+    },
+    {
+      "source": "0x00E1BE8C",
+      "target": "0x00F5F670",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E1BEA4",
+      "target": "0x00F5F6D8",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E2845C",
+      "target": "0x00F62DB4",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x00E28568",
+      "target": "0x00F62EE4",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E2858C",
+      "target": "0x00F62E5C",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E2BD64",
+      "target": "0x00F66E10",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E5B738",
+      "target": "0x00FA5040",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E5B780",
+      "target": "0x00FA5510",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E5BC64",
+      "target": "0x00FA5B68",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 4
+    },
+    {
+      "source": "0x00E5E764",
+      "target": "0x00FA7AAC",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E5E7A0",
+      "target": "0x00FA7AE8",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E5E7E0",
+      "target": "0x00FA7B28",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E7F648",
+      "target": "0x00FC8A00",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E7F660",
+      "target": "0x00FC8A0C",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E83767",
+      "target": "0x00FCE6B5",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E83778",
+      "target": "0x00FCE6C4",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E83788",
+      "target": "0x00FCE6D4",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E8C230",
+      "target": "0x00FD2540",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E8C240",
+      "target": "0x00FD2550",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x00E8C260",
+      "target": "0x00FD2570",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x00E8C620",
+      "target": "0x00FD2930",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E8C638",
+      "target": "0x00FD290C",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E8D4A8",
+      "target": "0x00FD37E8",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 4
+    },
+    {
+      "source": "0x00E8D4C8",
+      "target": "0x00FD3808",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 4
+    },
+    {
+      "source": "0x00E8D5A8",
+      "target": "0x00FD38E8",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E8D5C8",
+      "target": "0x00FD3908",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E8D978",
+      "target": "0x00FD3DFC",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 4
+    },
+    {
+      "source": "0x00E8D998",
+      "target": "0x00FD3E1C",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 4
+    },
+    {
+      "source": "0x00E8D9B8",
+      "target": "0x00FD3E3C",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 4
+    },
+    {
+      "source": "0x00E8D9D8",
+      "target": "0x00FD3E5C",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 4
+    },
+    {
+      "source": "0x00E8D9F8",
+      "target": "0x00FD3E7C",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 4
+    },
+    {
+      "source": "0x00E8DA44",
+      "target": "0x00FD3EC4",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E8DA64",
+      "target": "0x00FD3EE4",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E8DA84",
+      "target": "0x00FD3F04",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E8DAA4",
+      "target": "0x00FD3F24",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E8DAC4",
+      "target": "0x00FD3F44",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E8DAE4",
+      "target": "0x00FD3F64",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E8DB04",
+      "target": "0x00FD3F84",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E8DB24",
+      "target": "0x00FD3FA4",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E8DB44",
+      "target": "0x00FD3FC4",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E8DB64",
+      "target": "0x00FD3FE4",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E8DB84",
+      "target": "0x00FD4004",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E8DBA4",
+      "target": "0x00FD4024",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E8DF98",
+      "target": "0x00FD43F8",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E8DFD8",
+      "target": "0x00FD4438",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E8E100",
+      "target": "0x00FD4530",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x00E8E140",
+      "target": "0x00FD4570",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x00E8E71C",
+      "target": "0x00FD4B4C",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E8E75C",
+      "target": "0x00FD4B70",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E8E77C",
+      "target": "0x00FD4B90",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E8E79C",
+      "target": "0x00FD4BB0",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E8E7BC",
+      "target": "0x00FD4BD0",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9098C",
+      "target": "0x00FD6ECC",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9099C",
+      "target": "0x00FD6EDC",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E90E18",
+      "target": "0x00FD7254",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E924F0",
+      "target": "0x00FD745C",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E92FB0",
+      "target": "0x00FCC00C",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E92FD0",
+      "target": "0x00FCC02C",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E92FF0",
+      "target": "0x00FCC04C",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E93010",
+      "target": "0x00FCC06C",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E93180",
+      "target": "0x00FCC408",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E931A0",
+      "target": "0x00FCC428",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E93970",
+      "target": "0x00FCC824",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E93990",
+      "target": "0x00FCC844",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E939B0",
+      "target": "0x00FCC864",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E98B68",
+      "target": "0x00FDB870",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E99218",
+      "target": "0x00FDBDEC",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E99358",
+      "target": "0x00FDBECC",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E99364",
+      "target": "0x00FDBED8",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E99374",
+      "target": "0x00FDBEE8",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9A204",
+      "target": "0x00FDCCA4",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9B21C",
+      "target": "0x00FDD30C",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9B22C",
+      "target": "0x00FDD31C",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9B238",
+      "target": "0x00FDD328",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9B248",
+      "target": "0x00FDD338",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9B278",
+      "target": "0x00FDD368",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9B55C",
+      "target": "0x00FDD64C",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x00E9B590",
+      "target": "0x00FDD680",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9B59C",
+      "target": "0x00FDD68C",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9B5AC",
+      "target": "0x00FDD69C",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9B5B8",
+      "target": "0x00FDD6A8",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9B5C8",
+      "target": "0x00FDD6B8",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9B8B8",
+      "target": "0x00FDD9AC",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x00E9B8C4",
+      "target": "0x00FDD9B8",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9B8F4",
+      "target": "0x00FDD9C4",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9B930",
+      "target": "0x00FDD9F4",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9B940",
+      "target": "0x00FDDA04",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9B94C",
+      "target": "0x00FDDA10",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9B958",
+      "target": "0x00FDDA1C",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x00E9B978",
+      "target": "0x00FDDA3C",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9B9F0",
+      "target": "0x00FDDAB4",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9BAAC",
+      "target": "0x00FDDB54",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9C094",
+      "target": "0x00FDE0B4",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9C0A4",
+      "target": "0x00FDE0C4",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9DAE7",
+      "target": "0x00FDF783",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9DAF4",
+      "target": "0x00FDF790",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9DB14",
+      "target": "0x00FDF7B0",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9DB44",
+      "target": "0x00FDF7E0",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9DB74",
+      "target": "0x00FDF810",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9DBF5",
+      "target": "0x00FDF88B",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9DC04",
+      "target": "0x00FDF898",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9DC24",
+      "target": "0x00FDF8B8",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9DC5C",
+      "target": "0x00FDF8F0",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9DCEC",
+      "target": "0x00FDF978",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9E9CC",
+      "target": "0x00FE02A0",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9EA18",
+      "target": "0x00FE02EC",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9EA24",
+      "target": "0x00FE02F8",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9EA54",
+      "target": "0x00FE0328",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9EA80",
+      "target": "0x00FE0354",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9F9F8",
+      "target": "0x00FE1278",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 9
+    },
+    {
+      "source": "0x00E9FA18",
+      "target": "0x00FE1298",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 9
+    },
+    {
+      "source": "0x00E9FA38",
+      "target": "0x00FE12B8",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9FA58",
+      "target": "0x00FE12D8",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9FA78",
+      "target": "0x00FE12F8",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9FA98",
+      "target": "0x00FE1318",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9FAB8",
+      "target": "0x00FE1338",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9FAD8",
+      "target": "0x00FE1358",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9FAF8",
+      "target": "0x00FE1378",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9FB18",
+      "target": "0x00FE1398",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9FB38",
+      "target": "0x00FE13B8",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9FB58",
+      "target": "0x00FE13D8",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9FB78",
+      "target": "0x00FE13F8",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9FB98",
+      "target": "0x00FE1418",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9FBB8",
+      "target": "0x00FE1438",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9FC18",
+      "target": "0x00FE1498",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9FC38",
+      "target": "0x00FE14B8",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9FC58",
+      "target": "0x00FE14D8",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9FC78",
+      "target": "0x00FE14F8",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9FC98",
+      "target": "0x00FE1518",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9FCB8",
+      "target": "0x00FE1538",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9FCD8",
+      "target": "0x00FE1558",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9FCF8",
+      "target": "0x00FE1578",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9FD18",
+      "target": "0x00FE1598",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9FD38",
+      "target": "0x00FE15B8",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9FD58",
+      "target": "0x00FE15D8",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00E9FD78",
+      "target": "0x00FE15F8",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00EA06E0",
+      "target": "0x00FE1E18",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00EA0700",
+      "target": "0x00FE1E38",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00EA07F8",
+      "target": "0x00FE1FF0",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00EA0838",
+      "target": "0x00FE2030",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00EA0870",
+      "target": "0x00FE2068",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00EA08A8",
+      "target": "0x00FE20A0",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00EA08E0",
+      "target": "0x00FE20D8",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00EA0920",
+      "target": "0x00FE2118",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00EA0960",
+      "target": "0x00FE2158",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00EA0A20",
+      "target": "0x00FE2218",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00EA0AC0",
+      "target": "0x00FE2288",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00EA0D80",
+      "target": "0x00FE2548",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00EA0DA0",
+      "target": "0x00FE2568",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00EA0DD0",
+      "target": "0x00FE2598",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00EA0E08",
+      "target": "0x00FE25D0",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00EA0E38",
+      "target": "0x00FE2600",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00EA0E68",
+      "target": "0x00FE2630",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00EA0EA0",
+      "target": "0x00FE2668",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00EA0ED0",
+      "target": "0x00FE2698",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00EA0F14",
+      "target": "0x00FE26DC",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00EA0FB0",
+      "target": "0x00FE2778",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00EA1434",
+      "target": "0x00FE2B58",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x00EA2DCC",
+      "target": "0x00FE4200",
+      "source_block": ".rodata",
+      "target_block": ".rodata",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x0111E310",
+      "target": "0x011F0E9C",
+      "source_block": ".data",
+      "target_block": ".data",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x0111ED7C",
+      "target": "0x011F2C1C",
+      "source_block": ".data",
+      "target_block": ".data",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x0111ED88",
+      "target": "0x011F2C28",
+      "source_block": ".data",
+      "target_block": ".data",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x01138A2C",
+      "target": "0x0123F208",
+      "source_block": ".data",
+      "target_block": ".data",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x0114B6AC",
+      "target": "0x01251C98",
+      "source_block": ".data",
+      "target_block": ".data",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x0114B6B0",
+      "target": "0x01251C9C",
+      "source_block": ".data",
+      "target_block": ".data",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x0114B6FC",
+      "target": "0x01251CF0",
+      "source_block": ".data",
+      "target_block": ".data",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x0119EE18",
+      "target": "0x01295910",
+      "source_block": ".data",
+      "target_block": ".data",
+      "closure_sites": 4
+    },
+    {
+      "source": "0x011B53D0",
+      "target": "0x012F435C",
+      "source_block": ".data",
+      "target_block": ".data",
+      "closure_sites": 4
+    },
+    {
+      "source": "0x0143B8A0",
+      "target": "0x015A9E68",
+      "source_block": ".data",
+      "target_block": ".data",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x0143B8BC",
+      "target": "0x015A9EE0",
+      "source_block": ".data",
+      "target_block": ".data",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x0143BA3C",
+      "target": "0x015AA1BC",
+      "source_block": ".data",
+      "target_block": ".data",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x0143BA88",
+      "target": "0x015AA208",
+      "source_block": ".data",
+      "target_block": ".data",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x0143BAC4",
+      "target": "0x015AA660",
+      "source_block": ".data",
+      "target_block": ".data",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x0143BB7C",
+      "target": "0x015AA30C",
+      "source_block": ".data",
+      "target_block": ".data",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x0143BCF8",
+      "target": "0x015AA474",
+      "source_block": ".data",
+      "target_block": ".data",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x0143BD84",
+      "target": "0x015AA4F4",
+      "source_block": ".data",
+      "target_block": ".data",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x0143BDD0",
+      "target": "0x015AA540",
+      "source_block": ".data",
+      "target_block": ".data",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x0143BEE8",
+      "target": "0x015A9E88",
+      "source_block": ".data",
+      "target_block": ".data",
+      "closure_sites": 5
+    },
+    {
+      "source": "0x0143C1F0",
+      "target": "0x015AA700",
+      "source_block": ".data",
+      "target_block": ".data",
+      "closure_sites": 6
+    },
+    {
+      "source": "0x0143C410",
+      "target": "0x015AA920",
+      "source_block": ".data",
+      "target_block": ".data",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x0143C414",
+      "target": "0x015AA924",
+      "source_block": ".data",
+      "target_block": ".data",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x0143C42C",
+      "target": "0x015AA93C",
+      "source_block": ".data",
+      "target_block": ".data",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x0143C430",
+      "target": "0x015AA940",
+      "source_block": ".data",
+      "target_block": ".data",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x0143C434",
+      "target": "0x015AA944",
+      "source_block": ".data",
+      "target_block": ".data",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x0143C490",
+      "target": "0x015AA9A4",
+      "source_block": ".data",
+      "target_block": ".data",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x0143C498",
+      "target": "0x015AA9A8",
+      "source_block": ".data",
+      "target_block": ".data",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x0143C6F0",
+      "target": "0x015AABC4",
+      "source_block": ".data",
+      "target_block": ".data",
+      "closure_sites": 12
+    },
+    {
+      "source": "0x0143C6F4",
+      "target": "0x015AABC8",
+      "source_block": ".data",
+      "target_block": ".data",
+      "closure_sites": 9
+    },
+    {
+      "source": "0x0143C6F8",
+      "target": "0x015AABCC",
+      "source_block": ".data",
+      "target_block": ".data",
+      "closure_sites": 3
+    },
+    {
+      "source": "0x0143C6FC",
+      "target": "0x015AABD0",
+      "source_block": ".data",
+      "target_block": ".data",
+      "closure_sites": 6
+    },
+    {
+      "source": "0x0143C700",
+      "target": "0x015AABD4",
+      "source_block": ".data",
+      "target_block": ".data",
+      "closure_sites": 6
+    },
+    {
+      "source": "0x0143C974",
+      "target": "0x015AADEC",
+      "source_block": ".data",
+      "target_block": ".data",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x0143C978",
+      "target": "0x015AADF0",
+      "source_block": ".data",
+      "target_block": ".data",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x0143C97C",
+      "target": "0x015AADF4",
+      "source_block": ".data",
+      "target_block": ".data",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x0143C988",
+      "target": "0x015AAE00",
+      "source_block": ".data",
+      "target_block": ".data",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x0143C998",
+      "target": "0x015AAE10",
+      "source_block": ".data",
+      "target_block": ".data",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x0143C9A8",
+      "target": "0x015AAE20",
+      "source_block": ".data",
+      "target_block": ".data",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x0143C9BC",
+      "target": "0x015AAE34",
+      "source_block": ".data",
+      "target_block": ".data",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x01440000",
+      "target": "0x015B0000",
+      "source_block": ".data",
+      "target_block": ".data",
+      "closure_sites": 3
+    },
+    {
+      "source": "0x014790E8",
+      "target": "0x015E7520",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x014791B0",
+      "target": "0x0161E330",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x01479D10",
+      "target": "0x0161EFC8",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 3
+    },
+    {
+      "source": "0x01479D18",
+      "target": "0x0161EFD0",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x01479F28",
+      "target": "0x0161F1E0",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x0147E010",
+      "target": "0x016232C8",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 4
+    },
+    {
+      "source": "0x0147E018",
+      "target": "0x016232D0",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x0147E01C",
+      "target": "0x016232D4",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x0147E020",
+      "target": "0x016232D8",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x0147E070",
+      "target": "0x01623328",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x01489294",
+      "target": "0x0162E554",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x01489340",
+      "target": "0x0162E608",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x01489348",
+      "target": "0x0162E610",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x01578EA8",
+      "target": "0x01673CB8",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 3
+    },
+    {
+      "source": "0x01579308",
+      "target": "0x01674118",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x0158DAF8",
+      "target": "0x016D4AA8",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x0158DAFC",
+      "target": "0x016D4AAC",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x0158DB00",
+      "target": "0x016D4AB0",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x0158DB04",
+      "target": "0x016D4AB4",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x0158DB08",
+      "target": "0x016D4AB8",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x0158DC30",
+      "target": "0x016D4CD0",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x0158DC34",
+      "target": "0x016D4CD4",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x0158DC70",
+      "target": "0x016D4D10",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 3
+    },
+    {
+      "source": "0x015D45A0",
+      "target": "0x0171B1D8",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x015D49B8",
+      "target": "0x0171B728",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 4
+    },
+    {
+      "source": "0x015D4D94",
+      "target": "0x0171B95C",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x015D5100",
+      "target": "0x0171BD98",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 3
+    },
+    {
+      "source": "0x015D5104",
+      "target": "0x0171BD9C",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x015DD8F0",
+      "target": "0x01720398",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x015DD8F8",
+      "target": "0x017203A0",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x015DEF40",
+      "target": "0x0181E608",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x015DEF44",
+      "target": "0x0181E60C",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x015DEF60",
+      "target": "0x01740E38",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x015E7BD8",
+      "target": "0x01748378",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 31
+    },
+    {
+      "source": "0x015E7BDC",
+      "target": "0x0174837C",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x015E7BDD",
+      "target": "0x0174837D",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x015E7BE0",
+      "target": "0x01748380",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 8
+    },
+    {
+      "source": "0x015E7BE4",
+      "target": "0x01748384",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 30
+    },
+    {
+      "source": "0x015E7BF0",
+      "target": "0x01748388",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 3
+    },
+    {
+      "source": "0x015E7BF1",
+      "target": "0x01748389",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x015E7BF8",
+      "target": "0x0174838C",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 14
+    },
+    {
+      "source": "0x015E7BFA",
+      "target": "0x0174838E",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 6
+    },
+    {
+      "source": "0x015E7BFC",
+      "target": "0x01748390",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 4
+    },
+    {
+      "source": "0x015E7BFE",
+      "target": "0x017483A4",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 3
+    },
+    {
+      "source": "0x015E7C00",
+      "target": "0x017483A6",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 6
+    },
+    {
+      "source": "0x015E7C02",
+      "target": "0x017483A8",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x015E7C04",
+      "target": "0x017483AA",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x015E7C06",
+      "target": "0x01764448",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x015E7C08",
+      "target": "0x0176444A",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 20
+    },
+    {
+      "source": "0x015E7C10",
+      "target": "0x017483B0",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x015E7C1C",
+      "target": "0x017483BC",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x015E7C20",
+      "target": "0x017483C0",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 1
+    },
+    {
+      "source": "0x015E9830",
+      "target": "0x01749FD0",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 2
+    },
+    {
+      "source": "0x015E9834",
+      "target": "0x01749FD4",
+      "source_block": ".bss",
+      "target_block": ".bss",
+      "closure_sites": 1
+    }
+  ]
+}

@@ -44,6 +44,13 @@ u32 rsx_fp_sanitize_constant_word(u32 w);
 /* Return a bit mask of texture units referenced by supported fetch opcodes;
  * returns ~0u for a malformed/truncated program or missing END instruction. */
 u32 rsx_fp_texture_units(const u8* ucode, u32 max_bytes);
+typedef struct rsx_fp_texture_usage {
+    u32 sampled_units;
+    u32 gamma_candidates;
+    u32 expand_candidates;
+} rsx_fp_texture_usage;
+int rsx_fp_analyze_texture_usage(
+    const u8* ucode, u32 max_bytes, rsx_fp_texture_usage* out);
 extern unsigned long long g_rsx_fp_nonfinite_constants;
 
 /* Decompile an NV40 fragment program into an HLSL pixel shader.
@@ -298,4 +305,8 @@ u32 rsx_fp_program_size(const u8* ucode, u32 max_bytes);
 /* Kept from this tree (see the .c) -- used by rsx_d3d12_backend.c. */
 int rsx_fp_extract_consts(const u8* ucode, u32 max_bytes, float* out, int max_out);
 u32 rsx_fp_code_hash(const u8* ucode, u32 max_bytes);
+/* Also return the terminated program's size and texture-use mask in the
+ * same walk; malformed input leaves these at zero and ~0u respectively. */
+u32 rsx_fp_code_hash_ex(const u8* ucode, u32 max_bytes,
+                       u32* out_bytes, u32* out_texture_units);
 #endif /* PS3RECOMP_RSX_FP_DECOMPILER_H */

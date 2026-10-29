@@ -2034,6 +2034,9 @@ static u32 eng_pipeline_get(const rsx_vertex_layout_plan* layout,
     const u32 cube_mask = eng_cube_mask();
     const u32 vol_mask = eng_volume_mask();
     const u32 vtex_mask = eng_vtex_mask();
+    rsx_fp_texture_usage fp_texture_usage = {0};
+    const int fp_texture_usage_valid = fixed ||
+        rsx_fp_analyze_texture_usage(fp_uc, fp_size, &fp_texture_usage);
     /* BRB/CLB outcomes are baked into the program: the branch bits are
      * identity only for a program that tests them. */
     const int vp_branch_bits_used = !fixed && rsx_vp_uses_branch_bits(vp_uc, vp_instrs * 16u);
@@ -2042,7 +2045,8 @@ static u32 eng_pipeline_get(const rsx_vertex_layout_plan* layout,
 
     rsx_fp_shadow_desc shadow[RSX_DSP_NUM_TEXTURES] = {{0}};
     u32 shadow_mask = 0;
-    const u32 sampled_units = fixed ? 0 : rsx_fp_texture_units(fp_uc, fp_size);
+    const u32 sampled_units = fixed ? 0 : (fp_texture_usage_valid
+        ? fp_texture_usage.sampled_units : rsx_fp_texture_units(fp_uc, fp_size));
     for (u32 u = 0; u < RSX_DSP_NUM_TEXTURES; u++) {
         if (!(sampled_units & (1u << u))) continue;
         rsx_dsp_texture t;
@@ -2056,7 +2060,17 @@ static u32 eng_pipeline_get(const rsx_vertex_layout_plan* layout,
         rsx_dsp_texture t; rsx_dsp_get_texture(&g.rsx, u, &t);
         if (t.enabled) gamma_masks[u] = rsx_texture_gamma_mask(t.format, t.remap, t.filter, t.wrap);
     }
-    const u32 gamma_units = fixed ? 0 : rsx_fp_texture_gamma_units(fp_uc, fp_size, gamma_masks);
+    u32 gamma_units = 0;
+    if (!fixed) {
+        if (fp_texture_usage_valid) {
+            for (u32 u = 0; u < RSX_DSP_NUM_TEXTURES; u++)
+                if (gamma_masks[u] &&
+                    (fp_texture_usage.gamma_candidates & (1u << u)))
+                    gamma_units |= 1u << u;
+        } else {
+            gamma_units = rsx_fp_texture_gamma_units(fp_uc, fp_size, gamma_masks);
+        }
+    }
     for (u32 u = 0; u < RSX_DSP_NUM_TEXTURES; ++u)
         if (!(gamma_units & (1u << u))) gamma_masks[u] = 0;
     /* Texture sign expansion: SET_TEXTURE_ADDRESS's UNSIGNED_REMAP_BIASED
@@ -2067,7 +2081,17 @@ static u32 eng_pipeline_get(const rsx_vertex_layout_plan* layout,
         rsx_dsp_texture t; rsx_dsp_get_texture(&g.rsx, u, &t);
         if (t.enabled) expand_masks[u] = rsx_texture_expand_mask(t.format, t.remap, t.filter, t.wrap);
     }
-    const u32 expand_units = fixed ? 0 : rsx_fp_texture_expand_units(fp_uc, fp_size, expand_masks);
+    u32 expand_units = 0;
+    if (!fixed) {
+        if (fp_texture_usage_valid) {
+            for (u32 u = 0; u < RSX_DSP_NUM_TEXTURES; u++)
+                if (expand_masks[u] &&
+                    (fp_texture_usage.expand_candidates & (1u << u)))
+                    expand_units |= 1u << u;
+        } else {
+            expand_units = rsx_fp_texture_expand_units(fp_uc, fp_size, expand_masks);
+        }
+    }
     for (u32 u = 0; u < RSX_DSP_NUM_TEXTURES; ++u)
         if (!(expand_units & (1u << u))) expand_masks[u] = 0;
 
@@ -3328,9 +3352,10 @@ static void sink_end(void* user, const rsx_dispatch* r)
         g.fp_cb = n;
         g.fp_cb_cap = fp_bytes;
     }
-    memset(g.fp_cb, 0, fp_bytes);
     if (g.fp_constants.count)
         memcpy(g.fp_cb, g.fp_constants.values, g.fp_constants.count * 16u);
+    else
+        memset(g.fp_cb, 0, 16u);
     { float* alpha = (float*)(g.fp_cb + nslots * 16u);
       alpha[0] = rsx_fp_alpha_ref(rs.alpha_ref_raw, rs.alpha_ref_format);
       /* Window convention for WPOS (rsx_fp_decompiler.c, _rsx_wpos): SET_SHADER_WINDOW

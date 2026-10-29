@@ -2089,9 +2089,22 @@ static __attribute__((noinline)) void barrier_watch_hit_slow(uint32_t a, uint32_
     if (!b) return;
     if (a >= b + 0x40 && a < b + 0xC0) {
         static int _n = 0;
-        if (PS3_LOG_FIRST(_n, 48))
+        if (PS3_LOG_FIRST(_n, 48)) {
             fprintf(stderr, "[sync-write] +0x%02X <- 0x%X (w%d) guest-fn=0x%08X\n",
                     a - b, v, width, ppu_prof_resolve_host(ra));
+            extern PPU_THREAD_LOCAL ppu_context* g_active_ctx;
+            extern void ppu_dump_guest_stack(ppu_context*, const char*);
+            if (_n == 1 && g_active_ctx) {
+                fprintf(stderr,
+                        "[sync-write-context] cia=0x%08X lr=0x%08X tid=%u r3=0x%08X r4=0x%08X r5=0x%08X r29=0x%08X r30=0x%08X r31=0x%08X\n",
+                        (uint32_t)g_active_ctx->cia, (uint32_t)g_active_ctx->lr,
+                        (unsigned)g_active_ctx->thread_id,
+                        (uint32_t)g_active_ctx->gpr[3], (uint32_t)g_active_ctx->gpr[4],
+                        (uint32_t)g_active_ctx->gpr[5], (uint32_t)g_active_ctx->gpr[29],
+                        (uint32_t)g_active_ctx->gpr[30], (uint32_t)g_active_ctx->gpr[31]);
+                ppu_dump_guest_stack(g_active_ctx, "sync-write");
+            }
+        }
     }
 }
 

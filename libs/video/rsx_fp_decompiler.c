@@ -626,6 +626,41 @@ u32 rsx_fp_texture_expand_units(const u8* ucode, u32 max_bytes,
     return 0;
 }
 
+int rsx_fp_analyze_texture_usage(
+    const u8* ucode, u32 max_bytes, rsx_fp_texture_usage* out)
+{
+    if (!ucode || !out) return 0;
+    out->sampled_units = 0;
+    out->gamma_candidates = 0;
+    out->expand_candidates = 0;
+    for (u32 off = 0; off + 16 <= max_bytes;) {
+        const u32 w0 = rsx_fp_read_word(ucode + off);
+        const u32 w1 = rsx_fp_read_word(ucode + off + 4);
+        const u32 w2 = rsx_fp_read_word(ucode + off + 8);
+        const u32 w3 = rsx_fp_read_word(ucode + off + 12);
+        const u32 op = (w0 >> 24) & 63u;
+        const u32 unit = (w0 >> FP_TEX_UNIT_SHIFT) & 15u;
+        const int active = !(w2 & FP_BRANCH);
+        const int texture_op = op == OP_TEX || op == OP_TXP ||
+            op == OP_TXB || op == OP_TXL || op == OP_TXD ||
+            op == OP_TEXBEM || op == OP_TXPBEM;
+        if (active && texture_op) {
+            const u32 bit = 1u << unit;
+            out->sampled_units |= bit;
+            if (!(w0 & (1u << 21))) out->gamma_candidates |= bit;
+            if (op == OP_TEX || op == OP_TXP || op == OP_TXB || op == OP_TXL)
+                out->expand_candidates |= bit;
+        }
+        off += 16;
+        if (fp_instruction_has_constant(w1, w2, w3)) {
+            if (off + 16 > max_bytes) return 0;
+            off += 16;
+        }
+        if (w0 & FP_END) return 1;
+    }
+    return 0;
+}
+
 /* Units a TEX/TXP/TXB/TXL reads with EXP_TEX (OPDEST bit 21, _bx2). */
 u32 rsx_fp_texture_bx2_units(const u8* ucode, u32 max_bytes)
 {
@@ -1992,7 +2027,16 @@ int rsx_fp_extract_consts(const u8* ucode, u32 max_bytes, float* out, int max_ou
  * cache. */
 u32 rsx_fp_code_hash(const u8* ucode, u32 max_bytes)
 {
+    return rsx_fp_code_hash_ex(ucode, max_bytes, NULL, NULL);
+}
+
+u32 rsx_fp_code_hash_ex(const u8* ucode, u32 max_bytes,
+                       u32* out_bytes, u32* out_texture_units)
+{
     u32 h = 2166136261u;
+    u32 texture_units = 0;
+    if (out_bytes) *out_bytes = 0;
+    if (out_texture_units) *out_texture_units = ~0u;
     if (!ucode) return h;
     u32 off = 0;
     while (off + 16 <= max_bytes) {
@@ -2000,6 +2044,12 @@ u32 rsx_fp_code_hash(const u8* ucode, u32 max_bytes)
         u32 w1 = rsx_fp_read_word(ucode + off + 4);
         u32 w2 = rsx_fp_read_word(ucode + off + 8);
         u32 w3 = rsx_fp_read_word(ucode + off + 12);
+        if (out_texture_units && !(w2 & FP_BRANCH)) {
+            const u32 op = (w0 >> 24) & 63u;
+            if (op == OP_TEX || op == OP_TXP || op == OP_TXB || op == OP_TXL ||
+                op == OP_TXD || op == OP_TEXBEM || op == OP_TXPBEM)
+                texture_units |= 1u << ((w0 >> FP_TEX_UNIT_SHIFT) & 15u);
+        }
         for (u32 i = 0; i < 16; i++) { h ^= ucode[off + i]; h *= 16777619u; }
         off += 16;
         int has_k = fp_instruction_has_constant(w1, w2, w3);
@@ -2007,7 +2057,11 @@ u32 rsx_fp_code_hash(const u8* ucode, u32 max_bytes)
             if (off + 16 > max_bytes) return 0;
             off += 16;                    /* skip the constant, do not hash it */
         }
-        if (w0 & FP_END) break;
+        if (w0 & FP_END) {
+            if (out_bytes) *out_bytes = off;
+            if (out_texture_units) *out_texture_units = texture_units;
+            break;
+        }
     }
     return h;
 }

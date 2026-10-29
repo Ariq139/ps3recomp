@@ -461,6 +461,23 @@ if(PS3RECOMP_BUILD_TESTS)
         "${CMAKE_CURRENT_SOURCE_DIR}/libs/video")
     add_test(NAME rsx_present_policy COMMAND test_rsx_present_policy)
 
+    if(WIN32)
+        add_executable(test_vertex_raw_gpu
+            libs/video/tests/test_vertex_raw_gpu.c
+            libs/video/rsx_vertex_fetch.c
+            libs/video/rsx_vp_decompiler.c)
+        target_include_directories(test_vertex_raw_gpu PRIVATE include libs/video)
+        target_compile_definitions(test_vertex_raw_gpu PRIVATE _CRT_SECURE_NO_WARNINGS)
+        target_link_libraries(test_vertex_raw_gpu PRIVATE d3d12 dxgi d3dcompiler)
+        if(MSVC)
+            target_compile_options(test_vertex_raw_gpu PRIVATE /UNDEBUG)
+        else()
+            target_compile_options(test_vertex_raw_gpu PRIVATE -UNDEBUG)
+        endif()
+        add_test(NAME vertex_raw_gpu COMMAND test_vertex_raw_gpu)
+        set_tests_properties(vertex_raw_gpu PROPERTIES TIMEOUT 60)
+    endif()
+
 
     find_package(Python3 3.10 COMPONENTS Interpreter QUIET)
     if(Python3_Interpreter_FOUND)

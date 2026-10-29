@@ -65,6 +65,7 @@ void     ppu_sysprx_register(void);           /* boot-critical CRT (sys_initiali
 void     ppu_fs_register(void);               /* cellFs over the real game directory */
 void     lv2_init_syscalls(void);             /* the lv2 syscall table */
 int      ppu_run(uint32_t entry_opd, uint32_t stack_top);
+int      event_editor_june_init(void);
 
 /* This project's own: load whatever real system PRX modules the title needs
  * into guest RAM and register their exports. stubs.cpp has the empty version
@@ -491,6 +492,7 @@ int main(int argc, char** argv)
     ppu_fs_register();       /* cellFs over the game directory */
     lv2_init_syscalls();     /* the lv2 syscall table */
     ps3_register_unimplemented_imports(); /* explicit failures for unresolved EBOOT imports */
+    event_editor_june_init();
 
     /* Install the guest-callback hook, then start the frame clock. It no-ops
      * until the title registers its vblank and flip handlers during init. */

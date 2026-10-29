@@ -98,6 +98,8 @@ int main(void)
     u32 ctx_out = host_alloc(4, 4);
     u32 cdata = cellGcmSetupContext(ctx_out, CMD_SIZE, IO_SIZE, IO_ADDR, host_alloc, host_w32);
     uint32_t ctrl = (uint32_t)(uintptr_t)cellGcmGetControlRegister();
+    s_fifo_getoff = 0;
+    vm_write32(ctrl + 4, 0);
     cellGcmSetUserHandler((CellGcmUserHandler)(uintptr_t)HANDLER);
 
     int fails = 0;

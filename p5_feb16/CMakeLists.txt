@@ -5,6 +5,10 @@ project(P5Feb16Recomp
     DESCRIPTION "Recompiled PS3 game project (ps3recomp)"
 )
 
+if(WIN32)
+    enable_language(RC)
+endif()
+
 # ---------------------------------------------------------------------------
 # Standards
 # ---------------------------------------------------------------------------
@@ -219,6 +223,33 @@ elseif(PORT_ENABLE_LIBSRE_PRX)
     message(STATUS "libsre SPU lifts: not found; exact image startup is unavailable")
 endif()
 
+set(JUNE_EVENT_EDITOR_DIR "${CMAKE_CURRENT_SOURCE_DIR}/event_editor_june")
+set(JUNE_EVENT_EDITOR_IMAGE "${JUNE_EVENT_EDITOR_DIR}/june_image.bin")
+if(NOT EXISTS "${JUNE_EVENT_EDITOR_IMAGE}" OR
+   NOT EXISTS "${JUNE_EVENT_EDITOR_DIR}/generated/june_dispatch.cpp" OR
+   NOT EXISTS "${JUNE_EVENT_EDITOR_DIR}/generated/june_image_info.h")
+    message(FATAL_ERROR "The June event-editor image and generated dispatch files are required")
+endif()
+file(GLOB JUNE_EVENT_EDITOR_LIFTED CONFIGURE_DEPENDS
+    "${JUNE_EVENT_EDITOR_DIR}/lift/ppu_recomp.cpp_*.cpp")
+set(JUNE_EVENT_EDITOR_SOURCES
+    "${JUNE_EVENT_EDITOR_DIR}/event_editor_june.cpp"
+    "${JUNE_EVENT_EDITOR_DIR}/generated/june_dispatch.cpp"
+    ${JUNE_EVENT_EDITOR_LIFTED})
+if(WIN32)
+    file(TO_NATIVE_PATH "${JUNE_EVENT_EDITOR_IMAGE}" JUNE_EVENT_EDITOR_IMAGE_NATIVE)
+    string(REPLACE "\\" "\\\\" JUNE_EVENT_EDITOR_IMAGE_RC_PATH
+        "${JUNE_EVENT_EDITOR_IMAGE_NATIVE}")
+    set(JUNE_EVENT_EDITOR_RC "${CMAKE_CURRENT_BINARY_DIR}/event_editor_june.rc")
+    configure_file("${JUNE_EVENT_EDITOR_DIR}/event_editor_june.rc.in"
+        "${JUNE_EVENT_EDITOR_RC}" @ONLY)
+    set_source_files_properties("${JUNE_EVENT_EDITOR_RC}" PROPERTIES
+        OBJECT_DEPENDS "${JUNE_EVENT_EDITOR_IMAGE}")
+    list(APPEND JUNE_EVENT_EDITOR_SOURCES "${JUNE_EVENT_EDITOR_RC}")
+else()
+    file(TO_CMAKE_PATH "${JUNE_EVENT_EDITOR_IMAGE}" JUNE_EVENT_EDITOR_IMAGE_PATH)
+endif()
+
 add_executable(${PROJECT_NAME}
     main.cpp
     stubs.cpp
@@ -228,6 +259,7 @@ add_executable(${PROJECT_NAME}
     ${SPU_SOURCES}
     ${LIBSRE_PRX_SOURCES}
     ${LIBSRE_SPU_SOURCES}
+    ${JUNE_EVENT_EDITOR_SOURCES}
 )
 
 if(WIN32)
@@ -314,6 +346,7 @@ endif()
 
 target_include_directories(${PROJECT_NAME} PRIVATE
     "${RECOMP_DIR}"                            # the generated ppu_recomp.h
+    "${JUNE_EVENT_EDITOR_DIR}"
     "${PS3RECOMP_DIR}/include"
     "${PS3RECOMP_DIR}/runtime/ppu"
     "${PS3RECOMP_DIR}/runtime/spu"
@@ -324,6 +357,11 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     "${PS3RECOMP_DIR}/libs/video"
     "${CMAKE_CURRENT_SOURCE_DIR}"
 )
+
+if(NOT WIN32)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE
+        "PS3RECOMP_JUNE_EVENT_EDITOR_IMAGE_PATH=\"${JUNE_EVENT_EDITOR_IMAGE_PATH}\"")
+endif()
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
     ps3recomp_runtime
@@ -383,8 +421,12 @@ endif()
 if(MSVC)
     set_source_files_properties(${RECOMP_SOURCES} PROPERTIES
         COMPILE_OPTIONS "/w;/bigobj")
+    set_source_files_properties(${JUNE_EVENT_EDITOR_LIFTED} PROPERTIES
+        COMPILE_OPTIONS "/w;/bigobj")
 else()
     set_source_files_properties(${RECOMP_SOURCES} PROPERTIES
+        COMPILE_OPTIONS "-w;-ffp-contract=off")
+    set_source_files_properties(${JUNE_EVENT_EDITOR_LIFTED} PROPERTIES
         COMPILE_OPTIONS "-w;-ffp-contract=off")
 endif()
 

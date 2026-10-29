@@ -35,8 +35,18 @@ void rsx_state_init(rsx_state* state) { (void)state; }
 /* Every method the walker delivers, in order. */
 #define PROBE_METHOD 0x1EE0u
 static u32 seen_m[16], seen_d[16], seen_n;
+static int mirror_live, mirror_engine;
+static u32 live_m[16], live_d[16], live_n;
+static u32 engine_m[16], engine_d[16], engine_n;
+static u32 vp_runs;
 int  rsx_process_vp_run(rsx_state* state, u32 method, const u8* src, u32 count)
-{ (void)state; (void)method; (void)src; (void)count; return 0; }
+{
+    (void)state; (void)src; (void)count;
+    if (method == 0x1F00u) { vp_runs++; return 1; }
+    return 0;
+}
+int rsx_replay_skipped_sync_method(u32 subchannel, u32 method, u32 data)
+{ (void)subchannel; (void)method; (void)data; return 0; }
 /* cellGcmSys asks whether a vtable backend is registered (#466). */
 rsx_backend* rsx_get_backend(void) { return NULL; }
 int  rsx_process_method(rsx_state* state, u32 method, u32 data)
@@ -46,13 +56,28 @@ int  rsx_process_method(rsx_state* state, u32 method, u32 data)
     seen_n++;
     return 0;
 }
-int  rsx_draw_engine_enabled(void) { return 0; }
-void rsx_draw_engine_method(u32 method, u32 arg) { (void)method; (void)arg; }
+int  rsx_draw_engine_enabled(void) { return mirror_engine; }
+void rsx_draw_engine_method(u32 method, u32 arg)
+{
+    if (engine_n < 16) { engine_m[engine_n] = method; engine_d[engine_n] = arg; }
+    engine_n++;
+}
 void rsx_draw_engine_note_flip(u32 buffer_id) { (void)buffer_id; }
+void rsx_draw_engine_set_display_buffer(u32 b, u32 l, u32 o, u32 p, u32 w, u32 h)
+{ (void)b; (void)l; (void)o; (void)p; (void)w; (void)h; }
+void rsx_live_draw_set_display_buffer(u32 b, u32 l, u32 o, u32 p, u32 w, u32 h)
+{ (void)b; (void)l; (void)o; (void)p; (void)w; (void)h; }
 void rsx_draw_engine_guest_read(u32 l, u32 o, u32 p, u32 w, u32 h) { (void)l; (void)o; (void)p; (void)w; (void)h; }
 void rsx_draw_engine_guest_wrote(u32 l, u32 o, u32 p, u32 w, u32 h) { (void)l; (void)o; (void)p; (void)w; (void)h; }
-int  rsx_live_draw_enabled(void) { return 0; }
-void rsx_live_draw_method(u32 method, u32 arg) { (void)method; (void)arg; }
+int  rsx_live_draw_enabled(void) { return mirror_live; }
+void rsx_live_draw_method(u32 method, u32 arg)
+{
+    if (live_n < 16) { live_m[live_n] = method; live_d[live_n] = arg; }
+    live_n++;
+}
+#ifdef _WIN32
+void rsx_d3d12_composite_from_offscreen(uint32_t off) { (void)off; }
+#endif
 int  rsx_live_draw_blit(u32 a, u32 b, u32 c, u32 d, u32 e, u32 f, u32 w, u32 h)
 { (void)a; (void)b; (void)c; (void)d; (void)e; (void)f; (void)w; (void)h; return 0; }
 void rsx_live_draw_note_resolve(u32 a, u32 b, u32 c, u32 d) { (void)a; (void)b; (void)c; (void)d; }
@@ -63,7 +88,7 @@ int  rsx_live_draw_resolve_blit(u32 a, u32 b, u32 c, u32 d, u32 e, u32 f, u32 g,
 void rsx_raise_user_cmd(uint32_t arg) { (void)arg; }
 
 #define IO_ADDR   0x00100000u
-#define IO_SIZE   0x00200000u     /* two IO pages */
+#define IO_SIZE   0x00800000u
 #define CMD_SIZE  0x00010000u
 #define PAGE2     0x00100000u     /* IO offset of the second page */
 
@@ -149,6 +174,57 @@ int main(void)
     check(seen_n == 5 && seen_m[4] == PROBE_METHOD && seen_d[4] == 5,
           "pass 3: the first word of the next IO page is not skipped");
     check(s_fifo_getoff == put3, "pass 3: get reaches put");
+
+    mirror_live = mirror_engine = 1;
+    gw32(IO_ADDR + put3, (2u << 18) | (1u << 13) | 0x1F00u);
+    gw32(IO_ADDR + put3 + 4, 0x12345678u);
+    gw32(IO_ADDR + put3 + 8, 0x87654321u);
+    vm_write32(ctrl, put3 + 12);
+    cellGcm_rsx_process_fifo();
+    check(live_n == 2 && engine_n == 2, "batched methods reach both mirrors exactly once");
+    check(vp_runs == 0, "legacy-only VP batching cannot bypass active mirrors");
+    check(live_m[0] == 0x3F00u && live_m[1] == 0x3F04u &&
+          engine_m[0] == live_m[0] && engine_m[1] == live_m[1] &&
+          live_d[0] == 0x12345678u && live_d[1] == 0x87654321u &&
+          engine_d[0] == live_d[0] && engine_d[1] == live_d[1],
+          "mirrors retain word order, values and subchannel bits");
+
+    s_gcm_bound_object[1] = RSX_OBJECT_NV0039;
+    gw32(IO_ADDR + put3 + 12, (1u << 18) | (1u << 13) | NV0039_SET_CONTEXT_DMA_BUFFER_IN);
+    gw32(IO_ADDR + put3 + 16, 0xFEED0001u);
+    vm_write32(ctrl, put3 + 20);
+    cellGcm_rsx_process_fifo();
+    check(s_nv0039.input_dma == 0xFEED0001u && engine_n == 2,
+          "NV0039 binding retains 2D routing and bypasses the 3D engine");
+    s_gcm_bound_object[1] = 0;
+
+    const u32 live_before_crossing = live_n, engine_before_crossing = engine_n;
+    s_fifo_getoff = PAGE2 - 4;
+    gw32(IO_ADDR + PAGE2 - 4, (2u << 18) | PROBE_METHOD);
+    gw32(IO_ADDR + PAGE2, 10);
+    gw32(IO_ADDR + PAGE2 + 4, 11);
+    vm_write32(ctrl, PAGE2 + 8);
+    cellGcm_rsx_process_fifo();
+    check(live_n == live_before_crossing + 2 && engine_n == engine_before_crossing + 2 &&
+          live_d[live_before_crossing] == 10 && live_d[live_before_crossing + 1] == 11 &&
+          engine_d[engine_before_crossing] == 10 && engine_d[engine_before_crossing + 1] == 11,
+          "methods crossing IO pages retain both renderer feeds");
+
+    memset(vm_base + IO_ADDR, 0, IO_SIZE);
+    const u32 live_before_budget = live_n, engine_before_budget = engine_n;
+    const u32 budget_end = 0x00400000u;
+    const u32 put4 = put_probe(budget_end, 9);
+    s_fifo_getoff = 0;
+    vm_write32(ctrl + 4, 0);
+    vm_write32(ctrl, put4);
+    cellGcm_rsx_process_fifo();
+    check(s_fifo_getoff == budget_end, "mirrored NOP batches retain the exact word budget");
+    check(live_n == live_before_budget && engine_n == engine_before_budget,
+          "budget yield leaves the next method untouched");
+    cellGcm_rsx_process_fifo();
+    check(s_fifo_getoff == put4 && live_n == live_before_budget + 1 &&
+          engine_n == engine_before_budget + 1 && live_d[live_before_budget] == 9 &&
+          engine_d[engine_before_budget] == 9, "next drain resumes both mirrors after budget yield");
 
     printf("[gcm_nop_runs] %s (%d failed)\n", fails ? "FAIL" : "PASS", fails);
     free(vm_base);

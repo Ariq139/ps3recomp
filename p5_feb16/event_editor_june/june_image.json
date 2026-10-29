@@ -1,0 +1,34 @@
+{
+  "source_sha256": "7384f437ad0471626cb9b84c5924c31142cdccc5b53d033f97ba6dc01ffdd2e1",
+  "image_base": 65536,
+  "image_size": 23994488,
+  "image_sha256": "01b212ccffc1a062d36ef6982df3044f08f3d94c3625c6c3a74c0a01def93be7",
+  "segments": [
+    {
+      "index": 0,
+      "offset": 0,
+      "vaddr": 65536,
+      "filesz": 17109896,
+      "memsz": 17109896
+    },
+    {
+      "index": 1,
+      "offset": 17170432,
+      "vaddr": 17235968,
+      "filesz": 4231144,
+      "memsz": 6824056
+    }
+  ],
+  "tls": {
+    "vaddr": 17947472,
+    "filesz": 4,
+    "memsz": 536
+  },
+  "opd": {
+    "vaddr": 17344624,
+    "size": 547928,
+    "entry_size": 8
+  },
+  "toc": 17925320,
+  "allocated_relocations": []
+}
