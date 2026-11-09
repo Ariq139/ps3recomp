@@ -1,4 +1,5 @@
 #include "rsx_fp_decompiler.h"
+#include "rsx_fp_metadata_cache.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -17,6 +18,7 @@ static void put_word(u8* p, u32 word)
     p[2] = (u8)(swapped >> 8); p[3] = (u8)swapped;
 }
 
+static rsx_fp_metadata_cache metadata_cache;
 int main(void)
 {
     const u32 ops[] = {1, 0x17, 0x18, 0x19, 0x2F, 0x31, 0x33, 0x34};
@@ -48,6 +50,29 @@ int main(void)
         assert(rsx_fp_code_hash_ex(code, size, &bytes, &units) == expected_hash);
         assert(bytes == size && bytes == rsx_fp_program_size(code, size));
         assert(units == rsx_fp_texture_units(code, size));
+        const rsx_fp_metadata* metadata=rsx_fp_metadata_get(&metadata_cache,code);
+        assert(metadata && metadata->hash==expected_hash && metadata->bytes==size && metadata->units==units);
+        rsx_fp_constant_block expected_constants;
+        assert(rsx_fp_collect_constants(code,size,&expected_constants)>=0);
+        assert(metadata->constants.count==expected_constants.count);
+        assert(!memcmp(metadata->constants.values,expected_constants.values,expected_constants.count*16u));
+        assert(rsx_fp_metadata_get(&metadata_cache,code)==metadata);
+        for (u32 instruction=0;instruction<instructions;++instruction) {
+            const u32 next=instruction+1<instructions ? offsets[instruction+1] : size;
+            if (next-offsets[instruction]!=32u) continue;
+            const u32 k=offsets[instruction]+16u;
+            code[k]^=0x55u;
+            metadata=rsx_fp_metadata_get(&metadata_cache,code);
+            assert(metadata && metadata->hash==expected_hash);
+            assert(rsx_fp_collect_constants(code,size,&expected_constants)>=0);
+            assert(!memcmp(metadata->constants.values,expected_constants.values,expected_constants.count*16u));
+            code[k]^=0x55u;
+            metadata=rsx_fp_metadata_get(&metadata_cache,code);
+            assert(metadata && metadata->hash==expected_hash);
+            break;
+        }
+
+
         rsx_fp_texture_usage usage;
         assert(rsx_fp_analyze_texture_usage(code, size, &usage));
         assert(usage.sampled_units == units);

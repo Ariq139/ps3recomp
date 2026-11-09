@@ -207,6 +207,12 @@ int spu_workload_dispatch(const uint8_t* image, uint32_t image_size,
 int spu_workload_dispatch_async(const uint8_t* image, uint32_t image_size,
                                 uint32_t args_ea);
 
+/* Taskset submission: ownership is captured from the caller, independently of
+ * concurrent task creation and the legacy diagnostic dispatch globals. */
+int spu_workload_dispatch_task_async(const uint8_t* image, uint32_t image_size,
+                                    uint32_t args_ea, uint32_t taskset_ea,
+                                    uint32_t taskid);
+
 /* Number of currently registered lifted SPU binaries (diagnostics/tests). */
 unsigned spu_workload_count(void);
 

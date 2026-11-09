@@ -2074,6 +2074,34 @@ static __attribute__((noinline)) void barrier_watch_hit_slow(uint32_t a, uint32_
                       a, v, width, ppu_prof_resolve_host(ra),
                       g_active_ctx ? (uint32_t)g_active_ctx->lr : 0u,
                       g_active_ctx ? (unsigned)g_active_ctx->thread_id : 0u);
+              static int _host_stack = -1;
+              if (_host_stack < 0) {
+                  const char* e4 = getenv("PPU_WWATCH_HOST_STACK");
+                  _host_stack = e4 && e4[0] && e4[0] != '0';
+              }
+              if (_host_stack && _i == 1) {
+                  void* frames[16];
+                  const unsigned short count = RtlCaptureStackBackTrace(0, 16, frames, 0);
+                  fprintf(stderr, "[ww-host] module=%p\n", GetModuleHandleA(NULL));
+                  for (unsigned short fi = 0; fi < count; ++fi) {
+                      const uintptr_t target = (uintptr_t)frames[fi];
+                      uintptr_t best_host = 0;
+                      uint32_t best_guest = 0;
+                      for (uint64_t k = 0; k < function_table_count; ++k) {
+                          const uintptr_t host = (uintptr_t)function_table[k].func;
+                          if (host <= target && host > best_host) {
+                              best_host = host;
+                              best_guest = function_table[k].addr;
+                          }
+                      }
+                      fprintf(stderr,
+                              "[ww-host] #%u pc=%p nearest=0x%08X+0x%llX dynamic=0x%08X\n",
+                              (unsigned)fi, frames[fi], best_guest,
+                              (unsigned long long)(best_host ? target - best_host : 0),
+                              ppu_prof_resolve_host(frames[fi]));
+                  }
+                  fflush(stderr);
+              }
               /* On the first write to the watched word, dump the guest caller
                * chain so the origin of a null field can be walked up-stack. */
               extern void ppu_dump_guest_stack(ppu_context*, const char*);

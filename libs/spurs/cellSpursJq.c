@@ -33,6 +33,8 @@ struct JqTask {
     JqTask* next;
     u32 queue_slot, tag, id, job_ea, descriptor_size, binary_size;
     uint64_t tag_serial;
+    u32 owned_descriptor, flags;
+    uint64_t sequence;
     uint8_t descriptor[256];
     uint8_t* binary;
 };
@@ -52,6 +54,7 @@ static atomic_uint s_active_job_dispatches;
 static atomic_int s_queue_shutdown_requested;
 static atomic_uint_fast64_t s_tag_submitted[CELL_SPURS_JQ_MAX_QUEUES][32];
 static atomic_uint_fast64_t s_tag_completed[CELL_SPURS_JQ_MAX_QUEUES][32];
+static uint64_t s_task_sequence;
 static JqTask* s_task_head;
 static JqTask* s_task_tail;
 static int s_pool_workers, s_pool_stopping;
@@ -142,9 +145,13 @@ static void jq_finish_locked(JqTask* t, s32 status)
                               memory_order_acq_rel);
     jq_notify();
 }
+extern int32_t ps3_guest_memory_alloc(uint32_t, uint32_t, uint32_t*);
+extern int32_t ps3_guest_memory_free(uint32_t);
+
 static void jq_free_task(JqTask* t)
 {
     if (!t) return;
+    if (t->owned_descriptor) ps3_guest_memory_free(t->owned_descriptor);
     /* The immutable binary snapshot is the tail of this allocation. */
     free(t);
 }
@@ -157,6 +164,28 @@ static s32 jq_execute(JqTask* t)
                                                t->job_ea, t->descriptor_size,
                                                t->descriptor)
         ? CELL_OK : (s32)CELL_SPURS_JQ_ERROR_JOB_NOT_FOUND;
+}
+enum { JQ_FLAG_SYNC_JOB=1u, JQ_FLAG_EXCLUSIVE_JOB=2u, JQ_FLAG_NON_BLOCKING=4u };
+static int jq_task_runnable(const JqTask* task)
+{
+    const JqState* q=&s_queues[task->queue_slot];
+    for(u32 i=0;i<CELL_SPURS_JQ_MAX_JOBS;++i) {
+        const JqTask* earlier=q->pending[i];
+        if(!earlier || earlier==task || earlier->sequence>=task->sequence) continue;
+        if((task->flags | earlier->flags) & (JQ_FLAG_SYNC_JOB|JQ_FLAG_EXCLUSIVE_JOB)) return 0;
+    }
+    return 1;
+}
+static JqTask* jq_take_runnable(void)
+{
+    JqTask* previous=NULL;
+    for(JqTask* t=s_task_head;t;previous=t,t=t->next) {
+        if(!jq_task_runnable(t)) continue;
+        if(previous) previous->next=t->next; else s_task_head=t->next;
+        if(s_task_tail==t) s_task_tail=previous;
+        t->next=NULL;return t;
+    }
+    return NULL;
 }
 #ifdef _WIN32
 static DWORD WINAPI jq_worker_main(LPVOID arg)
@@ -171,12 +200,9 @@ static void* jq_worker_main(void* arg)
     spurs_job_set_spu_num(worker_no);
     for (;;) {
         jq_lock();
-        while (!s_task_head && !s_pool_stopping) jq_await();
-        if (!s_task_head && s_pool_stopping) { jq_unlock(); break; }
-        JqTask* t = s_task_head;
-        s_task_head = t->next;
-        if (!s_task_head) s_task_tail = NULL;
-        t->next = NULL;
+        JqTask* t=NULL;
+        while (!(t=jq_take_runnable()) && !s_pool_stopping) jq_await();
+        if (!t) { jq_unlock(); break; }
         jq_unlock();
         s32 result = jq_execute(t);
         jq_lock();
@@ -504,22 +530,49 @@ static JqTask* jq_prepare(u32 job_ea, u32 descriptor_size)
     return t;
 }
 
-static s32 jq_push_slot_mode(u32 slot, u32 job_ea, u32 jobSize,
-                             u32 tag, u32 id_ea, int copy_push)
+static s32 jq_push_slot_mode_flags(u32 slot, u32 job_ea, u32 jobSize,
+                             u32 tag, u32 id_ea, int copy_push, u32 flags)
 {
-    if (slot >= CELL_SPURS_JQ_MAX_QUEUES || tag >= 32u)
+    if (slot >= CELL_SPURS_JQ_MAX_QUEUES || tag >= 32u || (flags & ~7u))
         return (s32)CELL_SPURS_JQ_ERROR_INVALID_ARGUMENT;
+    static int order_trace=-1;
+    if(order_trace<0)order_trace=getenv("SPURS_JQ_ORDER_TRACE")!=NULL;
+    if(order_trace) {
+        static atomic_uint records;
+        if(atomic_fetch_add_explicit(&records,1,memory_order_relaxed)<32)
+            fprintf(stderr,"[jq-order] queue=%u tag=%u flags=%u copy=%d job=%08X\n",slot,tag,flags,copy_push,job_ea);
+    }
     JqTask* t = jq_prepare(job_ea, jobSize);
     if (!t) return (s32)CELL_SPURS_JQ_ERROR_INVALID_ARGUMENT;
+    static int async_copy_enabled = -1;
+    if (async_copy_enabled < 0) {
+        const char* setting=getenv("SPURS_JQ_ASYNC_COPY");
+        async_copy_enabled=!setting || setting[0]!='0';
+    }
+    if (copy_push && async_copy_enabled) {
+        u32 copied_ea = 0;
+        if (ps3_guest_memory_alloc(jobSize, 128u, &copied_ea) == 0 && copied_ea) {
+            t->owned_descriptor = copied_ea;
+            memcpy(vm_base + copied_ea, t->descriptor, jobSize);
+            t->job_ea = copied_ea;
+        }
+    }
+    const int synchronous_copy = copy_push && !t->owned_descriptor;
     jq_lock();
     JqState* q = &s_queues[slot];
-    /* CopyPush promises its caller can reuse the original guest descriptor
-     * immediately. The lifted code may DMA from JC_EA_JOB_DESCRIPTOR, whose
-     * guest EA we cannot virtualize here. Drain this queue, execute CopyPush
-     * synchronously, and exclude younger submissions until it returns. */
+    /* A copied descriptor has an owned guest EA, so ordinary SPU DMA sees
+     * the snapshot after the submitter reuses its input. Allocation failure
+     * retains the synchronous lifetime guarantee. */
     while (q->in_use && q->accepting &&
-           (q->copy_sync_active || (copy_push && q->jobCount)))
+           (q->copy_sync_active || (synchronous_copy && q->jobCount) ||
+            q->jobCount>=q->maxJobs || q->jobCount>=CELL_SPURS_JQ_MAX_JOBS)) {
+        if(flags & JQ_FLAG_NON_BLOCKING) {
+            const s32 result = q->jobCount>=q->maxJobs || q->jobCount>=CELL_SPURS_JQ_MAX_JOBS
+                ? (s32)CELL_SPURS_JQ_ERROR_QUEUE_FULL : (s32)CELL_SPURS_JQ_ERROR_BUSY;
+            jq_unlock();jq_free_task(t);return result;
+        }
         jq_await();
+    }
     if (!q->in_use || !q->accepting ||
         atomic_load_explicit(&s_queue_shutdown_requested, memory_order_acquire)) {
         jq_unlock(); jq_free_task(t); return (s32)CELL_SPURS_JQ_ERROR_ABORT;
@@ -533,8 +586,10 @@ static s32 jq_push_slot_mode(u32 slot, u32 job_ea, u32 jobSize,
     if (free_slot == CELL_SPURS_JQ_MAX_JOBS) {
         jq_unlock(); jq_free_task(t); return (s32)CELL_SPURS_JQ_ERROR_QUEUE_FULL;
     }
-    if (copy_push) q->copy_sync_active = 1;
+    if (synchronous_copy) q->copy_sync_active = 1;
     t->queue_slot = slot;
+    t->flags=flags;
+    t->sequence=++s_task_sequence;
     t->tag = tag;
     t->id = q->nextJobId++;
     if (q->nextJobId == 0) q->nextJobId = 1;
@@ -545,7 +600,7 @@ static s32 jq_push_slot_mode(u32 slot, u32 job_ea, u32 jobSize,
     q->submitCount++;
     atomic_fetch_add_explicit(&s_active_job_dispatches, 1, memory_order_acq_rel);
     if (id_ea) vm_write32(id_ea, t->id);
-    int asynchronous = !copy_push && jq_pool_start_locked();
+    int asynchronous = !synchronous_copy && jq_pool_start_locked();
     if (asynchronous) {
         if (s_task_tail) s_task_tail->next = t;
         else s_task_head = t;
@@ -554,16 +609,25 @@ static s32 jq_push_slot_mode(u32 slot, u32 job_ea, u32 jobSize,
         jq_unlock();
         return CELL_OK;
     }
+    if (!synchronous_copy) {
+        q->copy_sync_active=1;
+        while (!jq_task_runnable(t)) jq_await();
+    }
     jq_unlock();
-    /* SPURS_JQ_WORKERS=0 is the legacy synchronous ABI/diagnostic mode. */
+    /* SPURS_JQ_WORKERS=0 retains synchronous execution. */
     spurs_job_set_spu_num(0);
     s32 result = jq_execute(t);
     jq_lock();
     jq_finish_locked(t, result);
-    if (copy_push) { q->copy_sync_active = 0; jq_notify(); }
+    q->copy_sync_active = 0; jq_notify();
     jq_unlock();
     jq_free_task(t);
     return result;
+}
+
+static s32 jq_push_slot_mode(u32 slot,u32 job_ea,u32 jobSize,u32 tag,u32 id_ea,int copy_push)
+{
+    return jq_push_slot_mode_flags(slot,job_ea,jobSize,tag,id_ea,copy_push,JQ_FLAG_NON_BLOCKING);
 }
 
 static s32 jq_push_slot(u32 slot, u32 job_ea, u32 jobSize,
@@ -769,7 +833,7 @@ u64 cellSpursJobQueuePort2Sync(
 u64 _cellSpursJobQueuePort2CopyPushJobBody(
     u64 a0, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5, u64 a6, u64 a7)
 {
-    (void)a5; (void)a6; (void)a7;
+    (void)a6; (void)a7;
     const u32 port_ea = (u32)a0;
     const u32 job_ea = (u32)a1;
     const u32 descriptor_size = (u32)a2;
@@ -802,8 +866,8 @@ u64 _cellSpursJobQueuePort2CopyPushJobBody(
                        (s32)CELL_SPURS_JQ_ERROR_NOT_INITIALIZED);
         return (u64)(s64)(s32)CELL_SPURS_JQ_ERROR_NOT_INITIALIZED;
     }
-    s32 rc = jq_push_slot_mode((u32)slot, job_ea, descriptor_size,
-                               tag, 0, 1);
+    s32 rc = jq_push_slot_mode_flags((u32)slot, job_ea, descriptor_size,
+                               tag, 0, 1, (u32)a5);
     jq_trace_port2("copy-push", port_ea, vm_read32(port_ea + 0x18), job_ea,
                    descriptor_size, descriptor_pool_size, tag, slot, rc);
     if (getenv("GFD_QUEUE_TRACE") && slot == 0)
@@ -814,7 +878,7 @@ u64 _cellSpursJobQueuePort2CopyPushJobBody(
 u64 _cellSpursJobQueuePort2PushJobBody(
     u64 a0, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5, u64 a6, u64 a7)
 {
-    (void)a4; (void)a5; (void)a6; (void)a7;
+    (void)a5; (void)a6; (void)a7;
     const u32 port_ea = (u32)a0;
     const u32 job_ea = (u32)a1;
     const u32 descriptor_size = (u32)a2;
@@ -822,5 +886,5 @@ u64 _cellSpursJobQueuePort2PushJobBody(
     const int slot = jq_port_slot(port_ea);
     if (slot < 0)
         return (u64)(s64)(s32)CELL_SPURS_JQ_ERROR_NOT_INITIALIZED;
-    return (u64)(s64)jq_push_slot((u32)slot, job_ea, descriptor_size, tag, 0);
+    return (u64)(s64)jq_push_slot_mode_flags((u32)slot, job_ea, descriptor_size, tag, 0, 0, (u32)a4);
 }

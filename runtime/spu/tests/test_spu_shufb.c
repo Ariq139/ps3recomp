@@ -24,26 +24,30 @@ int main(void)
                 c._u8[i] = (uint8_t)(i * 17);
             }
             c._u8[lane] = (uint8_t)sel;
-            u128 x = spu_shufb(a, b, c), y = spu_shufb_ref(a, b, c);
-            if (memcmp(&x, &y, 16)) {
-                printf("test_spu_shufb: selector %02X lane %d mismatch\n", sel, lane);
-                return 1;
+            for (int same = 0; same < 2; ++same) {
+                if (same) b = a;
+                u128 x = spu_shufb(a, b, c), y = spu_shufb_ref(a, b, c);
+                if (memcmp(&x, &y, 16)) {
+                    printf("test_spu_shufb: selector %02X lane %d same=%d mismatch\n", sel, lane, same);
+                    return 1;
+                }
             }
         }
     }
-    for (int it = 0; it < 200000; it++) {
+    for (int it = 0; it < 2000000; it++) {
         u128 a, b, c;
         for (int i = 0; i < 16; i++) {
             a._u8[i] = (uint8_t)rand(); b._u8[i] = (uint8_t)rand();
             c._u8[i] = (uint8_t)rand();          /* covers all 256 selector values */
         }
+        if (it & 1) b = a;
         u128 x = spu_shufb(a, b, c), y = spu_shufb_ref(a, b, c);
         if (memcmp(&x, &y, 16)) {
             printf("test_spu_shufb: MISMATCH at iteration %d\n", it);
             return 1;
         }
     }
-    puts("test_spu_shufb: ok (200000 random cases)");
+    puts("test_spu_shufb: ok (8192 selector/lane cases + 2000000 random, general and identical sources)");
     return 0;
 #endif
 }

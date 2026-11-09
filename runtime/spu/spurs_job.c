@@ -37,7 +37,9 @@
 
 #include "spu_coherency.h"
 #include "spu_workload.h"
+#include "spu_job_profile.h"
 #include "spu_context.h"
+#include "spu_job_context_cache.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -189,9 +191,12 @@ static int spu_run_spurs_job_internal(spu_lifted_entry_fn entry, int image_id,
                                      uint32_t job_ea, uint32_t job_desc_size,
                                      const spu_job_abi* job_abi_in,
                                      const uint8_t* image_copy,
-                                     const uint8_t* desc_copy)
+                                     const uint8_t* desc_copy,
+                                     spu_job_phase_times* phases)
 {
+    if (phases) memset(phases, 0, sizeof(*phases));
     if (!entry || !job_ea) return -1;
+    double phase_start = phases ? spu_job_profile_now() : 0.0;
 
     /* Diagnostic options are launch settings. Cache even absent options:
      * getenv takes the CRT environment lock on Windows, and this path runs
@@ -224,16 +229,25 @@ static int spu_run_spurs_job_internal(spu_lifted_entry_fn entry, int image_id,
     if (!size_bin || size_bin > SPU_LS_SIZE) {
         fprintf(stderr, "[spurs-job] job 0x%08X: bad sizeBinary=%u -- not run\n",
                 job_ea, size_bin);
+        if (phases) phases->reset = spu_job_profile_now() - phase_start;
         return -1;
     }
 
     /* Stage directly into the execution context. The old path zeroed a
      * separate 256 KB buffer, zeroed the context's own local store, then
      * copied the full buffer into it for every synchronous job. */
-    spu_context* ctx = (spu_context*)malloc(sizeof(*ctx));
-    if (!ctx) return -1;
+    spu_context* ctx = (spu_context*)job_context_take(sizeof(*ctx));
+    if (!ctx) {
+        if (phases) phases->reset = spu_job_profile_now() - phase_start;
+        return -1;
+    }
     spu_context_init(ctx, 0);
     uint8_t* ls = ctx->ls;
+    if (phases) {
+        double now = spu_job_profile_now();
+        phases->reset = now - phase_start;
+        phase_start = now;
+    }
 
     /* ---- binary at LS 0 (PIC, so delta 0 keeps the lifted addresses) ---- */
     memcpy(ls, image_copy ? image_copy : vm_base + ea_bin, size_bin);
@@ -461,7 +475,17 @@ static int spu_run_spurs_job_internal(spu_lifted_entry_fn entry, int image_id,
      * and trips its parameter guard, which HALTS -- ending the run. So the
      * HALT-ASSERT heqi 0x1650 seen once per jm2 job is NORMAL COMPLETION
      * noise, not a failure: the job's real work finished before the jump. */
+    if (phases) {
+        double now = spu_job_profile_now();
+        phases->stage = now - phase_start;
+        phase_start = now;
+    }
     const int halted = spu_run_with_halt(entry, ctx);
+    if (phases) {
+        double now = spu_job_profile_now();
+        phases->execute = now - phase_start;
+        phase_start = now;
+    }
     const uint32_t exit_pc = ctx->pc & SPU_LS_MASK;
     /* The manager return trampolines terminate via spu_halt without being an
      * SPU halt instruction. A STOP or halt at any other PC is not completion. */
@@ -582,7 +606,8 @@ static int spu_run_spurs_job_internal(spu_lifted_entry_fn entry, int image_id,
 
     spu_coh_unregister(ctx);   /* remove callbacks before releasing owned state */
     spu_mfc_release(ctx);
-    free(ctx);
+    job_context_put(ctx);
+    if (phases) phases->teardown = spu_job_profile_now() - phase_start;
     return completed ? 0 : -1;
 }
 
@@ -591,7 +616,7 @@ int spu_run_spurs_job_with_abi(spu_lifted_entry_fn entry, int image_id,
                                const spu_job_abi* job_abi)
 {
     return spu_run_spurs_job_internal(entry, image_id, job_ea, job_desc_size,
-                                      job_abi, NULL, NULL);
+                                      job_abi, NULL, NULL, NULL);
 }
 
 int spu_run_spurs_job_with_abi_snapshot(spu_lifted_entry_fn entry, int image_id,
@@ -602,7 +627,7 @@ int spu_run_spurs_job_with_abi_snapshot(spu_lifted_entry_fn entry, int image_id,
 {
     if (!image_copy || !desc_copy) return -1;
     return spu_run_spurs_job_internal(entry, image_id, job_ea, job_desc_size,
-                                      job_abi, image_copy, desc_copy);
+                                      job_abi, image_copy, desc_copy, NULL);
 }
 
 int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
@@ -612,4 +637,14 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
     (void)spu_workload_get_job_abi(image_id, &default_abi);
     return spu_run_spurs_job_with_abi(entry, image_id, job_ea,
                                       job_desc_size, &default_abi);
+}
+
+int spu_run_spurs_job_profiled(spu_lifted_entry_fn entry, int image_id,
+                               uint32_t job_ea, uint32_t job_desc_size,
+                               const spu_job_abi* job_abi,
+                               const uint8_t* image_copy, const uint8_t* desc_copy,
+                               spu_job_phase_times* phases)
+{
+    return spu_run_spurs_job_internal(entry, image_id, job_ea, job_desc_size,
+                                      job_abi, image_copy, desc_copy, phases);
 }

@@ -399,7 +399,7 @@ extern "C" void ps3_hle_call(uint32_t nid, ppu_context* ctx)
          * 0 under the DRAIN/fragment model, so scan instead of walk.) */
         { uint32_t prev=0; int found=0; char b[1600]; int p=snprintf(b,sizeof b,"[exit-chain] codeptrs:");
           for(uint32_t a=sp; a<sp+0x3000 && a<0x0FF00000u && found<60; a+=4){ uint32_t v=vm_read32(a);
-            if(((v>=0x00010000u&&v<0x00900000u)||(v>=0x30000000u&&v<0x30100000u)) && v!=0x008969A8u){
+            if(((v>=0x00010000u&&v<0x02000000u)||(v>=0x30000000u&&v<0x30100000u)) && v!=0x008969A8u){
               if(v!=prev){ p+=snprintf(b+p,sizeof(b)-p," %08X",v); prev=v; found++; } } }
           fprintf(stderr,"%s\n",b); }
 #ifdef _WIN32

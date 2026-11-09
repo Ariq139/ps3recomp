@@ -137,6 +137,27 @@ static int rsx_raw_vertex_prepare(const rsx_state* state, u32 mask,
     return 1;
 }
 
+static int rsx_raw_vertex_indexed_prepare(const rsx_state* state, u32 mask,
+    u32* indices, u32 count, u32* dense, u32 capacity,
+    u32 (*resolve)(int, u32), rsx_raw_vertex_plan* plan)
+{
+    if (!count || count > capacity / 4u) return 0;
+    u32 lo = indices[0], hi = lo;
+    for (u32 i = 1; i < count; ++i) {
+        if (indices[i] < lo) lo = indices[i];
+        if (indices[i] > hi) hi = indices[i];
+    }
+    if ((u64)hi - lo + 1u >= count) return 0;
+    const u32 dense_count = hi - lo + 1u;
+    const u32 index_bytes = (count * 4u + 15u) & ~15u;
+    if (index_bytes > capacity) return 0;
+    for (u32 i = 0; i < dense_count; ++i) dense[i] = lo + i;
+    if (!rsx_raw_vertex_prepare(state, mask, dense, dense_count,
+            capacity - index_bytes, resolve, plan)) return 0;
+    for (u32 i = 0; i < count; ++i) indices[i] -= lo;
+    return 1;
+}
+
 static void rsx_raw_vertex_write(const rsx_raw_vertex_plan* plan,
     const u32* vertices, const u8* guest, void* destination)
 {

@@ -70,6 +70,14 @@ int  rsx_process_vp_run(rsx_state* state, u32 method, const u8* src, u32 count)
 { (void)state; (void)method; (void)src; (void)count; return 0; }
 /* cellGcmSys asks whether a vtable backend is registered (#466). */
 rsx_backend* rsx_get_backend(void) { return NULL; }
+void rsx_draw_engine_set_display_buffer(u32 id, u32 location, u32 offset,
+                                        u32 pitch, u32 width, u32 height)
+{ (void)id; (void)location; (void)offset; (void)pitch; (void)width; (void)height; }
+int rsx_replay_skipped_sync_method(u32 subchannel, u32 method, u32 data)
+{ (void)subchannel; (void)method; (void)data; return 0; }
+#ifdef _WIN32
+void rsx_d3d12_composite_from_offscreen(uint32_t offset) { (void)offset; }
+#endif
 void rsx_draw_engine_note_flip(u32 buffer_id) { (void)buffer_id; }
 void rsx_draw_engine_guest_read(u32 l, u32 o, u32 p, u32 w, u32 h) { (void)l; (void)o; (void)p; (void)w; (void)h; }
 void rsx_draw_engine_guest_wrote(u32 l, u32 o, u32 p, u32 w, u32 h) { (void)l; (void)o; (void)p; (void)w; (void)h; }
@@ -157,8 +165,8 @@ int main(void)
     long p = GCM_PENDING_TAKE();
     check((p & 1) && !(p & 2), "a tick before the drain is a vblank, not a flip");
 
-    /* 3: the title flushes; the walker runs to put (the acquire does not block
-     * unless GCM_SEMA_ACQUIRE is set) and stops at the flip. */
+    /* 3: the producer satisfies the acquire before the walker reaches it. */
+    vm_write32(label_ea, VALUE);
     vm_write32(GCM_CONTROL_GUEST_ADDR + 0, io + 20);
     cellGcm_rsx_process_fifo();
     check(s_fifo_getoff == io + 20, "the drain consumed the wait and the flip");
@@ -244,6 +252,116 @@ int main(void)
     check(g_n_zs_engine >= 1 && g_zs_engine[g_n_zs_engine - 1] == 0xFFFFFF00u,
           "the draw engine gets the flip's 0xFFFFFF00 too");
     g_engine_on = 0;
+
+    /* Retire the previous frame's label reset before flip completion can
+     * let the vblank handler grant the next frame. */
+    const u32 cur6 = vm_read32(ctx + 8);
+    const u32 io6 = gcm_ea2io(cur6);
+    vm_write32(cur6, GCM_FLIP_MARKER | 1u);
+    vm_write32(cur6 + 4, 0x00040064u);
+    vm_write32(cur6 + 8, LABEL * GCM_LABEL_STRIDE);
+    vm_write32(cur6 + 12, 0x0004006Cu);
+    vm_write32(cur6 + 16, 0);
+    vm_write32(cur6 + 20, 0x00040068u);
+    vm_write32(cur6 + 24, VALUE);
+    vm_write32(ctx + 8, cur6 + 28);
+    vm_write32(GCM_CONTROL_GUEST_ADDR, io6 + 28);
+    vm_write32(label_ea, VALUE);
+    (void)GCM_PENDING_TAKE();
+    cellGcm_rsx_process_fifo();
+    check(s_fifo_getoff == io6 + 20, "flip retires only its OFFSET/RELEASE trailer and stops before ACQUIRE");
+    check(vm_read32(label_ea) == 0, "previous-frame label reset precedes flip completion");
+    check(cellGcm_take_flip_pending_synced(), "one FIFO flip supplies one present token");
+    check(!cellGcm_take_flip_pending_synced(), "the present token cannot be consumed twice");
+    s_flip_status = CELL_GCM_FLIP_STATUS_DONE;
+    cellGcmTickFlip();
+    p = GCM_PENDING_TAKE();
+    check(p & 2, "an executed FIFO flip completes even when an older callback left status DONE");
+    cellGcmTickFlip();
+    check(!(GCM_PENDING_TAKE() & 2), "the executed FIFO completion is delivered only once");
+    s_flip_status = CELL_GCM_FLIP_STATUS_WAITING;
+    cellGcmTickFlip();
+    check(!(GCM_PENDING_TAKE() & 2), "WAITING alone does not complete a flip the FIFO has not executed");
+    vm_write32(label_ea, VALUE); /* guest completion/vblank grants the next frame */
+    cellGcm_rsx_process_fifo();
+    check(s_fifo_getoff == io6 + 28 && vm_read32(label_ea) == VALUE,
+          "the next drain preserves the new vblank grant and passes ACQUIRE");
+
+    vm_write32(label_ea, VALUE);
+    const u32 cur7 = vm_read32(ctx + 8);
+    vm_write32(cur7, GCM_FLIP_MARKER | 1u);
+    vm_write32(cur7 + 4, 0x00040064u);
+    vm_write32(cur7 + 8, LABEL * GCM_LABEL_STRIDE);
+    vm_write32(cur7 + 12, 0x0004006Cu);
+    vm_write32(cur7 + 16, 0);
+    s_fifo_getoff = gcm_ea2io(cur7);
+    vm_write32(GCM_CONTROL_GUEST_ADDR, gcm_ea2io(cur7) + 16); /* release value not flushed */
+    cellGcm_rsx_process_fifo();
+    check(s_fifo_getoff == gcm_ea2io(cur7) + 4 && vm_read32(label_ea) == VALUE,
+          "an incomplete trailer does not read an unflushed release argument");
+
+    const u32 cur8 = cur7 + 24;
+    vm_write32(cur8, GCM_FLIP_MARKER | 1u);
+    vm_write32(cur8 + 4, 0x00041D8Cu);
+    vm_write32(cur8 + 8, 0);
+    s_fifo_getoff = gcm_ea2io(cur8);
+    vm_write32(GCM_CONTROL_GUEST_ADDR, s_fifo_getoff + 12);
+    cellGcm_rsx_process_fifo();
+    check(s_fifo_getoff == gcm_ea2io(cur8) + 4,
+          "graphics methods after a flip remain in the next drain");
+
+    const u32 boundary = IO_ADDR + 0x002FFFFCu;
+    const u32 boundary_io = gcm_ea2io(boundary);
+    vm_write32(ctx + 4, IO_ADDR + IO_SIZE - 4);
+    vm_write32(ctx + 8, boundary + 20);
+    vm_write32(boundary, GCM_FLIP_MARKER | 1u);
+    vm_write32(boundary + 4, 0x00040064u);
+    vm_write32(boundary + 8, LABEL * GCM_LABEL_STRIDE);
+    vm_write32(boundary + 12, 0x0004006Cu);
+    vm_write32(boundary + 16, 0);
+    s_fifo_getoff = boundary_io;
+    vm_write32(label_ea, VALUE);
+    vm_write32(GCM_CONTROL_GUEST_ADDR, boundary_io + 20);
+    cellGcm_rsx_process_fifo();
+    check(s_fifo_getoff == boundary_io + 20 && vm_read32(label_ea) == 0,
+          "a fully mapped trailer can cross an IO page boundary");
+
+    const u32 trailer_page = (boundary_io + 4) >> 20;
+    const u16 saved_page = s_ea_address_table[trailer_page];
+    s_ea_address_table[trailer_page] = 0xFFFFu;
+    s_fifo_getoff = boundary_io;
+    vm_write32(label_ea, VALUE);
+    cellGcm_rsx_process_fifo();
+    check(s_fifo_getoff == boundary_io + 4 && vm_read32(label_ea) == VALUE,
+          "an unmapped trailer is left untouched at the flip boundary");
+    s_ea_address_table[trailer_page] = saved_page;
+
+    const u32 raw_flip = boundary + 64;
+    vm_write32(raw_flip, 0xFEAD0001u);
+    vm_write32(raw_flip + 4, 0x00040064u);
+    vm_write32(raw_flip + 8, LABEL * GCM_LABEL_STRIDE);
+    vm_write32(raw_flip + 12, 0x0004006Cu);
+    vm_write32(raw_flip + 16, 0);
+    vm_write32(ctx + 8, raw_flip + 20);
+    s_fifo_getoff = gcm_ea2io(raw_flip);
+    vm_write32(GCM_CONTROL_GUEST_ADDR, s_fifo_getoff + 20);
+    cellGcm_rsx_process_fifo();
+    check(s_fifo_getoff == gcm_ea2io(raw_flip) + 20 && vm_read32(label_ea) == 0,
+          "the raw FEAD flip form also retires its label-reset trailer");
+
+    const u32 invalid = raw_flip + 32;
+    vm_write32(invalid, GCM_FLIP_MARKER | 1u);
+    vm_write32(invalid + 4, 0x00040064u);
+    vm_write32(invalid + 8, 0x1000u);
+    vm_write32(invalid + 12, 0x0004006Cu);
+    vm_write32(invalid + 16, 0);
+    vm_write32(ctx + 8, invalid + 20);
+    s_fifo_getoff = gcm_ea2io(invalid);
+    vm_write32(label_ea, VALUE);
+    vm_write32(GCM_CONTROL_GUEST_ADDR, s_fifo_getoff + 20);
+    cellGcm_rsx_process_fifo();
+    check(s_fifo_getoff == gcm_ea2io(invalid) + 4 && vm_read32(label_ea) == VALUE,
+          "a release outside the label window is not retired early");
 
     printf("[gcm_flip_stream] %s (%d failed)\n", fails ? "FAIL" : "PASS", fails);
     free(vm_base);

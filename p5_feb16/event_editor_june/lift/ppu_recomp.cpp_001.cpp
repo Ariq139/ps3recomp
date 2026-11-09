@@ -467,7 +467,14 @@ loc_002456B0:
 
 void june_evt_func_002456C4(ppu_context* ctx) {
     PPU_MM_SNAP
-        { g_trampoline_fn = (void(*)(void*))june_evt_func_002456DC; return; }
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 0)) goto loc_002456D4;
+        ctx->gpr[3] = (int64_t)(int32_t)(0);
+        goto loc_002456D8;
+loc_002456D4:
+        ctx->gpr[3] = vm_read32(ctx->gpr[3] + 0x104);
+loc_002456D8:
+        return;
 }
 
 void june_evt_func_002456DC(ppu_context* ctx) {
@@ -3690,12 +3697,16 @@ void june_evt_func_002486DC(ppu_context* ctx) {
 
 void june_evt_func_002486E8(ppu_context* ctx) {
     PPU_MM_SNAP
-        { g_trampoline_fn = (void(*)(void*))june_evt_func_002486F4; return; }
+        { uint64_t _a = ctx->gpr[3]; uint64_t _r = _a + (uint64_t)(int64_t)(0x14C0); ctx->gpr[3] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->gpr[3] = ppc_rldicl(ctx->gpr[3], 0, 32);
+        return;
 }
 
 void june_evt_func_002486F4(ppu_context* ctx) {
     PPU_MM_SNAP
-        { g_trampoline_fn = (void(*)(void*))june_evt_func_00248778; return; }
+        { uint64_t _a = ctx->gpr[3]; uint64_t _r = _a + (uint64_t)(int64_t)(0x1500); ctx->gpr[3] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->gpr[3] = ppc_rldicl(ctx->gpr[3], 0, 32);
+        return;
 }
 
 void june_evt_func_00248778(ppu_context* ctx) {

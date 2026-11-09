@@ -65,6 +65,13 @@ float rsx_rd_half_be(const u8* p);  /* 2-byte IEEE half -> float  */
  * Handles the frequency divisor (instancing) and resolves the array offset
  * through the correct context DMA. Reads guest memory; requires vm_base.
  */
+typedef struct {
+    const rsx_state* state;
+    const u8* local_base[16];
+} rsx_vertex_fetch_prepared;
+void rsx_vertex_fetch_prepare(rsx_vertex_fetch_prepared* plan, const rsx_state* state);
+void rsx_fetch_attrib_prepared(const rsx_vertex_fetch_prepared* plan, int idx, u32 vi, float out[4]);
+
 void rsx_fetch_attrib(const rsx_state* st, int idx, u32 vi, float out[4]);
 
 #ifdef __cplusplus

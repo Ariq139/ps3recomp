@@ -351,6 +351,7 @@ typedef struct {
     int half;
     int negate;
     int abs;
+    u32 precision;
     char swz[5];    /* e.g. "xyzw" */
 } Src;
 
@@ -362,6 +363,7 @@ static void decode_src(u32 w, int abs_bit, Src* s)
     s->half   = (w & FP_SRC_HALF) ? 1 : 0;
     s->negate = (w & FP_SRC_NEGATE) ? 1 : 0;
     s->abs    = abs_bit ? 1 : 0;
+    s->precision = 0;
     for (int i = 0; i < 4; i++)
         s->swz[i] = comp[(w >> (FP_SRC_SWZ_SHIFT + 2 * i)) & 3];
     s->swz[4] = '\0';
@@ -426,6 +428,27 @@ static void emit_src(const Src* s, u32 input_src, int persp, const float* k, int
 
     char swz[160];
     snprintf(swz, sizeof(swz), "(%s).%s", base, s->swz);
+
+    /* Source precision is independent of OPDEST precision. Saturate precedes
+     * abs; signed ranges follow abs; negate is last (NV40 operand modifiers). */
+    if (s->precision >= 1u && s->precision <= 4u) {
+        char value[256], limited[384];
+        if (s->precision == 4u) {
+            snprintf(limited, sizeof limited, "clamp(%s, 0.0, 1.0)", swz);
+            snprintf(value, sizeof value, s->abs ? "abs(%s)" : "%s", limited);
+        } else {
+            snprintf(value, sizeof value, s->abs ? "abs(%s)" : "%s", swz);
+            if (s->precision == 1u)
+                snprintf(limited, sizeof limited, "_rsx_src_half(%s)", value);
+            else
+                snprintf(limited, sizeof limited, "clamp(%s, %s)", value,
+                         s->precision == 2u ? "-2.0, 2.0" : "-1.0, 1.0");
+            snprintf(buf, bufsz, s->negate ? "-(%s)" : "%s", limited);
+            return;
+        }
+        snprintf(buf, bufsz, s->negate ? "-(%s)" : "%s", value);
+        return;
+    }
 
     const char* pre = "";
     const char* post = "";
@@ -872,6 +895,23 @@ static int rsx_fp_decompile_internal(
         decode_src(w1, w1 & FP_SRC0_ABS, &s0);
         decode_src(w2, w2 & FP_SRC1_ABS, &s1);
         decode_src(w3, 0,                &s2);
+        if (!is_branch) {
+            /* SRC1 bits 19..27 encode three independent 3-bit precision
+             * modifiers. Branch encodings reuse those bits as control data. */
+            Src* sources[3] = { &s0, &s1, &s2 };
+            for (u32 i = 0; i < 3; i++) {
+                Src* s = sources[i];
+                /* WPOS, fog and texcoords accept precision. COL0/COL1
+                 * already saturate, while SSA/unknown inputs ignore it. */
+                if (s->type == FP_REG_TYPE_TEMP || s->type == FP_REG_TYPE_CONST ||
+                    (s->type == FP_REG_TYPE_INPUT &&
+                     (input_src == 0u || (input_src >= 3u && input_src <= 13u)))) {
+                    s->precision = (w2 >> (19u + 3u * i)) & 7u;
+                    if (s->type == FP_REG_TYPE_TEMP && s->half && s->precision == 1u)
+                        s->precision = 0;
+                }
+            }
+        }
 
         /* Inline constant: any CONST source pulls the next 16 bytes as a
          * float4 literal and advances past it. */
@@ -1519,6 +1559,11 @@ static int rsx_fp_decompile_internal(
             "#else\n"
             "#define _rsx_inv_w(p) (1.0 / (p).w)\n"
             "#endif\n");
+    if (strstr(o.p, "_rsx_src_half("))
+        out_puts(&p,
+            "float4 _rsx_src_half(float4 v) { float4 c = clamp(v, -65504.0, 65504.0); "
+            "return float4(isfinite(v.x) ? c.x : v.x, isfinite(v.y) ? c.y : v.y, "
+            "isfinite(v.z) ? c.z : v.z, isfinite(v.w) ? c.w : v.w); }\n");
     /* WPOS in the RSX window convention. The host position has its origin at the
      * top left; with SET_SHADER_WINDOW origin BOTTOM the RSX counts y up from the
      * bottom edge. A full-screen pass that builds its UV from it, e.g.

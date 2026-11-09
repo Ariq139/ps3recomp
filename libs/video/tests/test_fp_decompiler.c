@@ -591,6 +591,52 @@ int main(void)
 
     }
 
+    /* Source precision lives in SRC1, independently for all three sources.
+     * In particular saturate must precede abs (abs(clamp(-1,0,1)) == 0). */
+    {
+        u8 prog[16] = {0};
+        put_word(prog, OPC(0x01) | OUTMASK_ALL | END);
+        put_word(prog + 4, T_TEMP | REG(1) | SWZ_IDENT | EXEC_ALWAYS |
+                                (1u << 29) | (1u << 17));
+        put_word(prog + 8, 4u << 19);
+        rsx_fp_decompile(prog, sizeof prog, CTRL_32BIT, hlsl, sizeof hlsl);
+        check("source_sat_abs_neg_order", hlsl, "-(abs(clamp((r[1]).xyzw, 0.0, 1.0)))");
+        put_word(prog + 8, 3u << 19);
+        rsx_fp_decompile(prog, sizeof prog, CTRL_32BIT, hlsl, sizeof hlsl);
+        check("source_fixed9_abs_neg_order", hlsl, "-(clamp(abs((r[1]).xyzw), -1.0, 1.0))");
+        put_word(prog + 8, 1u << 19);
+        rsx_fp_decompile(prog, sizeof prog, CTRL_32BIT, hlsl, sizeof hlsl);
+        check("source_half_finite", hlsl, "isfinite(v.x) ? c.x : v.x");
+        put_word(prog + 4, T_TEMP | REG(1) | SWZ_IDENT | EXEC_ALWAYS | (1u << 8));
+        rsx_fp_decompile(prog, sizeof prog, CTRL_32BIT, hlsl, sizeof hlsl);
+        check_absent("source_half_temp_no_reclamp", hlsl, "_rsx_src_half(");
+        put_word(prog + 4, T_TEMP | REG(1) | SWZ_IDENT | EXEC_ALWAYS);
+        put_word(prog + 8, 5u << 19);
+        rsx_fp_decompile(prog, sizeof prog, CTRL_32BIT, hlsl, sizeof hlsl);
+        check_absent("source_unknown_precision_no_clamp", hlsl, "clamp(");
+        put_word(prog + 8, 0);
+        rsx_fp_decompile(prog, sizeof prog, CTRL_32BIT, hlsl, sizeof hlsl);
+        check_absent("source_real_no_clamp", hlsl, "clamp(");
+        put_word(prog, OPC(0x04) | OUTMASK_ALL | END); /* MAD */
+        put_word(prog + 4, T_TEMP | REG(1) | SWZ_IDENT | EXEC_ALWAYS);
+        put_word(prog + 8, T_TEMP | REG(2) | SWZ_IDENT |
+                                 (3u << 19) | (2u << 22) | (4u << 25));
+        put_word(prog + 12, T_TEMP | REG(3) | SWZ_IDENT);
+        rsx_fp_decompile(prog, sizeof prog, CTRL_32BIT, hlsl, sizeof hlsl);
+        check("source0_precision_field", hlsl, "clamp((r[1]).xyzw, -1.0, 1.0)");
+        check("source1_precision_field", hlsl, "clamp((r[2]).xyzw, -2.0, 2.0)");
+        check("source2_precision_field", hlsl, "clamp((r[3]).xyzw, 0.0, 1.0)");
+        for (u32 input = 0; input <= 14; input++) {
+            put_word(prog, OPC(0x01) | OUTMASK_ALL | INSRC(input) | END);
+            put_word(prog + 4, T_INPUT | SWZ_IDENT | EXEC_ALWAYS);
+            put_word(prog + 8, 2u << 19);
+            rsx_fp_decompile(prog, sizeof prog, CTRL_32BIT, hlsl, sizeof hlsl);
+            if (input == 1 || input == 2 || input == 14)
+                check_absent("source_input_precision_exception", hlsl, ", -2.0, 2.0)");
+            else check("source_input_fixed12", hlsl, ", -2.0, 2.0)");
+        }
+    }
+
     printf("\n===========================================\n");
     printf("Results: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

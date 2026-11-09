@@ -223,7 +223,7 @@ static inline uint64_t ppc_mulhdu(uint64_t a, uint64_t b) {
 /* VM base pointer (defined by game project) */
 extern "C" uint8_t* vm_base;
 
-/* Indirect call dispatch (bctrl/bctr) — implemented by the game project.
+/* Indirect call dispatch (bctrl/bctr) â€” implemented by the game project.
  * Looks up the guest address in CTR via a hash table and calls the
  * corresponding host function. Handles OPD resolution. */
 extern "C" void ps3_indirect_call(ppu_context* ctx);
@@ -841,12 +841,26 @@ loc_00947770:
 
 void june_evt_func_0094D7C8(ppu_context* ctx) {
     PPU_MM_SNAP
-        { g_trampoline_fn = (void(*)(void*))june_evt_func_0094D7DC; return; }
+    ctx->gpr[9] = vm_read32(ctx->gpr[2] - 0x2AD8);
+    ctx->gpr[0] = 0xFA0;
+    const uint32_t source = (uint32_t)(ctx->gpr[9] + ctx->gpr[0]) & ~15u;
+    const uint32_t target = (uint32_t)(ctx->gpr[3]) & ~15u;
+    ctx->vr[0].d[0] = vm_read64(source);
+    ctx->vr[0].d[1] = vm_read64(source + 8);
+    vm_write64(target, ctx->vr[0].d[0]);
+    vm_write64(target + 8, ctx->vr[0].d[1]);
 }
 
 void june_evt_func_0094D7DC(ppu_context* ctx) {
     PPU_MM_SNAP
-        { g_trampoline_fn = (void(*)(void*))june_evt_func_009537DC; return; }
+    ctx->gpr[9] = vm_read32(ctx->gpr[2] - 0x2AD8);
+    ctx->gpr[0] = 0xFA0;
+    const uint32_t source = (uint32_t)(ctx->gpr[3]) & ~15u;
+    const uint32_t target = (uint32_t)(ctx->gpr[9] + ctx->gpr[0]) & ~15u;
+    ctx->vr[0].d[0] = vm_read64(source);
+    ctx->vr[0].d[1] = vm_read64(source + 8);
+    vm_write64(target, ctx->vr[0].d[0]);
+    vm_write64(target + 8, ctx->vr[0].d[1]);
 }
 
 void june_evt_func_009537DC(ppu_context* ctx) {

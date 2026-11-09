@@ -13,15 +13,23 @@ static void Sleep(unsigned ms) { (void)ms; }
 uint8_t* vm_base;
 uint32_t g_ydkj_real_taskset_ea, g_ydkj_real_taskid;
 static unsigned dispatches;
+static uint32_t tasksets_seen[128], tasks_seen[128];
 static const uint8_t* dispatched_image;
-static uint32_t dispatched_size, dispatched_context;
+static uint32_t dispatched_size, dispatched_context, dispatched_taskset, dispatched_task;
 /* The scheduler updates the taskset's bitset line under the lock-line lock;
  * single-threaded here, so the lock and the coherency note are no-ops. */
 void spu_lockline_lock(void) {}
 void spu_lockline_unlock(void) {}
 void spu_coh_notify_write(uint32_t ea) { (void)ea; }
-static int spu_workload_dispatch_async(const uint8_t* image, uint32_t size, uint32_t context)
+static int spu_workload_dispatch_task_async(const uint8_t* image, uint32_t size, uint32_t context,
+                                            uint32_t taskset_ea, uint32_t taskid)
 {
+    /* Model another PPU's CreateTask overwriting the legacy handoff before
+     * the submission is captured by the worker. Ownership must stay local. */
+    g_ydkj_real_taskset_ea = 0xBAD000;
+    g_ydkj_real_taskid = 99;
+    dispatched_taskset = taskset_ea; dispatched_task = taskid;
+    tasksets_seen[dispatches] = taskset_ea; tasks_seen[dispatches] = taskid;
     dispatches++; dispatched_image = image; dispatched_size = size;
     dispatched_context = context; return 1;
 }
@@ -68,13 +76,21 @@ int main(void)
         CHECK(dispatched_image == vm_base + ELF, "dispatch uses ELF base, not tagged address");
         CHECK(dispatched_size == 100, "real parser receives synthetic ELF header");
         CHECK(dispatched_context == CONTEXT, "context argument is preserved");
-        CHECK(g_ydkj_real_taskset_ea == TASKSET && g_ydkj_real_taskid == 0,
-              "requeued task keeps its taskset and slot identity");
+        CHECK(dispatched_taskset == TASKSET && dispatched_task == 0,
+              "requeued task keeps its identity despite concurrent CreateTask handoff");
         CHECK(memcmp(before, vm_base + TASKSET + 0x80, sizeof(before)) == 0,
               "TaskInfo flags and all other metadata remain unchanged");
         CHECK((s_ts_run[0].running[0] & 0x80) != 0, "submitted task is marked in host run table");
         CHECK(vm_base[TASKSET + 0x20] == 0, "pending-ready bit consumed on submission");
     }
+    setup(1, 1);
+    memcpy(vm_base + TASKSET + 0x80 + 48, vm_base + TASKSET + 0x80, 48);
+    vm_base[TASKSET + 0x20] = vm_base[TASKSET + 0x30] = 0xC0;
+    spu_taskset_task_exited(TASKSET, 127);
+    CHECK(dispatches == 2, "two pending tasks are both submitted");
+    CHECK(tasksets_seen[0] == TASKSET && tasksets_seen[1] == TASKSET &&
+          tasks_seen[0] == 0 && tasks_seen[1] == 1,
+          "each pending task preserves its distinct slot across overwritten handoffs");
     setup(1, 0); vm_base[TASKSET + 0x30] = 0;
     spu_taskset_task_exited(TASKSET, 127);
     CHECK(dispatches == 0, "disabled task is not dispatched");

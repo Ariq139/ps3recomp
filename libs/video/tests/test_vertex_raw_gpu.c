@@ -101,6 +101,8 @@ int main(int argc, char** argv)
     }
     for (u32 i = 0; i < 12; ++i)
         assert(rsx_raw_vertex_source(RSX_PRIMITIVE_QUADS, i, 0) == quad[i]);
+    const int indexed_test = argc == 2 && (!strcmp(argv[1], "--indexed") ||
+        !strcmp(argv[1], "--hardware-indexed"));
     vm_base = (u8*)calloc(1, 65536);
     assert(vm_base);
     rsx_state state = {0};
@@ -172,7 +174,7 @@ int main(int argc, char** argv)
     if (debug_enabled) { debug->lpVtbl->EnableDebugLayer(debug); debug->lpVtbl->Release(debug); }
     IDXGIFactory4* factory = NULL; IDXGIAdapter* adapter = NULL; ID3D12Device* device = NULL;
     assert(SUCCEEDED(CreateDXGIFactory1(&IID_IDXGIFactory4, (void**)&factory)));
-    if (argc == 2 && !strcmp(argv[1], "--hardware")) {
+    if (argc == 2 && (!strcmp(argv[1], "--hardware") || !strcmp(argv[1], "--hardware-indexed"))) {
         IDXGIFactory6* performance_factory = NULL;
         assert(SUCCEEDED(factory->lpVtbl->QueryInterface(factory, &IID_IDXGIFactory6,
             (void**)&performance_factory)));
@@ -191,7 +193,7 @@ int main(int argc, char** argv)
     ID3D12InfoQueue* info_queue = NULL;
     device->lpVtbl->QueryInterface(device, &IID_ID3D12InfoQueue, (void**)&info_queue);
     if (info_queue) info_queue->lpVtbl->ClearStoredMessages(info_queue);
-    ID3D12Resource* upload = buffer(device, plan.bytes, D3D12_HEAP_TYPE_UPLOAD,
+    ID3D12Resource* upload = buffer(device, plan.bytes + vertex_count * 4u, D3D12_HEAP_TYPE_UPLOAD,
         D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_FLAG_NONE);
     ID3D12Resource* output = buffer(device, max_output, D3D12_HEAP_TYPE_DEFAULT,
         D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
@@ -200,13 +202,21 @@ int main(int argc, char** argv)
     void* mapping = NULL; D3D12_RANGE empty = {0,0};
     assert(SUCCEEDED(upload->lpVtbl->Map(upload, 0, &empty, &mapping)));
     rsx_raw_vertex_write(&plan, vertices, vm_base, mapping);
+    for (u32 i = 0; i < vertex_count; ++i)
+        ((u32*)((u8*)mapping + plan.bytes))[i] = vertex_count - 1u - i;
     upload->lpVtbl->Unmap(upload, 0, NULL);
     char source[16384];
     snprintf(source, sizeof(source), "%s\nRWStructuredBuffer<float4> result:register(u0);"
         "[numthreads(16,1,1)]void main(uint3 id:SV_DispatchThreadID){"
         "uint vi=rsx_raw_vertices.Load(rsx_raw_vertices.Load(0u)+id.y*4u);"
         "result[id.y*16u+id.x]=rsx_raw_attribute(id.x,vi);}", rsx_raw_vertex_hlsl);
-    ID3DBlob* shader = compile(source, "cs_5_0");
+    if (indexed_test) snprintf(source, sizeof(source),
+        "%s\nRWStructuredBuffer<float4> result:register(u0);"
+        "float4 main(uint id:SV_VertexID):SV_Position{"
+        "uint vi=rsx_raw_vertices.Load(rsx_raw_vertices.Load(0u)+id*4u);"
+        "for(uint a=0;a<16;++a)result[id*16+a]=rsx_raw_attribute(a,vi);"
+        "return float4(0,0,0,1);}", rsx_raw_vertex_hlsl);
+    ID3DBlob* shader = compile(source, indexed_test ? "vs_5_0" : "cs_5_0");
     const char* vs_source = "struct VSInput{float4 a0:ATTR0;float4 a7:ATTR7;};"
         "struct VSOutput{float4 pos:SV_Position;};"
         "VSOutput main(VSInput input){VSOutput o;o.pos=input.a0+input.a7;return o;}";
@@ -219,6 +229,7 @@ int main(int argc, char** argv)
     parameters[0].Descriptor.ShaderRegister = 20;
     parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
     D3D12_ROOT_SIGNATURE_DESC root_desc = {0};
+    root_desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
     root_desc.NumParameters = 2; root_desc.pParameters = parameters;
     ID3DBlob* serialized = NULL; ID3DBlob* errors = NULL;
     assert(SUCCEEDED(D3D12SerializeRootSignature(&root_desc, D3D_ROOT_SIGNATURE_VERSION_1,
@@ -231,8 +242,19 @@ int main(int argc, char** argv)
     pipeline_desc.CS.pShaderBytecode = shader->lpVtbl->GetBufferPointer(shader);
     pipeline_desc.CS.BytecodeLength = shader->lpVtbl->GetBufferSize(shader);
     ID3D12PipelineState* pipeline = NULL;
+    if (indexed_test) {
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC graphics = {0};
+        graphics.pRootSignature = root; graphics.VS = pipeline_desc.CS;
+        graphics.SampleMask = UINT_MAX; graphics.SampleDesc.Count = 1;
+        graphics.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+        graphics.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+        graphics.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT;
+        assert(SUCCEEDED(device->lpVtbl->CreateGraphicsPipelineState(device, &graphics,
+            &IID_ID3D12PipelineState, (void**)&pipeline)));
+    } else {
     assert(SUCCEEDED(device->lpVtbl->CreateComputePipelineState(device, &pipeline_desc,
         &IID_ID3D12PipelineState, (void**)&pipeline)));
+    }
     D3D12_COMMAND_QUEUE_DESC queue_desc = {0};
     ID3D12CommandQueue* queue = NULL; ID3D12CommandAllocator* allocator = NULL;
     ID3D12GraphicsCommandList* list = NULL;
@@ -242,10 +264,25 @@ int main(int argc, char** argv)
         &IID_ID3D12CommandAllocator, (void**)&allocator)));
     assert(SUCCEEDED(device->lpVtbl->CreateCommandList(device, 0, D3D12_COMMAND_LIST_TYPE_DIRECT,
         allocator, pipeline, &IID_ID3D12GraphicsCommandList, (void**)&list)));
+    if (indexed_test) {
+        list->lpVtbl->SetGraphicsRootSignature(list, root);
+        list->lpVtbl->SetGraphicsRootShaderResourceView(list, 0, upload->lpVtbl->GetGPUVirtualAddress(upload));
+        list->lpVtbl->SetGraphicsRootUnorderedAccessView(list, 1, output->lpVtbl->GetGPUVirtualAddress(output));
+        D3D12_INDEX_BUFFER_VIEW ibv = {0};
+        ibv.BufferLocation = upload->lpVtbl->GetGPUVirtualAddress(upload) + plan.bytes;
+        ibv.SizeInBytes = vertex_count * 4u; ibv.Format = DXGI_FORMAT_R32_UINT;
+        list->lpVtbl->IASetIndexBuffer(list, &ibv);
+        list->lpVtbl->IASetPrimitiveTopology(list, D3D_PRIMITIVE_TOPOLOGY_POINTLIST);
+        D3D12_VIEWPORT viewport = {0,0,1,1,0,1}; D3D12_RECT scissor = {0,0,1,1};
+        list->lpVtbl->RSSetViewports(list, 1, &viewport);
+        list->lpVtbl->RSSetScissorRects(list, 1, &scissor);
+        list->lpVtbl->DrawIndexedInstanced(list, vertex_count, 1, 0, 0, 0);
+    } else {
     list->lpVtbl->SetComputeRootSignature(list, root);
     list->lpVtbl->SetComputeRootShaderResourceView(list, 0, upload->lpVtbl->GetGPUVirtualAddress(upload));
     list->lpVtbl->SetComputeRootUnorderedAccessView(list, 1, output->lpVtbl->GetGPUVirtualAddress(output));
     list->lpVtbl->Dispatch(list, 1, vertex_count, 1);
+    }
     D3D12_RESOURCE_BARRIER barrier = {0};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     barrier.Transition.pResource = output;

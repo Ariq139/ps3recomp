@@ -2,6 +2,7 @@ import argparse
 import hashlib
 import json
 import re
+import struct
 from pathlib import Path
 
 
@@ -40,8 +41,11 @@ def main():
     data_refs = json.loads(args.data_refs.read_text(encoding='utf-8'))
     if data_refs.get('source_elf_sha256') != manifest.get('source_sha256'):
         raise SystemExit('June data reference list is for a different ELF')
-    if data_refs.get('function_count') != len(rows):
-        raise SystemExit('June data reference list uses a different function table')
+    # This count records the scan that produced the reference list. Later
+    # callback recovery can extend the function table without changing it.
+    scanned_functions = data_refs.get('function_count', 0)
+    if not 0 < scanned_functions <= len(rows):
+        raise SystemExit('June data reference scan is incompatible with the function table')
     data_addresses = [int(ea, 16) for ea in data_refs.get('addresses', [])]
     if len(data_addresses) != data_refs.get('address_count') or len(data_addresses) != len(set(data_addresses)):
         raise SystemExit('June data reference list has an invalid count or duplicate address')
@@ -71,6 +75,35 @@ def main():
     image_bytes = image_path.read_bytes()
     if len(image_bytes) != manifest['image_size'] or hashlib.sha256(image_bytes).hexdigest() != manifest['image_sha256']:
         raise SystemExit('June image does not match its manifest')
+
+    implementations = set()
+    source_paths = list(args.lift_dir.glob('*.cpp'))
+    source_paths.append(args.lift_dir.parent / 'event_editor_june.cpp')
+    for source_path in source_paths:
+        source = source_path.read_text(encoding='utf-8', errors='replace')
+        for address in re.findall(
+                r'\bvoid\s+june_evt_func_([0-9A-Fa-f]{8})\s*\([^)]*\)\s*\{', source):
+            address = int(address, 16)
+            if address in implementations:
+                raise SystemExit(f'Duplicate June implementation: 0x{address:08X}')
+            implementations.add(address)
+    missing = {ea for ea, _ in rows} - implementations
+    if missing:
+        raise SystemExit(f'June function table has missing implementations: {sorted(missing)}')
+
+    # Callbacks stored in the executable also need wrappers, even when they
+    # were recovered separately from the original direct-call function table.
+    callable_addresses = {ea for ea, _ in rows}
+    opd = manifest['opd']
+    for address in range(opd['vaddr'], opd['vaddr'] + opd['size'], 8):
+        code, toc = struct.unpack_from('>II', image_bytes, address - manifest['image_base'])
+        if toc == manifest['toc'] and code in implementations:
+            callable_addresses.add(code)
+    declarations = (args.lift_dir / 'ppu_recomp.h').read_text(encoding='utf-8', errors='replace')
+    declared = {int(x, 16) for x in re.findall(r'\bvoid\s+june_evt_func_([0-9A-Fa-f]{8})\s*\(', declarations)}
+    if callable_addresses - declared:
+        raise SystemExit(f'June callbacks have missing declarations: {sorted(callable_addresses - declared)}')
+    rows = [(ea, ea) for ea in sorted(callable_addresses)]
     fnv = 14695981039346656037
     for value in image_bytes:
         fnv = ((fnv ^ value) * 1099511628211) & 0xFFFFFFFFFFFFFFFF

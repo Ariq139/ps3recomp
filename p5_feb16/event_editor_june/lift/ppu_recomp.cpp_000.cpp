@@ -835,7 +835,181 @@ loc_000168FC:
 
 void june_evt_func_00016A44(ppu_context* ctx) {
     PPU_MM_SNAP
-        { g_trampoline_fn = (void(*)(void*))june_evt_func_00017374; return; }
+        vm_write64(ctx->gpr[1] + -0x70, ctx->gpr[1]); ctx->gpr[1] += -0x70;
+        ctx->gpr[0] = ctx->lr;
+        vm_write64(ctx->gpr[1] + 0x80, ctx->gpr[0]);
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_00016C80;
+        ctx->gpr[6] = vm_read64(ctx->gpr[3] + 0x10);
+        ctx->gpr[4] = ppc_rlw64(ctx->gpr[6], 0, 28, 28, 0, 0);
+        { int64_t a = (int64_t)ctx->gpr[4]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_00016A88;
+        ctx->gpr[4] = ctx->gpr[3] | 0x0;
+        ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0xDF << 16);
+        { uint64_t _a = ctx->gpr[3]; uint64_t _r = _a + (uint64_t)(int64_t)(0x647C); ctx->gpr[3] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->gpr[4] = vm_read64(ctx->gpr[4] + 0x0);
+        ctx->lr = 0x00016A7C; june_evt_func_00824CF8(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        ctx->gpr[3] = (int64_t)(int32_t)(0);
+        goto loc_00016C84;
+loc_00016A88:
+        ctx->gpr[4] = vm_read64(ctx->gpr[3] + 0x0);
+        ctx->gpr[7] = (int64_t)(int32_t)((uint32_t)0xDF << 16);
+        ctx->gpr[5] = ppc_rldicl(ctx->gpr[4], 8, 56);
+        { uint64_t _a = ctx->gpr[7]; uint64_t _r = _a + (uint64_t)(int64_t)(0x64C4); ctx->gpr[7] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t a = (uint32_t)ctx->gpr[5]; uint64_t b = (uint64_t)0x7; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 1)) goto loc_00016ACC;
+        ctx->gpr[8] = ppc_rlw64(ctx->gpr[6], 0, 27, 27, 0, 0);
+        { int64_t a = (int64_t)ctx->gpr[8]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_00016AB8;
+        ctx->gpr[6] = ppc_rlw64(ctx->gpr[6], 0, 18, 18, 0, 0);
+        { int64_t a = (int64_t)ctx->gpr[6]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_00016AEC;
+loc_00016AB8:
+        ctx->gpr[3] = ctx->gpr[7] | 0x0;
+        ctx->lr = 0x00016AC0; june_evt_func_00824CF8(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        ctx->gpr[3] = (int64_t)(int32_t)(0);
+        goto loc_00016C84;
+loc_00016ACC:
+        ctx->gpr[6] = ppc_rlw64(ctx->gpr[6], 0, 31, 31, 0, 0);
+        { int64_t a = (int64_t)ctx->gpr[6]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 0)) goto loc_00016AEC;
+        ctx->gpr[3] = ctx->gpr[7] | 0x0;
+        ctx->lr = 0x00016AE0; june_evt_func_00824CF8(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        ctx->gpr[3] = (int64_t)(int32_t)(0);
+        goto loc_00016C84;
+loc_00016AEC:
+        { uint64_t a = (uint32_t)ctx->gpr[5]; uint64_t b = (uint64_t)0xE; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 1)) goto loc_00016B5C;
+        { uint64_t a = (uint32_t)ctx->gpr[5]; uint64_t b = (uint64_t)0x7; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 1)) goto loc_00016B2C;
+        { uint64_t a = (uint32_t)ctx->gpr[5]; uint64_t b = (uint64_t)0x4; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 1)) goto loc_00016B18;
+        { int64_t a = (int32_t)ctx->gpr[5]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_00016C80;
+        { uint64_t a = (uint32_t)ctx->gpr[5]; uint64_t b = (uint64_t)0x2; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 0)) goto loc_00016BC4;
+        goto loc_00016BD4;
+loc_00016B18:
+        { uint64_t a = (uint32_t)ctx->gpr[5]; uint64_t b = (uint64_t)0x5; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 0)) goto loc_00016BE4;
+        { uint64_t a = (uint32_t)ctx->gpr[5]; uint64_t b = (uint64_t)0x6; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 0)) goto loc_00016BF4;
+        goto loc_00016C04;
+loc_00016B2C:
+        { uint64_t a = (uint32_t)ctx->gpr[5]; uint64_t b = (uint64_t)0xB; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 1)) goto loc_00016B48;
+        { uint64_t a = (uint32_t)ctx->gpr[5]; uint64_t b = (uint64_t)0x9; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 0)) goto loc_00016C14;
+        { uint64_t a = (uint32_t)ctx->gpr[5]; uint64_t b = (uint64_t)0xA; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 0)) goto loc_00016C14;
+        goto loc_00016C24;
+loc_00016B48:
+        { uint64_t a = (uint32_t)ctx->gpr[5]; uint64_t b = (uint64_t)0xC; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 0)) goto loc_00016C28;
+        { uint64_t a = (uint32_t)ctx->gpr[5]; uint64_t b = (uint64_t)0xD; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 0)) goto loc_00016C38;
+        goto loc_00016C48;
+loc_00016B5C:
+        { uint64_t a = (uint32_t)ctx->gpr[5]; uint64_t b = (uint64_t)0x14; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 1)) goto loc_00016B94;
+        { uint64_t a = (uint32_t)ctx->gpr[5]; uint64_t b = (uint64_t)0x11; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 1)) goto loc_00016B80;
+        { uint64_t a = (uint32_t)ctx->gpr[5]; uint64_t b = (uint64_t)0xF; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 0)) goto loc_00016C4C;
+        { uint64_t a = (uint32_t)ctx->gpr[5]; uint64_t b = (uint64_t)0x10; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 0)) goto loc_00016C5C;
+        goto loc_00016C6C;
+loc_00016B80:
+        { uint64_t a = (uint32_t)ctx->gpr[5]; uint64_t b = (uint64_t)0x12; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 0)) goto loc_00016C6C;
+        { uint64_t a = (uint32_t)ctx->gpr[5]; uint64_t b = (uint64_t)0x13; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 0)) goto loc_00016C70;
+        goto loc_00016C80;
+loc_00016B94:
+        { uint64_t a = (uint32_t)ctx->gpr[5]; uint64_t b = (uint64_t)0x18; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 1)) goto loc_00016BB0;
+        { uint64_t a = (uint32_t)ctx->gpr[5]; uint64_t b = (uint64_t)0x15; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 0)) goto loc_00016C80;
+        { uint64_t a = (uint32_t)ctx->gpr[5]; uint64_t b = (uint64_t)0x16; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 0)) goto loc_00016C80;
+        goto loc_00016C70;
+loc_00016BB0:
+        { uint64_t a = (uint32_t)ctx->gpr[5]; uint64_t b = (uint64_t)0x1A; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 0)) goto loc_00016C80;
+        { uint64_t a = (uint32_t)ctx->gpr[5]; uint64_t b = (uint64_t)0x1B; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 0)) goto loc_00016C80;
+        goto loc_00016C80;
+loc_00016BC4:
+        ctx->gpr[3] = vm_read32(ctx->gpr[3] + 0x174);
+        ctx->lr = 0x00016BCC; june_evt_func_008E1AD8(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        goto loc_00016C84;
+loc_00016BD4:
+        ctx->gpr[3] = vm_read32(ctx->gpr[3] + 0x174);
+        ctx->lr = 0x00016BDC; june_evt_func_008E1AD8(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        goto loc_00016C84;
+loc_00016BE4:
+        ctx->gpr[3] = vm_read32(ctx->gpr[3] + 0x174);
+        ctx->lr = 0x00016BEC; june_evt_func_008E1AD8(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        goto loc_00016C84;
+loc_00016BF4:
+        ctx->gpr[3] = vm_read32(ctx->gpr[3] + 0x178);
+        ctx->lr = 0x00016BFC; june_evt_func_008E1AD8(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        goto loc_00016C84;
+loc_00016C04:
+        ctx->gpr[3] = vm_read32(ctx->gpr[3] + 0x174);
+        ctx->lr = 0x00016C0C; june_evt_func_008E1AD8(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        goto loc_00016C84;
+loc_00016C14:
+        ctx->gpr[3] = vm_read32(ctx->gpr[3] + 0x180);
+        ctx->lr = 0x00016C1C; june_evt_func_008E1AD8(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        goto loc_00016C84;
+loc_00016C24:
+        goto loc_00016C80;
+loc_00016C28:
+        ctx->gpr[3] = vm_read32(ctx->gpr[3] + 0x218);
+        ctx->lr = 0x00016C30; june_evt_func_008E1AD8(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        goto loc_00016C84;
+loc_00016C38:
+        ctx->gpr[3] = vm_read32(ctx->gpr[3] + 0x188);
+        ctx->lr = 0x00016C40; june_evt_func_008E1AD8(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        goto loc_00016C84;
+loc_00016C48:
+        goto loc_00016C80;
+loc_00016C4C:
+        ctx->gpr[3] = vm_read32(ctx->gpr[3] + 0x174);
+        ctx->lr = 0x00016C54; june_evt_func_008E1AD8(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        goto loc_00016C84;
+loc_00016C5C:
+        ctx->gpr[3] = vm_read32(ctx->gpr[3] + 0x174);
+        ctx->lr = 0x00016C64; june_evt_func_008E1AD8(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        goto loc_00016C84;
+loc_00016C6C:
+        goto loc_00016C80;
+loc_00016C70:
+        ctx->gpr[3] = vm_read32(ctx->gpr[3] + 0x174);
+        ctx->lr = 0x00016C78; june_evt_func_008E1AD8(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        goto loc_00016C84;
+loc_00016C80:
+        ctx->gpr[3] = (int64_t)(int32_t)(0);
+loc_00016C84:
+        ctx->gpr[0] = vm_read64(ctx->gpr[1] + 0x80);
+        ctx->lr = ctx->gpr[0];
+        ctx->gpr[1] = ctx->gpr[1] + (int64_t)(0x70);
+        return;
 }
 
 void june_evt_func_00017374(ppu_context* ctx) {
@@ -4262,7 +4436,24 @@ loc_00025788:
 
 void june_evt_func_00025798(ppu_context* ctx) {
     PPU_MM_SNAP
-        { g_trampoline_fn = (void(*)(void*))june_evt_func_00027954; return; }
+        uint64_t _cs_31 = ctx->gpr[31];
+        vm_write64(ctx->gpr[1] + -0x80, ctx->gpr[1]); ctx->gpr[1] += -0x80;
+        ctx->gpr[0] = ctx->lr;
+        vm_write64(ctx->gpr[1] + 0x90, ctx->gpr[0]);
+        vm_write64(ctx->gpr[1] + 0x78, ctx->gpr[31]);
+        ctx->gpr[31] = ctx->gpr[4] | 0x0;
+        ctx->lr = 0x000257B0; june_evt_func_00025430(ctx); DRAIN_TRAMPOLINE(ctx);
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_000257C4;
+        ctx->gpr[4] = ctx->gpr[31] | 0x0;
+        ctx->lr = 0x000257C0; june_evt_func_0021CD48(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+loc_000257C4:
+        ctx->gpr[0] = vm_read64(ctx->gpr[1] + 0x90);
+        ctx->lr = ctx->gpr[0];
+        ctx->gpr[31] = _cs_31;
+        ctx->gpr[1] = ctx->gpr[1] + (int64_t)(0x80);
+        return;
 }
 
 void june_evt_func_00027954(ppu_context* ctx) {
@@ -6966,7 +7157,775 @@ loc_000AC638:
 
 void june_evt_func_000B5F20(ppu_context* ctx) {
     PPU_MM_SNAP
-        { g_trampoline_fn = (void(*)(void*))june_evt_func_000BB430; return; }
+        uint64_t _cs_14 = ctx->gpr[14];
+        uint64_t _cs_15 = ctx->gpr[15];
+        uint64_t _cs_16 = ctx->gpr[16];
+        uint64_t _cs_17 = ctx->gpr[17];
+        uint64_t _cs_18 = ctx->gpr[18];
+        uint64_t _cs_19 = ctx->gpr[19];
+        uint64_t _cs_20 = ctx->gpr[20];
+        uint64_t _cs_21 = ctx->gpr[21];
+        uint64_t _cs_22 = ctx->gpr[22];
+        uint64_t _cs_23 = ctx->gpr[23];
+        uint64_t _cs_24 = ctx->gpr[24];
+        uint64_t _cs_25 = ctx->gpr[25];
+        uint64_t _cs_26 = ctx->gpr[26];
+        uint64_t _cs_27 = ctx->gpr[27];
+        uint64_t _cs_28 = ctx->gpr[28];
+        uint64_t _cs_29 = ctx->gpr[29];
+        uint64_t _cs_30 = ctx->gpr[30];
+        uint64_t _cs_31 = ctx->gpr[31];
+        vm_write64(ctx->gpr[1] + -0x260, ctx->gpr[1]); ctx->gpr[1] += -0x260;
+        ctx->gpr[0] = ctx->lr;
+        vm_write64(ctx->gpr[1] + 0x270, ctx->gpr[0]);
+        { uint64_t tmp; memcpy(&tmp, &ctx->fpr[27], 8); vm_write64(ctx->gpr[1] + 0x238, tmp); }
+        { uint64_t tmp; memcpy(&tmp, &ctx->fpr[28], 8); vm_write64(ctx->gpr[1] + 0x240, tmp); }
+        { uint64_t tmp; memcpy(&tmp, &ctx->fpr[29], 8); vm_write64(ctx->gpr[1] + 0x248, tmp); }
+        { uint64_t tmp; memcpy(&tmp, &ctx->fpr[30], 8); vm_write64(ctx->gpr[1] + 0x250, tmp); }
+        { uint64_t tmp; memcpy(&tmp, &ctx->fpr[31], 8); vm_write64(ctx->gpr[1] + 0x258, tmp); }
+        vm_write64(ctx->gpr[1] + 0x228, ctx->gpr[30]);
+        ctx->gpr[0] = ctx->gpr[1] + (int64_t)(0x180);
+        { uint64_t ea = (ctx->gpr[0]) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[30]); }
+        { uint64_t _a = ctx->gpr[0]; uint64_t _r = _a + (uint64_t)(int64_t)(0x10); ctx->gpr[0] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t ea = (ctx->gpr[0]) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[31]); }
+        vm_write64(ctx->gpr[1] + 0x230, ctx->gpr[31]);
+        ctx->gpr[30] = (int64_t)(int32_t)((uint32_t)0xB << 16);
+        ctx->gpr[31] = (int64_t)(int8_t)ctx->gpr[3];
+        vm_write64(ctx->gpr[1] + 0x218, ctx->gpr[28]);
+        ctx->gpr[30] = ctx->gpr[30] + (int64_t)(0x5EA0);
+        vm_write64(ctx->gpr[1] + 0x210, ctx->gpr[27]);
+        ctx->gpr[28] = (int64_t)(int8_t)ctx->gpr[4];
+        ctx->gpr[3] = (int64_t)(int32_t)(0xB);
+        vm_write64(ctx->gpr[1] + 0x220, ctx->gpr[29]);
+        vm_write64(ctx->gpr[1] + 0x208, ctx->gpr[26]);
+        vm_write64(ctx->gpr[1] + 0x200, ctx->gpr[25]);
+        vm_write64(ctx->gpr[1] + 0x1F8, ctx->gpr[24]);
+        vm_write64(ctx->gpr[1] + 0x1F0, ctx->gpr[23]);
+        vm_write64(ctx->gpr[1] + 0x1E8, ctx->gpr[22]);
+        vm_write64(ctx->gpr[1] + 0x1E0, ctx->gpr[21]);
+        vm_write64(ctx->gpr[1] + 0x1D8, ctx->gpr[20]);
+        vm_write64(ctx->gpr[1] + 0x1D0, ctx->gpr[19]);
+        vm_write64(ctx->gpr[1] + 0x1C8, ctx->gpr[18]);
+        vm_write64(ctx->gpr[1] + 0x1C0, ctx->gpr[17]);
+        vm_write64(ctx->gpr[1] + 0x1B8, ctx->gpr[16]);
+        vm_write64(ctx->gpr[1] + 0x1B0, ctx->gpr[15]);
+        vm_write64(ctx->gpr[1] + 0x1A8, ctx->gpr[14]);
+        ctx->gpr[27] = (int64_t)(int8_t)ctx->gpr[5];
+        ctx->lr = 0x000B5FB4; june_evt_func_00017374(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        { uint32_t tmp = vm_read32(ctx->gpr[30] + 0x0); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[29] = ftmp; }
+        ctx->gpr[29] = ctx->gpr[3] | 0x0;
+        ctx->lr = 0x000B5FC4; june_evt_func_008861A0(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        vm_write64(ctx->gpr[1] + 0x160, ctx->gpr[31]);
+        vm_write64(ctx->gpr[1] + 0x168, ctx->gpr[28]);
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        vm_write64(ctx->gpr[1] + 0x170, ctx->gpr[27]);
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_000B69E0;
+        ctx->gpr[31] = (int64_t)(int32_t)(0);
+        ctx->gpr[16] = ctx->gpr[31] | 0x0;
+        ctx->lr = 0x000B5FE8; june_evt_func_008861FC(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_000B5FFC;
+        ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0x15E << 16);
+        ctx->gpr[31] = vm_read16(ctx->gpr[3] + 0x7BF8);
+loc_000B5FFC:
+        ctx->gpr[3] = (int64_t)(int16_t)ctx->gpr[31];
+        ctx->gpr[3] = (int64_t)(int32_t)ctx->gpr[3];
+        vm_write64(ctx->gpr[1] + 0x18, ctx->gpr[3]);
+        { uint32_t tmp = vm_read32(ctx->gpr[30] + 0x4); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[27] = ftmp; }
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0x18); memcpy(&ctx->fpr[1], &tmp, 8); }
+        { int64_t iv; memcpy(&iv, &ctx->fpr[1], 8); ctx->fpr[31] = (double)iv; }
+        ctx->fpr[31] = ppu_frsp(ctx->fpr[31]);
+        { double a = ctx->fpr[31]; double b = ctx->fpr[27]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 31) & 1) == 1)) goto loc_000B69E0;
+        ctx->gpr[31] = ctx->gpr[16] | 0x0;
+        ctx->lr = 0x000B6028; june_evt_func_008861FC(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_000B603C;
+        ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0x15E << 16);
+        ctx->gpr[31] = vm_read16(ctx->gpr[3] + 0x7BFA);
+loc_000B603C:
+        ctx->gpr[3] = (int64_t)(int16_t)ctx->gpr[31];
+        ctx->gpr[3] = (int64_t)(int32_t)ctx->gpr[3];
+        vm_write64(ctx->gpr[1] + 0x18, ctx->gpr[3]);
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0x18); memcpy(&ctx->fpr[1], &tmp, 8); }
+        { int64_t iv; memcpy(&iv, &ctx->fpr[1], 8); ctx->fpr[30] = (double)iv; }
+        ctx->fpr[30] = ppu_frsp(ctx->fpr[30]);
+        { double a = ctx->fpr[30]; double b = ctx->fpr[27]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 31) & 1) == 1)) goto loc_000B69E0;
+        ctx->lr = 0x000B6060; june_evt_func_00827264(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        ctx->gpr[3] = (int64_t)(int32_t)ctx->gpr[3];
+        vm_write64(ctx->gpr[1] + 0x18, ctx->gpr[3]);
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0x18); memcpy(&ctx->fpr[1], &tmp, 8); }
+        { int64_t iv; memcpy(&iv, &ctx->fpr[1], 8); ctx->fpr[1] = (double)iv; }
+        ctx->fpr[1] = ppu_frsp(ctx->fpr[1]);
+        { double a = ctx->fpr[31]; double b = ctx->fpr[1]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        { uint32_t a = (ctx->cr >> (31 - 1)) & 1; uint32_t b = (ctx->cr >> (31 - 2)) & 1; ctx->cr = (ctx->cr & ~(1u << (31 - 6))) | ((a | b) << (31 - 6)); }
+        if ((((ctx->cr >> 25) & 1) == 1)) goto loc_000B69E0;
+        ctx->lr = 0x000B6088; june_evt_func_00827274(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        ctx->gpr[3] = (int64_t)(int32_t)ctx->gpr[3];
+        vm_write64(ctx->gpr[1] + 0x18, ctx->gpr[3]);
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0x18); memcpy(&ctx->fpr[1], &tmp, 8); }
+        { int64_t iv; memcpy(&iv, &ctx->fpr[1], 8); ctx->fpr[1] = (double)iv; }
+        ctx->fpr[1] = ppu_frsp(ctx->fpr[1]);
+        { double a = ctx->fpr[30]; double b = ctx->fpr[1]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        { uint32_t a = (ctx->cr >> (31 - 1)) & 1; uint32_t b = (ctx->cr >> (31 - 2)) & 1; ctx->cr = (ctx->cr & ~(1u << (31 - 6))) | ((a | b) << (31 - 6)); }
+        if ((((ctx->cr >> 25) & 1) == 1)) goto loc_000B69E0;
+        ctx->gpr[3] = (int64_t)(int32_t)(0);
+        ctx->lr = 0x000B60B4; june_evt_func_008C31C0(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        ctx->gpr[26] = ctx->gpr[3] | 0x0;
+        { int64_t a = (int32_t)ctx->gpr[26]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_000B69E0;
+        ctx->gpr[3] = (int64_t)(int32_t)(0x10);
+        vm_write32(ctx->gpr[1] + 0x15C, ctx->gpr[29]);
+        ctx->gpr[5] = (int64_t)(int32_t)(0x20);
+        { uint32_t v[4]; for(int i=0;i<4;i++) v[i]=(uint32_t)(int32_t)0; ppu_vstu4(&ctx->vr[31],v); }
+        ctx->gpr[7] = (int64_t)(int32_t)(0x30);
+        ctx->gpr[8] = (int64_t)(int32_t)(0x40);
+        ctx->gpr[4] = (int64_t)(int32_t)(0x10);
+        ctx->gpr[6] = (int64_t)(int32_t)(0x20);
+        { uint64_t ea = ((ctx->gpr[3] + ctx->gpr[26])) & ~0xFULL; vm_raw_ld16(&ctx->vr[2], ea); }
+        { uint64_t ea = ((ctx->gpr[5] + ctx->gpr[26])) & ~0xFULL; vm_raw_ld16(&ctx->vr[3], ea); }
+        { uint64_t ea = ((ctx->gpr[7] + ctx->gpr[26])) & ~0xFULL; vm_raw_ld16(&ctx->vr[4], ea); }
+        ctx->gpr[3] = (int64_t)(int32_t)(0x40);
+        { uint64_t ea = ((ctx->gpr[8] + ctx->gpr[26])) & ~0xFULL; vm_raw_ld16(&ctx->vr[5], ea); }
+        { uint64_t ea = ((ctx->gpr[4] + ctx->gpr[30])) & ~0xFULL; vm_raw_ld16(&ctx->vr[6], ea); }
+        { uint64_t ea = ((ctx->gpr[6] + ctx->gpr[30])) & ~0xFULL; vm_raw_ld16(&ctx->vr[7], ea); }
+        ctx->gpr[4] = (int64_t)(int32_t)(0x50);
+        { uint8_t* a = (uint8_t*)&ctx->vr[2]; uint8_t* b = (uint8_t*)&ctx->vr[3]; uint8_t* c = (uint8_t*)&ctx->vr[6]; uint8_t* d = (uint8_t*)&ctx->vr[8]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+        { uint8_t* a = (uint8_t*)&ctx->vr[4]; uint8_t* b = (uint8_t*)&ctx->vr[5]; uint8_t* c = (uint8_t*)&ctx->vr[6]; uint8_t* d = (uint8_t*)&ctx->vr[6]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+        { uint8_t* a = (uint8_t*)&ctx->vr[2]; uint8_t* b = (uint8_t*)&ctx->vr[3]; uint8_t* c = (uint8_t*)&ctx->vr[7]; uint8_t* d = (uint8_t*)&ctx->vr[2]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+        { uint8_t* a = (uint8_t*)&ctx->vr[4]; uint8_t* b = (uint8_t*)&ctx->vr[5]; uint8_t* c = (uint8_t*)&ctx->vr[7]; uint8_t* d = (uint8_t*)&ctx->vr[3]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+        { uint64_t ea = ((ctx->gpr[3] + ctx->gpr[30])) & ~0xFULL; vm_raw_ld16(&ctx->vr[4], ea); }
+        ctx->gpr[3] = (int64_t)(int32_t)(0x30);
+        { uint8_t* a = (uint8_t*)&ctx->vr[8]; uint8_t* b = (uint8_t*)&ctx->vr[6]; uint8_t* c = (uint8_t*)&ctx->vr[4]; uint8_t* d = (uint8_t*)&ctx->vr[5]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+        { uint8_t* a = (uint8_t*)&ctx->vr[3]; uint8_t* b = (uint8_t*)&ctx->vr[2]; uint8_t* c = (uint8_t*)&ctx->vr[4]; uint8_t* d = (uint8_t*)&ctx->vr[4]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+        { uint64_t ea = ((ctx->gpr[3] + ctx->gpr[30])) & ~0xFULL; vm_raw_ld16(&ctx->vr[7], ea); }
+        vmx_vmaddfp(&ctx->vr[9], &ctx->vr[5], &ctx->vr[31], &ctx->vr[4], ctx->vscr);
+        { uint8_t* a = (uint8_t*)&ctx->vr[3]; uint8_t* b = (uint8_t*)&ctx->vr[2]; uint8_t* c = (uint8_t*)&ctx->vr[7]; uint8_t* d = (uint8_t*)&ctx->vr[2]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+        ctx->gpr[3] = (int64_t)(int32_t)(0x60);
+        { uint64_t ea = ((ctx->gpr[4] + ctx->gpr[30])) & ~0xFULL; vm_raw_ld16(&ctx->vr[3], ea); }
+        { uint8_t* a = (uint8_t*)&ctx->vr[8]; uint8_t* b = (uint8_t*)&ctx->vr[6]; uint8_t* c = (uint8_t*)&ctx->vr[7]; uint8_t* d = (uint8_t*)&ctx->vr[6]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+        vmx_vmaddfp(&ctx->vr[11], &ctx->vr[2], &ctx->vr[31], &ctx->vr[5], ctx->vscr);
+        { uint8_t tmp[32]; memcpy(tmp, &ctx->vr[2], 16); memcpy(tmp+16, &ctx->vr[2], 16); memcpy(&ctx->vr[12], tmp + 8, 16); }
+        { uint64_t ea = ((ctx->gpr[3] + ctx->gpr[30])) & ~0xFULL; vm_raw_ld16(&ctx->vr[10], ea); }
+        { uint8_t tmp[32]; memcpy(tmp, &ctx->vr[5], 16); memcpy(tmp+16, &ctx->vr[5], 16); memcpy(&ctx->vr[5], tmp + 8, 16); }
+        vmx_vmaddfp(&ctx->vr[12], &ctx->vr[12], &ctx->vr[31], &ctx->vr[4], ctx->vscr);
+        ctx->gpr[3] = (int64_t)(int32_t)(0x70);
+        { uint8_t* a = (uint8_t*)&ctx->vr[9]; uint8_t* b = (uint8_t*)&ctx->vr[9]; uint8_t* c = (uint8_t*)&ctx->vr[3]; uint8_t* d = (uint8_t*)&ctx->vr[13]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+        { uint8_t* a = (uint8_t*)&ctx->vr[9]; uint8_t* b = (uint8_t*)&ctx->vr[9]; uint8_t* c = (uint8_t*)&ctx->vr[10]; uint8_t* d = (uint8_t*)&ctx->vr[9]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+        vmx_vnmsubfp(&ctx->vr[13], &ctx->vr[2], &ctx->vr[31], &ctx->vr[13], ctx->vscr);
+        { uint8_t* a = (uint8_t*)&ctx->vr[11]; uint8_t* b = (uint8_t*)&ctx->vr[11]; uint8_t* c = (uint8_t*)&ctx->vr[3]; uint8_t* d = (uint8_t*)&ctx->vr[0]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+        { uint8_t* a = (uint8_t*)&ctx->vr[11]; uint8_t* b = (uint8_t*)&ctx->vr[11]; uint8_t* c = (uint8_t*)&ctx->vr[10]; uint8_t* d = (uint8_t*)&ctx->vr[11]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+        { uint8_t* a = (uint8_t*)&ctx->vr[12]; uint8_t* b = (uint8_t*)&ctx->vr[12]; uint8_t* c = (uint8_t*)&ctx->vr[3]; uint8_t* d = (uint8_t*)&ctx->vr[8]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+        { uint64_t _a = ctx->gpr[1]; uint64_t _r = _a + (uint64_t)(int64_t)(0x124); ctx->gpr[31] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->fpr[1] = ctx->fpr[27];
+        { uint64_t _a = ctx->gpr[1]; uint64_t _r = _a + (uint64_t)(int64_t)(0x70); ctx->gpr[6] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        vmx_vmaddfp(&ctx->vr[7], &ctx->vr[2], &ctx->vr[13], &ctx->vr[9], ctx->vscr);
+        { uint8_t* a = (uint8_t*)&ctx->vr[12]; uint8_t* b = (uint8_t*)&ctx->vr[12]; uint8_t* c = (uint8_t*)&ctx->vr[10]; uint8_t* d = (uint8_t*)&ctx->vr[9]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+        vmx_vmaddfp(&ctx->vr[13], &ctx->vr[6], &ctx->vr[31], &ctx->vr[2], ctx->vscr);
+        vmx_vmaddfp(&ctx->vr[12], &ctx->vr[6], &ctx->vr[31], &ctx->vr[0], ctx->vscr);
+        ctx->gpr[4] = ctx->gpr[31] | 0x0;
+        vmx_vmaddfp(&ctx->vr[7], &ctx->vr[4], &ctx->vr[7], &ctx->vr[0], ctx->vscr);
+        vmx_vnmsubfp(&ctx->vr[12], &ctx->vr[6], &ctx->vr[12], &ctx->vr[11], ctx->vscr);
+        vmx_vnmsubfp(&ctx->vr[4], &ctx->vr[4], &ctx->vr[7], &ctx->vr[11], ctx->vscr);
+        { uint8_t* a = (uint8_t*)&ctx->vr[13]; uint8_t* b = (uint8_t*)&ctx->vr[13]; uint8_t* c = (uint8_t*)&ctx->vr[3]; uint8_t* d = (uint8_t*)&ctx->vr[7]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+        { uint8_t tmp[32]; memcpy(tmp, &ctx->vr[12], 16); memcpy(tmp+16, &ctx->vr[12], 16); memcpy(&ctx->vr[11], tmp + 8, 16); }
+        vmx_vmaddfp(&ctx->vr[7], &ctx->vr[5], &ctx->vr[11], &ctx->vr[7], ctx->vscr);
+        vmx_vmaddfp(&ctx->vr[11], &ctx->vr[6], &ctx->vr[31], &ctx->vr[5], ctx->vscr);
+        vmx_vmaddfp(&ctx->vr[4], &ctx->vr[5], &ctx->vr[4], &ctx->vr[8], ctx->vscr);
+        { uint8_t* a = (uint8_t*)&ctx->vr[13]; uint8_t* b = (uint8_t*)&ctx->vr[13]; uint8_t* c = (uint8_t*)&ctx->vr[10]; uint8_t* d = (uint8_t*)&ctx->vr[8]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+        { uint8_t* a = (uint8_t*)&ctx->vr[11]; uint8_t* b = (uint8_t*)&ctx->vr[11]; uint8_t* c = (uint8_t*)&ctx->vr[3]; uint8_t* d = (uint8_t*)&ctx->vr[3]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+        vmx_vnmsubfp(&ctx->vr[4], &ctx->vr[5], &ctx->vr[4], &ctx->vr[9], ctx->vscr);
+        vmx_vnmsubfp(&ctx->vr[5], &ctx->vr[5], &ctx->vr[7], &ctx->vr[8], ctx->vscr);
+        vmx_vmaddfp(&ctx->vr[4], &ctx->vr[6], &ctx->vr[31], &ctx->vr[4], ctx->vscr);
+        { uint64_t ea = (ctx->gpr[3] + ctx->gpr[30]); uint32_t sh = (uint32_t)(ea & 0xF); uint8_t* m = vm_base + (uint32_t)(ea & ~0xFULL); uint8_t* d = (uint8_t*)&ctx->vr[6]; for (int i = 0; i < 16; i++) d[i] = (sh + (uint32_t)i < 16) ? m[sh + i] : 0; }
+        vmx_vnmsubfp(&ctx->vr[3], &ctx->vr[2], &ctx->vr[5], &ctx->vr[3], ctx->vscr);
+        { uint32_t* d = (uint32_t*)&ctx->vr[5]; uint32_t val = ((uint32_t*)&ctx->vr[6])[0]; d[0] = d[1] = d[2] = d[3] = val; }
+        { float ftmp = (float)ctx->fpr[31]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x124, tmp); }
+        ctx->gpr[3] = ctx->gpr[26] | 0x0;
+        { float ftmp = (float)ctx->fpr[30]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x128, tmp); }
+        { uint32_t* d = (uint32_t*)&ctx->vr[6]; uint32_t val = ((uint32_t*)&ctx->vr[4])[0]; d[0] = d[1] = d[2] = d[3] = val; }
+        { uint32_t* d = (uint32_t*)&ctx->vr[7]; uint32_t val = ((uint32_t*)&ctx->vr[4])[1]; d[0] = d[1] = d[2] = d[3] = val; }
+        { uint32_t* d = (uint32_t*)&ctx->vr[8]; uint32_t val = ((uint32_t*)&ctx->vr[4])[2]; d[0] = d[1] = d[2] = d[3] = val; }
+        { uint32_t* d = (uint32_t*)&ctx->vr[4]; uint32_t val = ((uint32_t*)&ctx->vr[4])[3]; d[0] = d[1] = d[2] = d[3] = val; }
+        vmx_vaddfp(&ctx->vr[6], &ctx->vr[6], &ctx->vr[7], ctx->vscr);
+        { uint8_t* a = (uint8_t*)&ctx->vr[11]; uint8_t* b = (uint8_t*)&ctx->vr[11]; uint8_t* c = (uint8_t*)&ctx->vr[10]; uint8_t* d = (uint8_t*)&ctx->vr[7]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+        vmx_vaddfp(&ctx->vr[4], &ctx->vr[8], &ctx->vr[4], ctx->vscr);
+        vmx_vmaddfp(&ctx->vr[30], &ctx->vr[2], &ctx->vr[3], &ctx->vr[7], ctx->vscr);
+        vmx_vaddfp(&ctx->vr[2], &ctx->vr[6], &ctx->vr[4], ctx->vscr);
+        vmx_vrefp(&ctx->vr[3], &ctx->vr[2], ctx->vscr);
+        vmx_vnmsubfp(&ctx->vr[2], &ctx->vr[2], &ctx->vr[5], &ctx->vr[3], ctx->vscr);
+        vmx_vmaddfp(&ctx->vr[2], &ctx->vr[2], &ctx->vr[3], &ctx->vr[3], ctx->vscr);
+        (void)vmx_vcmpeqfp(&ctx->vr[4], &ctx->vr[2], &ctx->vr[2]);
+        { uint64_t* d=(uint64_t*)&ctx->vr[2]; uint64_t* a=(uint64_t*)&ctx->vr[3]; uint64_t* b=(uint64_t*)&ctx->vr[2]; uint64_t* c=(uint64_t*)&ctx->vr[4]; d[0]=(a[0]&~c[0])|(b[0]&c[0]); d[1]=(a[1]&~c[1])|(b[1]&c[1]); }
+        vmx_vmaddfp(&ctx->vr[30], &ctx->vr[30], &ctx->vr[31], &ctx->vr[2], ctx->vscr);
+        ctx->lr = 0x000B6218; june_evt_func_008D3C14(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        { uint32_t tmp = vm_read32(ctx->gpr[30] + 0x70); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        { uint64_t _a = ctx->gpr[1]; uint64_t _r = _a + (uint64_t)(int64_t)(0x80); ctx->gpr[6] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->gpr[3] = ctx->gpr[26] | 0x0;
+        ctx->gpr[4] = ctx->gpr[31] | 0x0;
+        ctx->lr = 0x000B6230; june_evt_func_008D3C14(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0x70); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        ctx->gpr[26] = ctx->gpr[16] | 0x0;
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0x74); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[2] = ftmp; }
+        { int64_t a = (int32_t)ctx->gpr[29]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0x78); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[3] = ftmp; }
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0x80); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[4] = ftmp; }
+        { float ftmp = (float)ctx->fpr[1]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x100, tmp); }
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0x84); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        { float ftmp = (float)ctx->fpr[2]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x104, tmp); }
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0x88); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[2] = ftmp; }
+        { float ftmp = (float)ctx->fpr[3]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x108, tmp); }
+        { float ftmp = (float)ctx->fpr[4]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x110, tmp); }
+        { float ftmp = (float)ctx->fpr[1]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x114, tmp); }
+        { float ftmp = (float)ctx->fpr[2]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x118, tmp); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_000B69E0;
+loc_000B6270:
+        ctx->gpr[29] = vm_read32(ctx->gpr[1] + 0x15C);
+        ctx->gpr[3] = vm_read64(ctx->gpr[29] + 0x10);
+        ctx->gpr[4] = ppc_rlw64(ctx->gpr[3], 0, 31, 31, 0, 0);
+        { int64_t a = (int64_t)ctx->gpr[4]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_000B67E0;
+        ctx->gpr[3] = ppc_rlw64(ctx->gpr[3], 0, 17, 17, 0, 0);
+        { int64_t a = (int64_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_000B67E0;
+        ctx->gpr[22] = (int64_t)(int32_t)((uint32_t)0xE0 << 16);
+        ctx->gpr[21] = (int64_t)(int32_t)((uint32_t)0xE0 << 16);
+        ctx->gpr[30] = ctx->gpr[16] | 0x0;
+        ctx->gpr[20] = (int64_t)(int32_t)(0x90);
+        { uint64_t _a = ctx->gpr[1]; uint64_t _r = _a + (uint64_t)(int64_t)(0x90); ctx->gpr[23] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t _a = ctx->gpr[22]; uint64_t _r = _a + (uint64_t)(int64_t)(-16756); ctx->gpr[22] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t _a = ctx->gpr[1]; uint64_t _r = _a + (uint64_t)(int64_t)(0x100); ctx->gpr[24] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t _a = ctx->gpr[1]; uint64_t _r = _a + (uint64_t)(int64_t)(0x144); ctx->gpr[27] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t _a = ctx->gpr[1]; uint64_t _r = _a + (uint64_t)(int64_t)(0x120); ctx->gpr[25] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t _a = ctx->gpr[21]; uint64_t _r = _a + (uint64_t)(int64_t)(-16836); ctx->gpr[21] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+loc_000B62B8:
+        ctx->gpr[31] = vm_read32(ctx->gpr[29] + 0x3AEC);
+        ctx->gpr[3] = vm_read32(ctx->gpr[31] + 0x8);
+        { int64_t a = (int32_t)ctx->gpr[30]; int64_t b = (int32_t)ctx->gpr[3]; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 31) & 1) == 0)) goto loc_000B63CC;
+        ctx->gpr[3] = vm_read32(ctx->gpr[31] + 0xC);
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 0)) goto loc_000B62EC;
+        ctx->gpr[3] = ctx->gpr[21] | 0x0;
+        ctx->gpr[4] = (int64_t)(int32_t)(0x45);
+        ctx->gpr[5] = ctx->gpr[22] | 0x0;
+        ctx->lr = 0x000B62E4; june_evt_func_00824F18(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        ctx->gpr[3] = vm_read32(ctx->gpr[31] + 0xC);
+loc_000B62EC:
+        ctx->gpr[4] = vm_read32(ctx->gpr[31] + 0x4);
+        ctx->gpr[4] = (uint64_t)((int64_t)(int32_t)ctx->gpr[30] * (int64_t)(int32_t)ctx->gpr[4]);
+        { uint64_t result = ctx->gpr[3] + ctx->gpr[4]; ctx->xer = (ctx->xer & ~(1u << 29)) | ((result < ctx->gpr[3]) ? (1u << 29) : 0); ctx->gpr[31] = result; }
+        ctx->gpr[31] = ppc_rldicl(ctx->gpr[31], 0, 32);
+        ctx->gpr[3] = vm_read32(ctx->gpr[31] + 0x0);
+        ctx->lr = 0x000B6304; june_evt_func_00016768(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        ctx->gpr[4] = vm_read32(ctx->gpr[31] + 0x0);
+        ctx->gpr[28] = ctx->gpr[3] | 0x0;
+        ctx->gpr[3] = ctx->gpr[4] | 0x0;
+        ctx->lr = 0x000B6318; june_evt_func_0001BED4(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        { uint64_t _a = ctx->gpr[28]; uint64_t _r = _a + (uint64_t)(int64_t)(0x4C); ctx->gpr[4] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t _a = ctx->gpr[3]; uint64_t _r = _a + (uint64_t)(int64_t)(0x10); ctx->gpr[5] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->gpr[3] = ctx->gpr[27] | 0x0;
+        ctx->gpr[4] = ppc_rldicl(ctx->gpr[4], 0, 32);
+        ctx->gpr[5] = ppc_rldicl(ctx->gpr[5], 0, 32);
+        ctx->lr = 0x000B6334; june_evt_func_0004F4AC(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        ctx->gpr[3] = ctx->gpr[23] | 0x0;
+        ctx->gpr[4] = ctx->gpr[25] | 0x0;
+        ctx->gpr[5] = ctx->gpr[24] | 0x0;
+        ctx->gpr[6] = ctx->gpr[27] | 0x0;
+        ctx->lr = 0x000B634C; june_evt_func_00051720(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_000B63C4;
+        { uint64_t ea = ((ctx->gpr[20] + ctx->gpr[1])) & ~0xFULL; vm_raw_ld16(&ctx->vr[2], ea); }
+        vmx_vsubfp(&ctx->vr[2], &ctx->vr[30], &ctx->vr[2], ctx->vscr);
+        ctx->gpr[3] = (int64_t)(int32_t)(0xF0);
+        vmx_vmaddfp(&ctx->vr[3], &ctx->vr[2], &ctx->vr[31], &ctx->vr[2], ctx->vscr);
+        { uint8_t tmp[32]; memcpy(tmp, &ctx->vr[2], 16); memcpy(tmp+16, &ctx->vr[2], 16); memcpy(&ctx->vr[4], tmp + 4, 16); }
+        { uint8_t tmp[32]; memcpy(tmp, &ctx->vr[2], 16); memcpy(tmp+16, &ctx->vr[2], 16); memcpy(&ctx->vr[2], tmp + 8, 16); }
+        vmx_vmaddfp(&ctx->vr[3], &ctx->vr[4], &ctx->vr[3], &ctx->vr[4], ctx->vscr);
+        vmx_vmaddfp(&ctx->vr[2], &ctx->vr[2], &ctx->vr[3], &ctx->vr[2], ctx->vscr);
+        { uint64_t ea = ((ctx->gpr[3] + ctx->gpr[1])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[2]); }
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0xF0); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        { double a = ctx->fpr[1]; double b = ctx->fpr[29]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 31) & 1) == 1)) goto loc_000B638C;
+        goto loc_000B63C4;
+loc_000B638C:
+        ctx->fpr[29] = ctx->fpr[1];
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0x144); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0x148); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[2] = ftmp; }
+        { float ftmp = (float)ctx->fpr[1]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x12C, tmp); }
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0x14C); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        { float ftmp = (float)ctx->fpr[2]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x130, tmp); }
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0x150); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[2] = ftmp; }
+        { float ftmp = (float)ctx->fpr[1]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x134, tmp); }
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0x154); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        { float ftmp = (float)ctx->fpr[2]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x138, tmp); }
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0x158); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[2] = ftmp; }
+        { float ftmp = (float)ctx->fpr[1]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x13C, tmp); }
+        ctx->gpr[26] = vm_read32(ctx->gpr[31] + 0x0);
+        { float ftmp = (float)ctx->fpr[2]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x140, tmp); }
+loc_000B63C4:
+        { uint64_t _a = ctx->gpr[30]; uint64_t _r = _a + (uint64_t)(int64_t)(1); ctx->gpr[30] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        goto loc_000B62B8;
+loc_000B63CC:
+        ctx->gpr[30] = ctx->gpr[16] | 0x0;
+loc_000B63D0:
+        ctx->gpr[31] = vm_read32(ctx->gpr[29] + 0x3AF0);
+        ctx->gpr[3] = vm_read32(ctx->gpr[31] + 0x8);
+        { int64_t a = (int32_t)ctx->gpr[30]; int64_t b = (int32_t)ctx->gpr[3]; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 31) & 1) == 0)) goto loc_000B64E4;
+        ctx->gpr[3] = vm_read32(ctx->gpr[31] + 0xC);
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 0)) goto loc_000B6404;
+        ctx->gpr[3] = ctx->gpr[21] | 0x0;
+        ctx->gpr[4] = (int64_t)(int32_t)(0x45);
+        ctx->gpr[5] = ctx->gpr[22] | 0x0;
+        ctx->lr = 0x000B63FC; june_evt_func_00824F18(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        ctx->gpr[3] = vm_read32(ctx->gpr[31] + 0xC);
+loc_000B6404:
+        ctx->gpr[4] = vm_read32(ctx->gpr[31] + 0x4);
+        ctx->gpr[4] = (uint64_t)((int64_t)(int32_t)ctx->gpr[30] * (int64_t)(int32_t)ctx->gpr[4]);
+        { uint64_t result = ctx->gpr[3] + ctx->gpr[4]; ctx->xer = (ctx->xer & ~(1u << 29)) | ((result < ctx->gpr[3]) ? (1u << 29) : 0); ctx->gpr[31] = result; }
+        ctx->gpr[31] = ppc_rldicl(ctx->gpr[31], 0, 32);
+        ctx->gpr[3] = vm_read32(ctx->gpr[31] + 0x0);
+        ctx->lr = 0x000B641C; june_evt_func_00016768(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        ctx->gpr[4] = vm_read32(ctx->gpr[31] + 0x0);
+        ctx->gpr[28] = ctx->gpr[3] | 0x0;
+        ctx->gpr[3] = ctx->gpr[4] | 0x0;
+        ctx->lr = 0x000B6430; june_evt_func_0001BED4(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        { uint64_t _a = ctx->gpr[28]; uint64_t _r = _a + (uint64_t)(int64_t)(0x4C); ctx->gpr[4] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t _a = ctx->gpr[3]; uint64_t _r = _a + (uint64_t)(int64_t)(0x10); ctx->gpr[5] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->gpr[3] = ctx->gpr[27] | 0x0;
+        ctx->gpr[4] = ppc_rldicl(ctx->gpr[4], 0, 32);
+        ctx->gpr[5] = ppc_rldicl(ctx->gpr[5], 0, 32);
+        ctx->lr = 0x000B644C; june_evt_func_0004F4AC(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        ctx->gpr[3] = ctx->gpr[23] | 0x0;
+        ctx->gpr[4] = ctx->gpr[25] | 0x0;
+        ctx->gpr[5] = ctx->gpr[24] | 0x0;
+        ctx->gpr[6] = ctx->gpr[27] | 0x0;
+        ctx->lr = 0x000B6464; june_evt_func_00051720(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_000B64DC;
+        { uint64_t ea = ((ctx->gpr[20] + ctx->gpr[1])) & ~0xFULL; vm_raw_ld16(&ctx->vr[2], ea); }
+        vmx_vsubfp(&ctx->vr[2], &ctx->vr[30], &ctx->vr[2], ctx->vscr);
+        ctx->gpr[3] = (int64_t)(int32_t)(0xE0);
+        vmx_vmaddfp(&ctx->vr[3], &ctx->vr[2], &ctx->vr[31], &ctx->vr[2], ctx->vscr);
+        { uint8_t tmp[32]; memcpy(tmp, &ctx->vr[2], 16); memcpy(tmp+16, &ctx->vr[2], 16); memcpy(&ctx->vr[4], tmp + 4, 16); }
+        { uint8_t tmp[32]; memcpy(tmp, &ctx->vr[2], 16); memcpy(tmp+16, &ctx->vr[2], 16); memcpy(&ctx->vr[2], tmp + 8, 16); }
+        vmx_vmaddfp(&ctx->vr[3], &ctx->vr[4], &ctx->vr[3], &ctx->vr[4], ctx->vscr);
+        vmx_vmaddfp(&ctx->vr[2], &ctx->vr[2], &ctx->vr[3], &ctx->vr[2], ctx->vscr);
+        { uint64_t ea = ((ctx->gpr[3] + ctx->gpr[1])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[2]); }
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0xE0); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        { double a = ctx->fpr[1]; double b = ctx->fpr[29]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 31) & 1) == 1)) goto loc_000B64A4;
+        goto loc_000B64DC;
+loc_000B64A4:
+        ctx->fpr[29] = ctx->fpr[1];
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0x144); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0x148); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[2] = ftmp; }
+        { float ftmp = (float)ctx->fpr[1]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x12C, tmp); }
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0x14C); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        { float ftmp = (float)ctx->fpr[2]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x130, tmp); }
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0x150); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[2] = ftmp; }
+        { float ftmp = (float)ctx->fpr[1]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x134, tmp); }
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0x154); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        { float ftmp = (float)ctx->fpr[2]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x138, tmp); }
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0x158); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[2] = ftmp; }
+        { float ftmp = (float)ctx->fpr[1]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x13C, tmp); }
+        ctx->gpr[26] = vm_read32(ctx->gpr[31] + 0x0);
+        { float ftmp = (float)ctx->fpr[2]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x140, tmp); }
+loc_000B64DC:
+        { uint64_t _a = ctx->gpr[30]; uint64_t _r = _a + (uint64_t)(int64_t)(1); ctx->gpr[30] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        goto loc_000B63D0;
+loc_000B64E4:
+        ctx->gpr[15] = vm_read32(ctx->gpr[29] + 0x604);
+        ctx->gpr[14] = ctx->gpr[16] | 0x0;
+        ctx->gpr[3] = vm_read16(ctx->gpr[15] + 0x14);
+        ctx->gpr[15] = vm_read32(ctx->gpr[15] + 0x0);
+        ctx->gpr[3] = (int64_t)(int16_t)ctx->gpr[3];
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 0)) goto loc_000B67E0;
+loc_000B6500:
+        { uint64_t _a = ctx->gpr[15]; uint64_t _r = _a + (uint64_t)(int64_t)(4); ctx->gpr[3] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->gpr[5] = vm_read32(ctx->gpr[1] + 0x15C);
+        { uint64_t _a = ctx->gpr[15]; uint64_t _r = _a + (uint64_t)(int64_t)(5); ctx->gpr[4] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->gpr[3] = ppc_rldicl(ctx->gpr[3], 0, 32);
+        ctx->gpr[4] = ppc_rldicl(ctx->gpr[4], 0, 32);
+        { uint64_t _a = ctx->gpr[5]; uint64_t _r = _a + (uint64_t)(int64_t)(0x204); ctx->gpr[5] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->gpr[18] = ctx->gpr[16] | 0x0;
+        ctx->gpr[3] = vm_read8(ctx->gpr[3] + 0x0);
+        ctx->gpr[4] = vm_read8(ctx->gpr[4] + 0x0);
+        ctx->gpr[3] = ppc_sraw(&ctx->xer, (int32_t)ctx->gpr[3], 3);
+        { uint64_t ca = (ctx->xer >> 29) & 1; uint64_t result = ctx->gpr[3] + ca; ctx->xer = (ctx->xer & ~(1u << 29)) | ((result < ctx->gpr[3]) ? (1u << 29) : 0); ctx->gpr[3] = result; }
+        ctx->gpr[4] = ppc_sraw(&ctx->xer, (int32_t)ctx->gpr[4], 3);
+        ctx->gpr[3] = ppc_rldicr(ctx->gpr[3], 4, 59);
+        { uint64_t ca = (ctx->xer >> 29) & 1; uint64_t result = ctx->gpr[4] + ca; ctx->xer = (ctx->xer & ~(1u << 29)) | ((result < ctx->gpr[4]) ? (1u << 29) : 0); ctx->gpr[4] = result; }
+        { uint64_t result = ctx->gpr[3] + ctx->gpr[4]; ctx->xer = (ctx->xer & ~(1u << 29)) | ((result < ctx->gpr[3]) ? (1u << 29) : 0); ctx->gpr[3] = result; }
+        ctx->gpr[3] = ppc_rldicr(ctx->gpr[3], 2, 61);
+        { uint64_t result = ctx->gpr[3] + ctx->gpr[5]; ctx->xer = (ctx->xer & ~(1u << 29)) | ((result < ctx->gpr[3]) ? (1u << 29) : 0); ctx->gpr[3] = result; }
+        ctx->gpr[17] = ppc_rldicl(ctx->gpr[3], 0, 32);
+        ctx->gpr[17] = vm_read32(ctx->gpr[17] + 0x0);
+        ctx->gpr[3] = vm_read16(ctx->gpr[17] + 0x17E);
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 0)) goto loc_000B67C0;
+        ctx->gpr[19] = ctx->gpr[16] | 0x0;
+loc_000B655C:
+        ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0xB << 16);
+        { uint64_t _a = ctx->gpr[17]; uint64_t _r = _a + (uint64_t)(int64_t)(0x29C); ctx->gpr[4] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->gpr[3] = ctx->gpr[3] + (int64_t)(0x5EA0);
+        { uint64_t result = ctx->gpr[19] + ctx->gpr[4]; ctx->xer = (ctx->xer & ~(1u << 29)) | ((result < ctx->gpr[19]) ? (1u << 29) : 0); ctx->gpr[28] = result; }
+        ctx->gpr[29] = ctx->gpr[16] | 0x0;
+        ctx->gpr[28] = ppc_rldicl(ctx->gpr[28], 0, 32);
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x74); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[28] = ftmp; }
+loc_000B6578:
+        ctx->gpr[31] = vm_read32(ctx->gpr[28] + 0x0);
+        ctx->gpr[3] = vm_read32(ctx->gpr[31] + 0x8);
+        { int64_t a = (int32_t)ctx->gpr[29]; int64_t b = (int32_t)ctx->gpr[3]; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 31) & 1) == 0)) goto loc_000B67AC;
+        ctx->gpr[3] = vm_read32(ctx->gpr[31] + 0xC);
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 0)) goto loc_000B65AC;
+        ctx->gpr[3] = ctx->gpr[21] | 0x0;
+        ctx->gpr[4] = (int64_t)(int32_t)(0x45);
+        ctx->gpr[5] = ctx->gpr[22] | 0x0;
+        ctx->lr = 0x000B65A4; june_evt_func_00824F18(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        ctx->gpr[3] = vm_read32(ctx->gpr[31] + 0xC);
+loc_000B65AC:
+        ctx->gpr[4] = vm_read32(ctx->gpr[31] + 0x4);
+        ctx->gpr[4] = (uint64_t)((int64_t)(int32_t)ctx->gpr[29] * (int64_t)(int32_t)ctx->gpr[4]);
+        { uint64_t result = ctx->gpr[3] + ctx->gpr[4]; ctx->xer = (ctx->xer & ~(1u << 29)) | ((result < ctx->gpr[3]) ? (1u << 29) : 0); ctx->gpr[30] = result; }
+        ctx->gpr[30] = ppc_rldicl(ctx->gpr[30], 0, 32);
+        ctx->gpr[3] = vm_read32(ctx->gpr[30] + 0x0);
+        ctx->lr = 0x000B65C4; june_evt_func_0001BED4(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        ctx->gpr[31] = ctx->gpr[3] | 0x0;
+        ctx->gpr[3] = vm_read32(ctx->gpr[30] + 0x0);
+        ctx->gpr[4] = vm_read64(ctx->gpr[3] + 0x0);
+        ctx->gpr[4] = ppc_rldicl(ctx->gpr[4], 8, 56);
+        { int64_t a = (int32_t)ctx->gpr[4]; int64_t b = (int64_t)0xD; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 0)) goto loc_000B66DC;
+        ctx->lr = 0x000B65E4; june_evt_func_00016768(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        ctx->gpr[4] = vm_read32(ctx->gpr[3] + 0x1C);
+        ctx->gpr[4] = vm_read32(ctx->gpr[4] + 0x8);
+        { int64_t a = (int32_t)ctx->gpr[4]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 0)) goto loc_000B6618;
+        { uint64_t _a = ctx->gpr[3]; uint64_t _r = _a + (uint64_t)(int64_t)(0x4C); ctx->gpr[4] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t _a = ctx->gpr[31]; uint64_t _r = _a + (uint64_t)(int64_t)(0x10); ctx->gpr[5] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->gpr[3] = ctx->gpr[27] | 0x0;
+        ctx->gpr[4] = ppc_rldicl(ctx->gpr[4], 0, 32);
+        ctx->gpr[5] = ppc_rldicl(ctx->gpr[5], 0, 32);
+        ctx->lr = 0x000B6610; june_evt_func_0004F4AC(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        goto loc_000B664C;
+loc_000B6618:
+        ctx->gpr[3] = (int64_t)(int32_t)(0x40);
+        ctx->gpr[4] = (int64_t)(int32_t)(0xA0);
+        { uint64_t ea = ((ctx->gpr[3] + ctx->gpr[31])) & ~0xFULL; vm_raw_ld16(&ctx->vr[2], ea); }
+        { uint64_t ea = ((ctx->gpr[4] + ctx->gpr[1])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[2]); }
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0xA0); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        ctx->fpr[2] = ppu_fp_single(ppu_fadd(ctx->fpr[1], ctx->fpr[28]));
+        ctx->fpr[1] = ppu_fp_single(ppu_fsub(ctx->fpr[1], ctx->fpr[28]));
+        { float ftmp = (float)ctx->fpr[2]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x144, tmp); }
+        { float ftmp = (float)ctx->fpr[2]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x148, tmp); }
+        { float ftmp = (float)ctx->fpr[2]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x14C, tmp); }
+        { float ftmp = (float)ctx->fpr[1]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x150, tmp); }
+        { float ftmp = (float)ctx->fpr[1]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x154, tmp); }
+        { float ftmp = (float)ctx->fpr[1]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x158, tmp); }
+loc_000B664C:
+        ctx->gpr[3] = ctx->gpr[23] | 0x0;
+        ctx->gpr[4] = ctx->gpr[25] | 0x0;
+        ctx->gpr[5] = ctx->gpr[24] | 0x0;
+        ctx->gpr[6] = ctx->gpr[27] | 0x0;
+        ctx->lr = 0x000B6660; june_evt_func_00051720(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_000B67A4;
+        { uint64_t ea = ((ctx->gpr[20] + ctx->gpr[1])) & ~0xFULL; vm_raw_ld16(&ctx->vr[2], ea); }
+        vmx_vsubfp(&ctx->vr[2], &ctx->vr[30], &ctx->vr[2], ctx->vscr);
+        ctx->gpr[3] = (int64_t)(int32_t)(0xD0);
+        vmx_vmaddfp(&ctx->vr[3], &ctx->vr[2], &ctx->vr[31], &ctx->vr[2], ctx->vscr);
+        { uint8_t tmp[32]; memcpy(tmp, &ctx->vr[2], 16); memcpy(tmp+16, &ctx->vr[2], 16); memcpy(&ctx->vr[4], tmp + 4, 16); }
+        { uint8_t tmp[32]; memcpy(tmp, &ctx->vr[2], 16); memcpy(tmp+16, &ctx->vr[2], 16); memcpy(&ctx->vr[2], tmp + 8, 16); }
+        vmx_vmaddfp(&ctx->vr[3], &ctx->vr[4], &ctx->vr[3], &ctx->vr[4], ctx->vscr);
+        vmx_vmaddfp(&ctx->vr[2], &ctx->vr[2], &ctx->vr[3], &ctx->vr[2], ctx->vscr);
+        { uint64_t ea = ((ctx->gpr[3] + ctx->gpr[1])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[2]); }
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0xD0); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        { double a = ctx->fpr[1]; double b = ctx->fpr[29]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 31) & 1) == 1)) goto loc_000B66A0;
+        goto loc_000B67A4;
+loc_000B66A0:
+        ctx->fpr[29] = ctx->fpr[1];
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0x144); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0x148); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[2] = ftmp; }
+        { float ftmp = (float)ctx->fpr[1]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x12C, tmp); }
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0x14C); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        { float ftmp = (float)ctx->fpr[2]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x130, tmp); }
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0x150); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[2] = ftmp; }
+        { float ftmp = (float)ctx->fpr[1]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x134, tmp); }
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0x154); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        { float ftmp = (float)ctx->fpr[2]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x138, tmp); }
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0x158); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[2] = ftmp; }
+        { float ftmp = (float)ctx->fpr[1]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x13C, tmp); }
+        ctx->gpr[26] = vm_read32(ctx->gpr[30] + 0x0);
+        { float ftmp = (float)ctx->fpr[2]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x140, tmp); }
+        goto loc_000B67A4;
+loc_000B66DC:
+        { int64_t a = (int32_t)ctx->gpr[4]; int64_t b = (int64_t)0xA; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 0)) goto loc_000B67A4;
+        ctx->gpr[4] = (int64_t)(int32_t)(0x40);
+        ctx->gpr[5] = (int64_t)(int32_t)(0xB0);
+        ctx->gpr[3] = ctx->gpr[23] | 0x0;
+        ctx->gpr[6] = ctx->gpr[27] | 0x0;
+        { uint64_t ea = ((ctx->gpr[4] + ctx->gpr[31])) & ~0xFULL; vm_raw_ld16(&ctx->vr[2], ea); }
+        ctx->gpr[4] = ctx->gpr[25] | 0x0;
+        { uint64_t ea = ((ctx->gpr[5] + ctx->gpr[1])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[2]); }
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0xB0); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        ctx->gpr[5] = ctx->gpr[24] | 0x0;
+        ctx->fpr[2] = ppu_fp_single(ppu_fadd(ctx->fpr[1], ctx->fpr[28]));
+        ctx->fpr[1] = ppu_fp_single(ppu_fsub(ctx->fpr[1], ctx->fpr[28]));
+        { float ftmp = (float)ctx->fpr[2]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x144, tmp); }
+        { float ftmp = (float)ctx->fpr[2]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x148, tmp); }
+        { float ftmp = (float)ctx->fpr[2]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x14C, tmp); }
+        { float ftmp = (float)ctx->fpr[1]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x150, tmp); }
+        { float ftmp = (float)ctx->fpr[1]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x154, tmp); }
+        { float ftmp = (float)ctx->fpr[1]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x158, tmp); }
+        ctx->lr = 0x000B672C; june_evt_func_00051720(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_000B67A4;
+        { uint64_t ea = ((ctx->gpr[20] + ctx->gpr[1])) & ~0xFULL; vm_raw_ld16(&ctx->vr[2], ea); }
+        ctx->gpr[3] = (int64_t)(int32_t)(0xC0);
+        vmx_vsubfp(&ctx->vr[2], &ctx->vr[30], &ctx->vr[2], ctx->vscr);
+        vmx_vmaddfp(&ctx->vr[3], &ctx->vr[2], &ctx->vr[31], &ctx->vr[2], ctx->vscr);
+        { uint8_t tmp[32]; memcpy(tmp, &ctx->vr[2], 16); memcpy(tmp+16, &ctx->vr[2], 16); memcpy(&ctx->vr[4], tmp + 4, 16); }
+        { uint8_t tmp[32]; memcpy(tmp, &ctx->vr[2], 16); memcpy(tmp+16, &ctx->vr[2], 16); memcpy(&ctx->vr[2], tmp + 8, 16); }
+        vmx_vmaddfp(&ctx->vr[3], &ctx->vr[4], &ctx->vr[3], &ctx->vr[4], ctx->vscr);
+        vmx_vmaddfp(&ctx->vr[2], &ctx->vr[2], &ctx->vr[3], &ctx->vr[2], ctx->vscr);
+        { uint64_t ea = ((ctx->gpr[3] + ctx->gpr[1])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[2]); }
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0xC0); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        { double a = ctx->fpr[1]; double b = ctx->fpr[29]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 31) & 1) == 1)) goto loc_000B676C;
+        goto loc_000B67A4;
+loc_000B676C:
+        ctx->fpr[29] = ctx->fpr[1];
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0x144); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0x148); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[2] = ftmp; }
+        { float ftmp = (float)ctx->fpr[1]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x12C, tmp); }
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0x14C); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        { float ftmp = (float)ctx->fpr[2]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x130, tmp); }
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0x150); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[2] = ftmp; }
+        { float ftmp = (float)ctx->fpr[1]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x134, tmp); }
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0x154); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        { float ftmp = (float)ctx->fpr[2]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x138, tmp); }
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0x158); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[2] = ftmp; }
+        { float ftmp = (float)ctx->fpr[1]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x13C, tmp); }
+        ctx->gpr[26] = vm_read32(ctx->gpr[30] + 0x0);
+        { float ftmp = (float)ctx->fpr[2]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x140, tmp); }
+loc_000B67A4:
+        { uint64_t _a = ctx->gpr[29]; uint64_t _r = _a + (uint64_t)(int64_t)(1); ctx->gpr[29] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        goto loc_000B6578;
+loc_000B67AC:
+        { uint64_t _a = ctx->gpr[18]; uint64_t _r = _a + (uint64_t)(int64_t)(1); ctx->gpr[18] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->gpr[3] = vm_read16(ctx->gpr[17] + 0x17E);
+        { uint64_t _a = ctx->gpr[19]; uint64_t _r = _a + (uint64_t)(int64_t)(4); ctx->gpr[19] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { int64_t a = (int32_t)ctx->gpr[18]; int64_t b = (int32_t)ctx->gpr[3]; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 31) & 1) == 1)) goto loc_000B655C;
+loc_000B67C0:
+        ctx->gpr[3] = vm_read32(ctx->gpr[1] + 0x15C);
+        { uint64_t _a = ctx->gpr[14]; uint64_t _r = _a + (uint64_t)(int64_t)(1); ctx->gpr[14] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t _a = ctx->gpr[15]; uint64_t _r = _a + (uint64_t)(int64_t)(0xC); ctx->gpr[15] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->gpr[3] = vm_read32(ctx->gpr[3] + 0x604);
+        ctx->gpr[3] = vm_read16(ctx->gpr[3] + 0x14);
+        ctx->gpr[3] = (int64_t)(int16_t)ctx->gpr[3];
+        { int64_t a = (int32_t)ctx->gpr[14]; int64_t b = (int32_t)ctx->gpr[3]; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 31) & 1) == 1)) goto loc_000B6500;
+loc_000B67E0:
+        ctx->gpr[3] = vm_read32(ctx->gpr[1] + 0x15C);
+        ctx->gpr[3] = vm_read32(ctx->gpr[3] + 0x168);
+        vm_write32(ctx->gpr[1] + 0x15C, ctx->gpr[3]);
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 0)) goto loc_000B6270;
+        { int64_t a = (int32_t)ctx->gpr[26]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_000B69E0;
+        ctx->gpr[3] = vm_read64(ctx->gpr[1] + 0x168);
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_000B6820;
+        ctx->gpr[4] = (int64_t)(int32_t)((uint32_t)0xFF00 << 16);
+        { uint64_t _a = ctx->gpr[1]; uint64_t _r = _a + (uint64_t)(int64_t)(0x12C); ctx->gpr[3] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->gpr[4] = ctx->gpr[4] | 0xFF;
+        ctx->gpr[4] = ppc_rldicl(ctx->gpr[4], 0, 32);
+        ctx->lr = 0x000B681C; june_evt_func_00141290(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+loc_000B6820:
+        ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0x15E << 16);
+        ctx->gpr[3] = vm_read16(ctx->gpr[3] + 0x7BFC);
+        ctx->gpr[3] = ppc_rlw64(ctx->gpr[3], 0, 31, 31, 0, 0);
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_000B683C;
+        ctx->gpr[3] = (int64_t)(int32_t)(1);
+        vm_write64(ctx->gpr[1] + 0x160, ctx->gpr[3]);
+loc_000B683C:
+        ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0xB << 16);
+        ctx->gpr[6] = (int64_t)(int32_t)((uint32_t)0xE0 << 16);
+        ctx->gpr[3] = ctx->gpr[3] + (int64_t)(0x5EA0);
+        ctx->gpr[31] = (int64_t)(int32_t)((uint32_t)0xE0 << 16);
+        { uint64_t _a = ctx->gpr[6]; uint64_t _r = _a + (uint64_t)(int64_t)(-16456); ctx->gpr[6] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t _a = ctx->gpr[31]; uint64_t _r = _a + (uint64_t)(int64_t)(-16432); ctx->gpr[31] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x78); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[29] = ftmp; }
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x7C); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        ctx->gpr[3] = vm_read64(ctx->gpr[1] + 0x160);
+        ctx->gpr[4] = vm_read64(ctx->gpr[1] + 0x170);
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 24)) | (cr_val << 24); }
+        { int64_t a = (int32_t)ctx->gpr[4]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        ctx->fpr[29] = ppu_fp_single(ppu_fadd(ctx->fpr[30], ctx->fpr[29]));
+        ctx->fpr[28] = ppu_fp_single(ppu_fadd(ctx->fpr[30], ctx->fpr[1]));
+        ctx->fpr[31] = ppu_fp_single(ppu_fadd(ctx->fpr[31], ctx->fpr[1]));
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_000B6930;
+        ctx->gpr[30] = (int64_t)(int32_t)((uint32_t)0xE0 << 16);
+        { uint64_t _a = ctx->gpr[30]; uint64_t _r = _a + (uint64_t)(int64_t)(-16400); ctx->gpr[30] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        if ((((ctx->cr >> 25) & 1) == 1)) goto loc_000B6908;
+        ctx->gpr[3] = vm_read64(ctx->gpr[26] + 0x0);
+        ctx->fpr[1] = ctx->fpr[31];
+        ctx->gpr[8] = ppc_rldicl(ctx->gpr[3], 16, 56);
+        ctx->fpr[2] = ctx->fpr[30];
+        ctx->gpr[7] = ppc_rldicl(ctx->gpr[3], 8, 56);
+        ctx->fpr[3] = ctx->fpr[27];
+        ctx->gpr[8] = ppc_rldicl(ctx->gpr[8], 0, 32);
+        ctx->gpr[7] = ppc_rldicl(ctx->gpr[7], 0, 32);
+        ctx->lr = 0x000B68AC; june_evt_func_008F6D54(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        ctx->gpr[8] = vm_read64(ctx->gpr[26] + 0x0);
+        ctx->gpr[6] = ctx->gpr[31] | 0x0;
+        ctx->fpr[1] = ctx->fpr[31];
+        ctx->gpr[9] = ppc_rldicl(ctx->gpr[8], 56, 56);
+        ctx->gpr[7] = ppc_rldicl(ctx->gpr[8], 48, 48);
+        ctx->fpr[2] = ctx->fpr[29];
+        ctx->gpr[8] = ppc_rlw64(ctx->gpr[8], 0, 24, 31, 0, 0);
+        ctx->fpr[3] = ctx->fpr[27];
+        ctx->gpr[7] = ppc_rldicl(ctx->gpr[7], 0, 32);
+        ctx->gpr[9] = ppc_rldicl(ctx->gpr[9], 0, 32);
+        ctx->lr = 0x000B68DC; june_evt_func_008F6D54(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        ctx->gpr[3] = vm_read64(ctx->gpr[26] + 0x0);
+        ctx->gpr[6] = ctx->gpr[30] | 0x0;
+        ctx->fpr[1] = ctx->fpr[31];
+        ctx->gpr[7] = ppc_rldicl(ctx->gpr[3], 32, 48);
+        ctx->fpr[2] = ctx->fpr[28];
+        ctx->fpr[3] = ctx->fpr[27];
+        ctx->gpr[7] = ppc_rldicl(ctx->gpr[7], 0, 32);
+        ctx->lr = 0x000B6900; june_evt_func_008F6D54(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        goto loc_000B69E0;
+loc_000B6908:
+        ctx->gpr[3] = vm_read64(ctx->gpr[26] + 0x0);
+        ctx->gpr[6] = ctx->gpr[30] | 0x0;
+        ctx->fpr[1] = ctx->fpr[31];
+        ctx->gpr[7] = ppc_rldicl(ctx->gpr[3], 32, 48);
+        ctx->fpr[2] = ctx->fpr[30];
+        ctx->fpr[3] = ctx->fpr[27];
+        ctx->gpr[7] = ppc_rldicl(ctx->gpr[7], 0, 32);
+        ctx->lr = 0x000B6928; june_evt_func_008F6D54(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        goto loc_000B69E0;
+loc_000B6930:
+        ctx->gpr[30] = (int64_t)(int32_t)((uint32_t)0xE0 << 16);
+        { uint64_t _a = ctx->gpr[30]; uint64_t _r = _a + (uint64_t)(int64_t)(-16384); ctx->gpr[30] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        if ((((ctx->cr >> 25) & 1) == 1)) goto loc_000B69BC;
+        ctx->gpr[3] = vm_read64(ctx->gpr[26] + 0x0);
+        ctx->fpr[1] = ctx->fpr[31];
+        ctx->gpr[8] = ppc_rldicl(ctx->gpr[3], 16, 56);
+        ctx->gpr[7] = ppc_rldicl(ctx->gpr[3], 8, 56);
+        ctx->fpr[2] = ctx->fpr[30];
+        ctx->gpr[8] = ppc_rldicl(ctx->gpr[8], 0, 32);
+        ctx->fpr[3] = ctx->fpr[27];
+        ctx->gpr[7] = ppc_rldicl(ctx->gpr[7], 0, 32);
+        ctx->lr = 0x000B6960; june_evt_func_008F6D54(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        ctx->gpr[8] = vm_read64(ctx->gpr[26] + 0x0);
+        ctx->gpr[6] = ctx->gpr[31] | 0x0;
+        ctx->fpr[1] = ctx->fpr[31];
+        ctx->gpr[9] = ppc_rldicl(ctx->gpr[8], 56, 56);
+        ctx->fpr[2] = ctx->fpr[29];
+        ctx->gpr[7] = ppc_rldicl(ctx->gpr[8], 48, 48);
+        ctx->fpr[3] = ctx->fpr[27];
+        ctx->gpr[8] = ppc_rlw64(ctx->gpr[8], 0, 24, 31, 0, 0);
+        ctx->gpr[7] = ppc_rldicl(ctx->gpr[7], 0, 32);
+        ctx->gpr[9] = ppc_rldicl(ctx->gpr[9], 0, 32);
+        ctx->lr = 0x000B6990; june_evt_func_008F6D54(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        ctx->gpr[3] = vm_read64(ctx->gpr[26] + 0x0);
+        ctx->gpr[6] = ctx->gpr[30] | 0x0;
+        ctx->fpr[1] = ctx->fpr[31];
+        ctx->gpr[7] = ppc_rldicl(ctx->gpr[3], 32, 48);
+        ctx->fpr[2] = ctx->fpr[28];
+        ctx->fpr[3] = ctx->fpr[27];
+        ctx->gpr[7] = ppc_rldicl(ctx->gpr[7], 0, 32);
+        ctx->lr = 0x000B69B4; june_evt_func_008F6D54(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        goto loc_000B69E0;
+loc_000B69BC:
+        ctx->gpr[3] = vm_read64(ctx->gpr[26] + 0x0);
+        ctx->gpr[6] = ctx->gpr[30] | 0x0;
+        ctx->fpr[1] = ctx->fpr[31];
+        ctx->gpr[7] = ppc_rldicl(ctx->gpr[3], 32, 48);
+        ctx->fpr[2] = ctx->fpr[30];
+        ctx->fpr[3] = ctx->fpr[27];
+        ctx->gpr[7] = ppc_rldicl(ctx->gpr[7], 0, 32);
+        ctx->lr = 0x000B69DC; june_evt_func_008F6D54(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+loc_000B69E0:
+        ctx->gpr[0] = (int64_t)(int32_t)(0x180);
+        { uint64_t ea = ((ctx->gpr[1] + ctx->gpr[0])) & ~0xFULL; vm_raw_ld16(&ctx->vr[30], ea); }
+        { uint64_t _a = ctx->gpr[0]; uint64_t _r = _a + (uint64_t)(int64_t)(0x10); ctx->gpr[0] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t ea = ((ctx->gpr[1] + ctx->gpr[0])) & ~0xFULL; vm_raw_ld16(&ctx->vr[31], ea); }
+        ctx->gpr[0] = vm_read64(ctx->gpr[1] + 0x270);
+        ctx->lr = ctx->gpr[0];
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0x238); memcpy(&ctx->fpr[27], &tmp, 8); }
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0x240); memcpy(&ctx->fpr[28], &tmp, 8); }
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0x248); memcpy(&ctx->fpr[29], &tmp, 8); }
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0x250); memcpy(&ctx->fpr[30], &tmp, 8); }
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0x258); memcpy(&ctx->fpr[31], &tmp, 8); }
+        ctx->gpr[14] = _cs_14;
+        ctx->gpr[15] = _cs_15;
+        ctx->gpr[16] = _cs_16;
+        ctx->gpr[17] = _cs_17;
+        ctx->gpr[18] = _cs_18;
+        ctx->gpr[19] = _cs_19;
+        ctx->gpr[20] = _cs_20;
+        ctx->gpr[21] = _cs_21;
+        ctx->gpr[22] = _cs_22;
+        ctx->gpr[23] = _cs_23;
+        ctx->gpr[24] = _cs_24;
+        ctx->gpr[25] = _cs_25;
+        ctx->gpr[26] = _cs_26;
+        ctx->gpr[27] = _cs_27;
+        ctx->gpr[28] = _cs_28;
+        ctx->gpr[29] = _cs_29;
+        ctx->gpr[30] = _cs_30;
+        ctx->gpr[31] = _cs_31;
+        ctx->gpr[1] = ctx->gpr[1] + (int64_t)(0x260);
+        return;
 }
 
 void june_evt_func_000BB430(ppu_context* ctx) {
@@ -8326,7 +9285,7 @@ loc_001625D4:
         return;
 }
 
-void june_evt_func_001625F4(ppu_context* ctx) {
+void june_evt_func_001625F4_raw(ppu_context* ctx) {
     PPU_MM_SNAP
         uint64_t _cs_28 = ctx->gpr[28];
         uint64_t _cs_29 = ctx->gpr[29];
@@ -8654,7 +9613,7 @@ loc_00162A98:
         return;
 }
 
-void june_evt_func_00162BB8(ppu_context* ctx) {
+void june_evt_func_00162BB8_raw(ppu_context* ctx) {
     PPU_MM_SNAP
         uint64_t _cs_30 = ctx->gpr[30];
         uint64_t _cs_31 = ctx->gpr[31];
@@ -8872,7 +9831,37 @@ void june_evt_func_0016AA34(ppu_context* ctx) {
 
 void june_evt_func_0016C2B8(ppu_context* ctx) {
     PPU_MM_SNAP
-        { g_trampoline_fn = (void(*)(void*))june_evt_func_0016DB2C; return; }
+        uint64_t _cs_28 = ctx->gpr[28];
+        uint64_t _cs_29 = ctx->gpr[29];
+        uint64_t _cs_30 = ctx->gpr[30];
+        uint64_t _cs_31 = ctx->gpr[31];
+        vm_write64(ctx->gpr[1] + -0x90, ctx->gpr[1]); ctx->gpr[1] += -0x90;
+        ctx->gpr[0] = ctx->lr;
+        vm_write64(ctx->gpr[1] + 0xA0, ctx->gpr[0]);
+        vm_write64(ctx->gpr[1] + 0x88, ctx->gpr[31]);
+        vm_write64(ctx->gpr[1] + 0x80, ctx->gpr[30]);
+        ctx->gpr[31] = ctx->gpr[6] | 0x0;
+        vm_write64(ctx->gpr[1] + 0x78, ctx->gpr[29]);
+        ctx->gpr[30] = ctx->gpr[5] | 0x0;
+        vm_write64(ctx->gpr[1] + 0x70, ctx->gpr[28]);
+        ctx->gpr[29] = ctx->gpr[4] | 0x0;
+        ctx->gpr[28] = ctx->gpr[3] | 0x0;
+        ctx->lr = 0x0016C2E8; june_evt_func_0016E91C(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        ctx->gpr[4] = ppc_rlw64(ctx->gpr[28], 0, 24, 31, 0, 0);
+        ctx->gpr[5] = ctx->gpr[29] | 0x0;
+        ctx->gpr[6] = ctx->gpr[30] | 0x0;
+        ctx->gpr[7] = ctx->gpr[31] | 0x0;
+        ctx->lr = 0x0016C300; june_evt_func_008B9724(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        ctx->gpr[0] = vm_read64(ctx->gpr[1] + 0xA0);
+        ctx->lr = ctx->gpr[0];
+        ctx->gpr[28] = _cs_28;
+        ctx->gpr[29] = _cs_29;
+        ctx->gpr[30] = _cs_30;
+        ctx->gpr[31] = _cs_31;
+        ctx->gpr[1] = ctx->gpr[1] + (int64_t)(0x90);
+        return;
 }
 
 void june_evt_func_0016DB2C(ppu_context* ctx) {
@@ -9360,7 +10349,50 @@ loc_0020E184:
 
 void june_evt_func_0020E188(ppu_context* ctx) {
     PPU_MM_SNAP
-        { g_trampoline_fn = (void(*)(void*))june_evt_func_0020E224; return; }
+        uint64_t _cs_29 = ctx->gpr[29];
+        uint64_t _cs_30 = ctx->gpr[30];
+        uint64_t _cs_31 = ctx->gpr[31];
+        vm_write64(ctx->gpr[1] + -0x90, ctx->gpr[1]); ctx->gpr[1] += -0x90;
+        ctx->gpr[0] = ctx->lr;
+        vm_write64(ctx->gpr[1] + 0xA0, ctx->gpr[0]);
+        vm_write64(ctx->gpr[1] + 0x88, ctx->gpr[31]);
+        vm_write64(ctx->gpr[1] + 0x80, ctx->gpr[30]);
+        ctx->gpr[31] = (int64_t)(int32_t)((uint32_t)0xE1 << 16);
+        ctx->gpr[30] = ctx->gpr[3] | 0x0;
+        ctx->gpr[3] = (int64_t)(int32_t)(0x14);
+        { uint64_t _a = ctx->gpr[31]; uint64_t _r = _a + (uint64_t)(int64_t)(-232); ctx->gpr[31] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->gpr[4] = ctx->gpr[30] | 0x0;
+        ctx->gpr[5] = ctx->gpr[31] | 0x0;
+        vm_write64(ctx->gpr[1] + 0x78, ctx->gpr[29]);
+        ctx->gpr[6] = (int64_t)(int32_t)(0xDB);
+        ctx->lr = 0x0020E1C0; june_evt_func_00884414(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        ctx->gpr[29] = ctx->gpr[3] | 0x0;
+        { int64_t a = (int32_t)ctx->gpr[29]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 0)) goto loc_0020E1F0;
+        ctx->gpr[5] = (int64_t)(int32_t)((uint32_t)0xE1 << 16);
+        ctx->gpr[3] = ctx->gpr[31] | 0x0;
+        { uint64_t _a = ctx->gpr[5]; uint64_t _r = _a + (uint64_t)(int64_t)(-192); ctx->gpr[5] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->gpr[4] = (int64_t)(int32_t)(0xDC);
+        ctx->lr = 0x0020E1E4; june_evt_func_00824F18(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        ctx->gpr[3] = (int64_t)(int32_t)(0);
+        goto loc_0020E208;
+loc_0020E1F0:
+        ctx->gpr[3] = ctx->gpr[29] | 0x0;
+        ctx->gpr[4] = (int64_t)(int32_t)(0x14);
+        ctx->lr = 0x0020E1FC; june_evt_func_00834944(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        vm_write32(ctx->gpr[29] + 0x10, ctx->gpr[30]);
+        ctx->gpr[3] = ctx->gpr[29] | 0x0;
+loc_0020E208:
+        ctx->gpr[0] = vm_read64(ctx->gpr[1] + 0xA0);
+        ctx->lr = ctx->gpr[0];
+        ctx->gpr[29] = _cs_29;
+        ctx->gpr[30] = _cs_30;
+        ctx->gpr[31] = _cs_31;
+        ctx->gpr[1] = ctx->gpr[1] + (int64_t)(0x90);
+        return;
 }
 
 void june_evt_func_0020E224(ppu_context* ctx) {
@@ -14519,7 +15551,178 @@ loc_00230EB0:
 
 void june_evt_func_00232258(ppu_context* ctx) {
     PPU_MM_SNAP
-        { g_trampoline_fn = (void(*)(void*))june_evt_func_00232560; return; }
+        uint64_t _cs_29 = ctx->gpr[29];
+        uint64_t _cs_30 = ctx->gpr[30];
+        uint64_t _cs_31 = ctx->gpr[31];
+        vm_write64(ctx->gpr[1] + -0x120, ctx->gpr[1]); ctx->gpr[1] += -0x120;
+        ctx->gpr[0] = ctx->lr;
+        vm_write64(ctx->gpr[1] + 0x130, ctx->gpr[0]);
+        { uint64_t tmp; memcpy(&tmp, &ctx->fpr[28], 8); vm_write64(ctx->gpr[1] + 0x100, tmp); }
+        { uint64_t tmp; memcpy(&tmp, &ctx->fpr[29], 8); vm_write64(ctx->gpr[1] + 0x108, tmp); }
+        { uint64_t tmp; memcpy(&tmp, &ctx->fpr[30], 8); vm_write64(ctx->gpr[1] + 0x110, tmp); }
+        { uint64_t tmp; memcpy(&tmp, &ctx->fpr[31], 8); vm_write64(ctx->gpr[1] + 0x118, tmp); }
+        { uint64_t _a = ctx->gpr[6]; uint64_t _r = _a + (uint64_t)(int64_t)(0x10); ctx->gpr[8] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->gpr[7] = (int64_t)(int32_t)(0xD0);
+        { uint64_t ea = (ctx->gpr[6]) & ~0xFULL; vm_raw_ld16(&ctx->vr[2], ea); }
+        ctx->gpr[8] = ppc_rldicl(ctx->gpr[8], 0, 32);
+        { uint64_t _a = ctx->gpr[6]; uint64_t _r = _a + (uint64_t)(int64_t)(0x20); ctx->gpr[10] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->gpr[9] = (int64_t)(int32_t)(0xC0);
+        ctx->gpr[6] = ppc_rldicl(ctx->gpr[10], 0, 32);
+        { uint64_t ea = ((ctx->gpr[7] + ctx->gpr[1])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[2]); }
+        ctx->gpr[10] = (int64_t)(int32_t)((uint32_t)0x23 << 16);
+        { uint64_t ea = (ctx->gpr[8]) & ~0xFULL; vm_raw_ld16(&ctx->vr[3], ea); }
+        ctx->gpr[11] = (int64_t)(int32_t)(0x70);
+        ctx->gpr[8] = (int64_t)(int32_t)(0xB0);
+        ctx->gpr[7] = ctx->gpr[10] + (int64_t)(0x2238);
+        ctx->gpr[10] = (int64_t)(int32_t)(0xA0);
+        { uint64_t ea = (ctx->gpr[6]) & ~0xFULL; vm_raw_ld16(&ctx->vr[4], ea); }
+        { uint64_t ea = ((ctx->gpr[9] + ctx->gpr[1])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[2]); }
+        ctx->gpr[6] = (int64_t)(int32_t)(0x90);
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0xC4); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[30] = ftmp; }
+        ctx->gpr[9] = (int64_t)(int32_t)(0x80);
+        { uint64_t ea = ((ctx->gpr[8] + ctx->gpr[1])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[3]); }
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0xB4); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[4] = ftmp; }
+        { uint64_t ea = ((ctx->gpr[10] + ctx->gpr[1])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[4]); }
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0xA4); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[3] = ftmp; }
+        vm_write64(ctx->gpr[1] + 0xF8, ctx->gpr[31]);
+        { uint64_t ea = ((ctx->gpr[6] + ctx->gpr[1])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[2]); }
+        ctx->gpr[31] = ctx->gpr[5] | 0x0;
+        vm_write64(ctx->gpr[1] + 0xF0, ctx->gpr[30]);
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0x98); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[31] = ftmp; }
+        ctx->gpr[30] = ctx->gpr[4] | 0x0;
+        vm_write64(ctx->gpr[1] + 0xE8, ctx->gpr[29]);
+        { uint64_t ea = ((ctx->gpr[9] + ctx->gpr[1])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[3]); }
+        ctx->gpr[29] = ctx->gpr[3] | 0x0;
+        ctx->fpr[5] = fabs(ctx->fpr[31]);
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0x88); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        { uint64_t ea = ((ctx->gpr[11] + ctx->gpr[1])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[4]); }
+        { uint32_t tmp = vm_read32(ctx->gpr[7] + 0x0); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[6] = ftmp; }
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0xD0); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[29] = ftmp; }
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0x78); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[2] = ftmp; }
+        { double a = ctx->fpr[5]; double b = ctx->fpr[6]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 31) & 1) == 1)) goto loc_00232318;
+        goto loc_0023234C;
+loc_00232318:
+        ctx->fpr[28] = ctx->fpr[30];
+        ctx->lr = 0x00232320; june_evt_func_00AEC10C(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        ctx->fpr[30] = ctx->fpr[1];
+        ctx->fpr[1] = -ctx->fpr[31];
+        ctx->lr = 0x00232330; june_evt_func_00AEBE50(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        ctx->fpr[31] = ctx->fpr[1];
+        ctx->fpr[1] = ctx->fpr[28];
+        ctx->fpr[2] = ctx->fpr[29];
+        ctx->lr = 0x00232344; june_evt_func_00AEC10C(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        goto loc_002323A4;
+loc_0023234C:
+        ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0x23 << 16);
+        ctx->gpr[3] = ctx->gpr[3] + (int64_t)(0x2238);
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x4); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[30] = ftmp; }
+        { double a = ctx->fpr[31]; double b = ctx->fpr[30]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 31) & 1) == 1)) goto loc_00232364;
+        goto loc_00232384;
+loc_00232364:
+        ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0x23 << 16);
+        ctx->fpr[1] = ctx->fpr[3];
+        ctx->fpr[2] = ctx->fpr[4];
+        ctx->gpr[3] = ctx->gpr[3] + (int64_t)(0x2238);
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x8); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[31] = ftmp; }
+        ctx->lr = 0x0023237C; june_evt_func_00AEC10C(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        goto loc_002323A4;
+loc_00232384:
+        ctx->fpr[1] = ctx->fpr[3];
+        ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0x23 << 16);
+        ctx->fpr[2] = ctx->fpr[4];
+        ctx->gpr[3] = ctx->gpr[3] + (int64_t)(0x2238);
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0xC); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[31] = ftmp; }
+        ctx->lr = 0x0023239C; june_evt_func_00AEC10C(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        ctx->fpr[1] = -ctx->fpr[1];
+loc_002323A4:
+        ctx->fpr[2] = fabs(ctx->fpr[30]);
+        ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0x23 << 16);
+        ctx->gpr[3] = ctx->gpr[3] + (int64_t)(0x2238);
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x8); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[3] = ftmp; }
+        { double a = ctx->fpr[2]; double b = ctx->fpr[3]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        { uint32_t a = (ctx->cr >> (31 - 1)) & 1; uint32_t b = (ctx->cr >> (31 - 2)) & 1; ctx->cr = (ctx->cr & ~(1u << (31 - 6))) | ((a | b) << (31 - 6)); }
+        if ((((ctx->cr >> 25) & 1) == 1)) goto loc_002323C4;
+        goto loc_0023247C;
+loc_002323C4:
+        ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0x23 << 16);
+        ctx->gpr[3] = ctx->gpr[3] + (int64_t)(0x2238);
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x10); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[3] = ftmp; }
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x14); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[4] = ftmp; }
+        ctx->fpr[30] = ppu_fp_single(ppu_fsub(ctx->fpr[30], ctx->fpr[3]));
+        ctx->fpr[31] = ppu_fp_single(ppu_fsub(ctx->fpr[3], ctx->fpr[31]));
+        ctx->fpr[1] = ppu_fp_single(ppu_fsub(ctx->fpr[1], ctx->fpr[3]));
+        { double a = ctx->fpr[30]; double b = ctx->fpr[3]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 1)) goto loc_002323EC;
+        goto loc_002323F8;
+loc_002323EC:
+        ctx->fpr[30] = ppu_fp_single(ppu_fsub(ctx->fpr[30], ctx->fpr[4]));
+        { double a = ctx->fpr[30]; double b = ctx->fpr[3]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 1)) goto loc_002323EC;
+loc_002323F8:
+        ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0x23 << 16);
+        ctx->gpr[3] = ctx->gpr[3] + (int64_t)(0x2238);
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x18); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[2] = ftmp; }
+        { double a = ctx->fpr[30]; double b = ctx->fpr[2]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 31) & 1) == 1)) goto loc_00232410;
+        goto loc_0023241C;
+loc_00232410:
+        ctx->fpr[30] = ppu_fp_single(ppu_fadd(ctx->fpr[30], ctx->fpr[4]));
+        { double a = ctx->fpr[30]; double b = ctx->fpr[2]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 31) & 1) == 1)) goto loc_00232410;
+loc_0023241C:
+        { double a = ctx->fpr[31]; double b = ctx->fpr[3]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 1)) goto loc_00232428;
+        goto loc_00232434;
+loc_00232428:
+        ctx->fpr[31] = ppu_fp_single(ppu_fsub(ctx->fpr[31], ctx->fpr[4]));
+        { double a = ctx->fpr[31]; double b = ctx->fpr[3]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 1)) goto loc_00232428;
+loc_00232434:
+        { double a = ctx->fpr[31]; double b = ctx->fpr[2]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 31) & 1) == 1)) goto loc_00232440;
+        goto loc_0023244C;
+loc_00232440:
+        ctx->fpr[31] = ppu_fp_single(ppu_fadd(ctx->fpr[31], ctx->fpr[4]));
+        { double a = ctx->fpr[31]; double b = ctx->fpr[2]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 31) & 1) == 1)) goto loc_00232440;
+loc_0023244C:
+        { double a = ctx->fpr[1]; double b = ctx->fpr[3]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 1)) goto loc_00232458;
+        goto loc_00232464;
+loc_00232458:
+        ctx->fpr[1] = ppu_fp_single(ppu_fsub(ctx->fpr[1], ctx->fpr[4]));
+        { double a = ctx->fpr[1]; double b = ctx->fpr[3]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 1)) goto loc_00232458;
+loc_00232464:
+        { double a = ctx->fpr[1]; double b = ctx->fpr[2]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 31) & 1) == 1)) goto loc_00232470;
+        goto loc_0023247C;
+loc_00232470:
+        ctx->fpr[1] = ppu_fp_single(ppu_fadd(ctx->fpr[1], ctx->fpr[4]));
+        { double a = ctx->fpr[1]; double b = ctx->fpr[2]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 31) & 1) == 1)) goto loc_00232470;
+loc_0023247C:
+        { float ftmp = (float)ctx->fpr[30]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[29] + 0x0, tmp); }
+        { float ftmp = (float)ctx->fpr[31]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[30] + 0x0, tmp); }
+        { float ftmp = (float)ctx->fpr[1]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[31] + 0x0, tmp); }
+        ctx->gpr[0] = vm_read64(ctx->gpr[1] + 0x130);
+        ctx->lr = ctx->gpr[0];
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0x100); memcpy(&ctx->fpr[28], &tmp, 8); }
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0x108); memcpy(&ctx->fpr[29], &tmp, 8); }
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0x110); memcpy(&ctx->fpr[30], &tmp, 8); }
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0x118); memcpy(&ctx->fpr[31], &tmp, 8); }
+        ctx->gpr[29] = _cs_29;
+        ctx->gpr[30] = _cs_30;
+        ctx->gpr[31] = _cs_31;
+        ctx->gpr[1] = ctx->gpr[1] + (int64_t)(0x120);
+        return;
 }
 
 void june_evt_func_00232560(ppu_context* ctx) {
@@ -14826,7 +16029,29 @@ loc_002329B8:
 
 void june_evt_func_002329C0(ppu_context* ctx) {
     PPU_MM_SNAP
-        { g_trampoline_fn = (void(*)(void*))june_evt_func_00232A18; return; }
+        ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0x23 << 16);
+        ctx->gpr[3] = ctx->gpr[3] + (int64_t)(0x29B4);
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x0); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[3] = ftmp; }
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x4); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[2] = ftmp; }
+        { double a = ctx->fpr[1]; double b = ctx->fpr[3]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 1)) goto loc_002329DC;
+        goto loc_002329EC;
+loc_002329DC:
+        ctx->fpr[1] = ppu_fp_single(ppu_fsub(ctx->fpr[1], ctx->fpr[2]));
+        { double a = ctx->fpr[1]; double b = ctx->fpr[3]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 1)) goto loc_002329DC;
+        goto loc_00232A08;
+loc_002329EC:
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x8); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[3] = ftmp; }
+        { double a = ctx->fpr[1]; double b = ctx->fpr[3]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 31) & 1) == 1)) goto loc_002329FC;
+        goto loc_00232A08;
+loc_002329FC:
+        ctx->fpr[1] = ppu_fp_single(ppu_fadd(ctx->fpr[1], ctx->fpr[2]));
+        { double a = ctx->fpr[1]; double b = ctx->fpr[3]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 31) & 1) == 1)) goto loc_002329FC;
+loc_00232A08:
+        return;
 }
 
 void june_evt_func_00232A18(ppu_context* ctx) {
@@ -16447,7 +17672,264 @@ loc_002343D0:
 
 void june_evt_func_00234620(ppu_context* ctx) {
     PPU_MM_SNAP
-        { g_trampoline_fn = (void(*)(void*))june_evt_func_00234A98; return; }
+        uint64_t _cs_30 = ctx->gpr[30];
+        uint64_t _cs_31 = ctx->gpr[31];
+        vm_write64(ctx->gpr[1] + -0x150, ctx->gpr[1]); ctx->gpr[1] += -0x150;
+        ctx->gpr[0] = ctx->lr;
+        vm_write64(ctx->gpr[1] + 0x160, ctx->gpr[0]);
+        { uint64_t tmp; memcpy(&tmp, &ctx->fpr[22], 8); vm_write64(ctx->gpr[1] + 0x100, tmp); }
+        { uint64_t tmp; memcpy(&tmp, &ctx->fpr[23], 8); vm_write64(ctx->gpr[1] + 0x108, tmp); }
+        { uint64_t tmp; memcpy(&tmp, &ctx->fpr[24], 8); vm_write64(ctx->gpr[1] + 0x110, tmp); }
+        { uint64_t tmp; memcpy(&tmp, &ctx->fpr[25], 8); vm_write64(ctx->gpr[1] + 0x118, tmp); }
+        { uint64_t tmp; memcpy(&tmp, &ctx->fpr[26], 8); vm_write64(ctx->gpr[1] + 0x120, tmp); }
+        { uint64_t tmp; memcpy(&tmp, &ctx->fpr[27], 8); vm_write64(ctx->gpr[1] + 0x128, tmp); }
+        { uint64_t tmp; memcpy(&tmp, &ctx->fpr[28], 8); vm_write64(ctx->gpr[1] + 0x130, tmp); }
+        { uint64_t tmp; memcpy(&tmp, &ctx->fpr[29], 8); vm_write64(ctx->gpr[1] + 0x138, tmp); }
+        { uint64_t tmp; memcpy(&tmp, &ctx->fpr[30], 8); vm_write64(ctx->gpr[1] + 0x140, tmp); }
+        { uint64_t tmp; memcpy(&tmp, &ctx->fpr[31], 8); vm_write64(ctx->gpr[1] + 0x148, tmp); }
+        ctx->gpr[0] = ctx->gpr[1] + (int64_t)(0xB0);
+        { uint64_t ea = (ctx->gpr[0]) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[28]); }
+        { uint64_t _a = ctx->gpr[0]; uint64_t _r = _a + (uint64_t)(int64_t)(0x10); ctx->gpr[0] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t ea = (ctx->gpr[0]) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[29]); }
+        { uint64_t _a = ctx->gpr[0]; uint64_t _r = _a + (uint64_t)(int64_t)(0x10); ctx->gpr[0] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t ea = (ctx->gpr[0]) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[30]); }
+        { uint64_t _a = ctx->gpr[0]; uint64_t _r = _a + (uint64_t)(int64_t)(0x10); ctx->gpr[0] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t ea = (ctx->gpr[0]) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[31]); }
+        ctx->gpr[8] = ctx->gpr[5] | 0x0;
+        ctx->gpr[6] = (int64_t)(int32_t)(0x20);
+        { uint32_t v[4]; for(int i=0;i<4;i++) v[i]=(uint32_t)(int32_t)0; ppu_vstu4(&ctx->vr[31],v); }
+        ctx->gpr[5] = (int64_t)(int32_t)((uint32_t)0x23 << 16);
+        ctx->gpr[7] = (int64_t)(int32_t)(0x10);
+        ctx->gpr[9] = (int64_t)(int32_t)(0x80);
+        { uint64_t ea = ((ctx->gpr[6] + ctx->gpr[8])) & ~0xFULL; vm_raw_ld16(&ctx->vr[4], ea); }
+        ctx->gpr[10] = ctx->gpr[5] + (int64_t)(0x45B0);
+        vmx_vmaddfp(&ctx->vr[2], &ctx->vr[4], &ctx->vr[31], &ctx->vr[4], ctx->vscr);
+        { uint8_t tmp[32]; memcpy(tmp, &ctx->vr[4], 16); memcpy(tmp+16, &ctx->vr[4], 16); memcpy(&ctx->vr[3], tmp + 4, 16); }
+        ctx->gpr[5] = (int64_t)(int32_t)(0x90);
+        { uint8_t tmp[32]; memcpy(tmp, &ctx->vr[4], 16); memcpy(tmp+16, &ctx->vr[4], 16); memcpy(&ctx->vr[7], tmp + 8, 16); }
+        ctx->gpr[11] = (int64_t)(int32_t)(0xA0);
+        { uint64_t ea = (ctx->gpr[8]) & ~0xFULL; vm_raw_ld16(&ctx->vr[6], ea); }
+        ctx->gpr[12] = (int64_t)(int32_t)(4);
+        { uint64_t ea = ((ctx->gpr[7] + ctx->gpr[8])) & ~0xFULL; vm_raw_ld16(&ctx->vr[5], ea); }
+        { uint64_t ea = ((ctx->gpr[9] + ctx->gpr[1])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[6]); }
+        { uint64_t ea = ((ctx->gpr[5] + ctx->gpr[1])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[5]); }
+        { uint64_t ea = ((ctx->gpr[11] + ctx->gpr[1])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[4]); }
+        { uint64_t* d = (uint64_t*)&ctx->vr[8]; uint64_t* a = (uint64_t*)&ctx->vr[31]; uint64_t* b = (uint64_t*)&ctx->vr[31]; d[0] = a[0] ^ b[0]; d[1] = a[1] ^ b[1]; }
+        ctx->gpr[5] = (int64_t)(int32_t)(0x30);
+        vmx_vmaddfp(&ctx->vr[2], &ctx->vr[3], &ctx->vr[2], &ctx->vr[3], ctx->vscr);
+        { uint64_t ea = ctx->gpr[10]; uint32_t sh = (uint32_t)(ea & 0xF); uint8_t* m = vm_base + (uint32_t)(ea & ~0xFULL); uint8_t* d = (uint8_t*)&ctx->vr[3]; for (int i = 0; i < 16; i++) d[i] = (sh + (uint32_t)i < 16) ? m[sh + i] : 0; }
+        { uint32_t* d = (uint32_t*)&ctx->vr[9]; uint32_t val = ((uint32_t*)&ctx->vr[3])[0]; d[0] = d[1] = d[2] = d[3] = val; }
+        ctx->gpr[9] = (int64_t)(int32_t)(0x20);
+        ctx->gpr[11] = (int64_t)(int32_t)(0x10);
+        vmx_vmaddfp(&ctx->vr[2], &ctx->vr[7], &ctx->vr[2], &ctx->vr[7], ctx->vscr);
+        { uint64_t ea = (ctx->gpr[12] + ctx->gpr[10]); uint32_t sh = (uint32_t)(ea & 0xF); uint8_t* m = vm_base + (uint32_t)(ea & ~0xFULL); uint8_t* d = (uint8_t*)&ctx->vr[7]; for (int i = 0; i < 16; i++) d[i] = (sh + (uint32_t)i < 16) ? m[sh + i] : 0; }
+        { uint32_t* d = (uint32_t*)&ctx->vr[7]; uint32_t val = ((uint32_t*)&ctx->vr[7])[0]; d[0] = d[1] = d[2] = d[3] = val; }
+        { uint64_t ea = ((ctx->gpr[5] + ctx->gpr[10])) & ~0xFULL; vm_raw_ld16(&ctx->vr[11], ea); }
+        { uint64_t ea = ((ctx->gpr[9] + ctx->gpr[10])) & ~0xFULL; vm_raw_ld16(&ctx->vr[12], ea); }
+        ctx->gpr[5] = (int64_t)(int32_t)(0x40);
+        { uint64_t ea = ((ctx->gpr[11] + ctx->gpr[10])) & ~0xFULL; vm_raw_ld16(&ctx->vr[13], ea); }
+        { uint32_t* d = (uint32_t*)&ctx->vr[2]; uint32_t val = ((uint32_t*)&ctx->vr[2])[0]; d[0] = d[1] = d[2] = d[3] = val; }
+        { uint64_t ea = ((ctx->gpr[5] + ctx->gpr[10])) & ~0xFULL; vm_raw_ld16(&ctx->vr[0], ea); }
+        vm_write64(ctx->gpr[1] + 0xF8, ctx->gpr[31]);
+        vmx_vrsqrtefp(&ctx->vr[3], &ctx->vr[2], ctx->vscr);
+        ctx->gpr[31] = ctx->gpr[4] | 0x0;
+        ctx->gpr[5] = (int64_t)(int32_t)(0x30);
+        ctx->gpr[4] = (int64_t)(int32_t)(0x50);
+        { int64_t a = (int32_t)ctx->gpr[31]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 24)) | (cr_val << 24); }
+        vmx_vmaddfp(&ctx->vr[2], &ctx->vr[3], &ctx->vr[8], &ctx->vr[2], ctx->vscr);
+        vmx_vmaddfp(&ctx->vr[10], &ctx->vr[3], &ctx->vr[8], &ctx->vr[9], ctx->vscr);
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        vmx_vnmsubfp(&ctx->vr[2], &ctx->vr[3], &ctx->vr[7], &ctx->vr[2], ctx->vscr);
+        vmx_vmaddfp(&ctx->vr[2], &ctx->vr[2], &ctx->vr[3], &ctx->vr[10], ctx->vscr);
+        (void)vmx_vcmpeqfp(&ctx->vr[10], &ctx->vr[2], &ctx->vr[2]);
+        { uint64_t* d=(uint64_t*)&ctx->vr[28]; uint64_t* a=(uint64_t*)&ctx->vr[3]; uint64_t* b=(uint64_t*)&ctx->vr[2]; uint64_t* c=(uint64_t*)&ctx->vr[10]; d[0]=(a[0]&~c[0])|(b[0]&c[0]); d[1]=(a[1]&~c[1])|(b[1]&c[1]); }
+        vmx_vmaddfp(&ctx->vr[28], &ctx->vr[4], &ctx->vr[31], &ctx->vr[28], ctx->vscr);
+        { uint8_t* a = (uint8_t*)&ctx->vr[28]; uint8_t* b = (uint8_t*)&ctx->vr[28]; uint8_t* c = (uint8_t*)&ctx->vr[11]; uint8_t* d = (uint8_t*)&ctx->vr[2]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+        { uint8_t* a = (uint8_t*)&ctx->vr[28]; uint8_t* b = (uint8_t*)&ctx->vr[28]; uint8_t* c = (uint8_t*)&ctx->vr[13]; uint8_t* d = (uint8_t*)&ctx->vr[3]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+        vmx_vmaddfp(&ctx->vr[10], &ctx->vr[12], &ctx->vr[31], &ctx->vr[2], ctx->vscr);
+        vmx_vnmsubfp(&ctx->vr[30], &ctx->vr[0], &ctx->vr[10], &ctx->vr[3], ctx->vscr);
+        vmx_vmaddfp(&ctx->vr[10], &ctx->vr[30], &ctx->vr[31], &ctx->vr[30], ctx->vscr);
+        { uint8_t tmp[32]; memcpy(tmp, &ctx->vr[30], 16); memcpy(tmp+16, &ctx->vr[30], 16); memcpy(&ctx->vr[12], tmp + 4, 16); }
+        { uint8_t tmp[32]; memcpy(tmp, &ctx->vr[30], 16); memcpy(tmp+16, &ctx->vr[30], 16); memcpy(&ctx->vr[0], tmp + 8, 16); }
+        vmx_vmaddfp(&ctx->vr[10], &ctx->vr[12], &ctx->vr[10], &ctx->vr[12], ctx->vscr);
+        vmx_vmaddfp(&ctx->vr[10], &ctx->vr[0], &ctx->vr[10], &ctx->vr[0], ctx->vscr);
+        { uint32_t* d = (uint32_t*)&ctx->vr[10]; uint32_t val = ((uint32_t*)&ctx->vr[10])[0]; d[0] = d[1] = d[2] = d[3] = val; }
+        vmx_vrsqrtefp(&ctx->vr[12], &ctx->vr[10], ctx->vscr);
+        vmx_vmaddfp(&ctx->vr[10], &ctx->vr[12], &ctx->vr[8], &ctx->vr[10], ctx->vscr);
+        vmx_vmaddfp(&ctx->vr[0], &ctx->vr[12], &ctx->vr[8], &ctx->vr[9], ctx->vscr);
+        vmx_vnmsubfp(&ctx->vr[10], &ctx->vr[12], &ctx->vr[7], &ctx->vr[10], ctx->vscr);
+        vmx_vmaddfp(&ctx->vr[10], &ctx->vr[10], &ctx->vr[12], &ctx->vr[0], ctx->vscr);
+        (void)vmx_vcmpeqfp(&ctx->vr[0], &ctx->vr[10], &ctx->vr[10]);
+        { uint64_t* d=(uint64_t*)&ctx->vr[10]; uint64_t* a=(uint64_t*)&ctx->vr[12]; uint64_t* b=(uint64_t*)&ctx->vr[10]; uint64_t* c=(uint64_t*)&ctx->vr[0]; d[0]=(a[0]&~c[0])|(b[0]&c[0]); d[1]=(a[1]&~c[1])|(b[1]&c[1]); }
+        vmx_vmaddfp(&ctx->vr[30], &ctx->vr[30], &ctx->vr[31], &ctx->vr[10], ctx->vscr);
+        { uint8_t* a = (uint8_t*)&ctx->vr[30]; uint8_t* b = (uint8_t*)&ctx->vr[30]; uint8_t* c = (uint8_t*)&ctx->vr[11]; uint8_t* d = (uint8_t*)&ctx->vr[10]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+        { uint8_t* a = (uint8_t*)&ctx->vr[30]; uint8_t* b = (uint8_t*)&ctx->vr[30]; uint8_t* c = (uint8_t*)&ctx->vr[13]; uint8_t* d = (uint8_t*)&ctx->vr[11]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+        vmx_vmaddfp(&ctx->vr[3], &ctx->vr[3], &ctx->vr[31], &ctx->vr[10], ctx->vscr);
+        vmx_vnmsubfp(&ctx->vr[29], &ctx->vr[2], &ctx->vr[3], &ctx->vr[11], ctx->vscr);
+        { uint64_t ea = ((ctx->gpr[5] + ctx->gpr[8])) & ~0xFULL; vm_raw_ld16(&ctx->vr[3], ea); }
+        vmx_vmaddfp(&ctx->vr[2], &ctx->vr[29], &ctx->vr[31], &ctx->vr[29], ctx->vscr);
+        { uint8_t tmp[32]; memcpy(tmp, &ctx->vr[29], 16); memcpy(tmp+16, &ctx->vr[29], 16); memcpy(&ctx->vr[10], tmp + 4, 16); }
+        { uint8_t tmp[32]; memcpy(tmp, &ctx->vr[29], 16); memcpy(tmp+16, &ctx->vr[29], 16); memcpy(&ctx->vr[11], tmp + 8, 16); }
+        vmx_vmaddfp(&ctx->vr[2], &ctx->vr[10], &ctx->vr[2], &ctx->vr[10], ctx->vscr);
+        vmx_vmaddfp(&ctx->vr[2], &ctx->vr[11], &ctx->vr[2], &ctx->vr[11], ctx->vscr);
+        { uint32_t* d = (uint32_t*)&ctx->vr[10]; uint32_t val = ((uint32_t*)&ctx->vr[2])[0]; d[0] = d[1] = d[2] = d[3] = val; }
+        { uint64_t ea = ((ctx->gpr[4] + ctx->gpr[10])) & ~0xFULL; vm_raw_ld16(&ctx->vr[2], ea); }
+        vmx_vrsqrtefp(&ctx->vr[11], &ctx->vr[10], ctx->vscr);
+        vmx_vmaddfp(&ctx->vr[10], &ctx->vr[11], &ctx->vr[8], &ctx->vr[10], ctx->vscr);
+        vmx_vmaddfp(&ctx->vr[8], &ctx->vr[11], &ctx->vr[8], &ctx->vr[9], ctx->vscr);
+        vmx_vnmsubfp(&ctx->vr[7], &ctx->vr[11], &ctx->vr[7], &ctx->vr[10], ctx->vscr);
+        vmx_vmaddfp(&ctx->vr[7], &ctx->vr[7], &ctx->vr[11], &ctx->vr[8], ctx->vscr);
+        (void)vmx_vcmpeqfp(&ctx->vr[8], &ctx->vr[7], &ctx->vr[7]);
+        { uint64_t* d=(uint64_t*)&ctx->vr[7]; uint64_t* a=(uint64_t*)&ctx->vr[11]; uint64_t* b=(uint64_t*)&ctx->vr[7]; uint64_t* c=(uint64_t*)&ctx->vr[8]; d[0]=(a[0]&~c[0])|(b[0]&c[0]); d[1]=(a[1]&~c[1])|(b[1]&c[1]); }
+        vm_write64(ctx->gpr[1] + 0xF0, ctx->gpr[30]);
+        vmx_vmaddfp(&ctx->vr[29], &ctx->vr[29], &ctx->vr[31], &ctx->vr[7], ctx->vscr);
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_002347F4;
+        { uint64_t* d=(uint64_t*)&ctx->vr[6]; uint64_t* a=(uint64_t*)&ctx->vr[30]; uint64_t* b=(uint64_t*)&ctx->vr[6]; uint64_t* c=(uint64_t*)&ctx->vr[2]; d[0]=(a[0]&~c[0])|(b[0]&c[0]); d[1]=(a[1]&~c[1])|(b[1]&c[1]); }
+        { uint64_t* d=(uint64_t*)&ctx->vr[5]; uint64_t* a=(uint64_t*)&ctx->vr[29]; uint64_t* b=(uint64_t*)&ctx->vr[5]; uint64_t* c=(uint64_t*)&ctx->vr[2]; d[0]=(a[0]&~c[0])|(b[0]&c[0]); d[1]=(a[1]&~c[1])|(b[1]&c[1]); }
+        { uint64_t* d=(uint64_t*)&ctx->vr[2]; uint64_t* a=(uint64_t*)&ctx->vr[28]; uint64_t* b=(uint64_t*)&ctx->vr[4]; uint64_t* c=(uint64_t*)&ctx->vr[2]; d[0]=(a[0]&~c[0])|(b[0]&c[0]); d[1]=(a[1]&~c[1])|(b[1]&c[1]); }
+        { uint64_t ea = ((ctx->gpr[5] + ctx->gpr[3])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[3]); }
+        { uint64_t ea = (ctx->gpr[3]) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[6]); }
+        { uint64_t ea = ((ctx->gpr[7] + ctx->gpr[3])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[5]); }
+        { uint64_t ea = ((ctx->gpr[6] + ctx->gpr[3])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[2]); }
+loc_002347F4:
+        if ((((ctx->cr >> 25) & 1) == 1)) goto loc_00234994;
+        { uint64_t _a = ctx->gpr[1]; uint64_t _r = _a + (uint64_t)(int64_t)(0x80); ctx->gpr[30] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->gpr[3] = ctx->gpr[30] | 0x0;
+        ctx->gpr[4] = ctx->gpr[30] | 0x0;
+        ctx->lr = 0x00234808; june_evt_func_002344D0(ctx); DRAIN_TRAMPOLINE(ctx);
+        ctx->gpr[5] = (int64_t)(int32_t)(0x80);
+        { uint32_t* d = (uint32_t*)&ctx->vr[2]; uint32_t val = ((uint32_t*)&ctx->vr[30])[0]; d[0] = d[1] = d[2] = d[3] = val; }
+        { uint32_t* d = (uint32_t*)&ctx->vr[3]; uint32_t val = ((uint32_t*)&ctx->vr[29])[0]; d[0] = d[1] = d[2] = d[3] = val; }
+        ctx->gpr[6] = (int64_t)(int32_t)(0x90);
+        { uint32_t* d = (uint32_t*)&ctx->vr[4]; uint32_t val = ((uint32_t*)&ctx->vr[28])[0]; d[0] = d[1] = d[2] = d[3] = val; }
+        ctx->gpr[7] = (int64_t)(int32_t)(0xA0);
+        { uint32_t* d = (uint32_t*)&ctx->vr[5]; uint32_t val = ((uint32_t*)&ctx->vr[30])[1]; d[0] = d[1] = d[2] = d[3] = val; }
+        { uint32_t* d = (uint32_t*)&ctx->vr[7]; uint32_t val = ((uint32_t*)&ctx->vr[29])[1]; d[0] = d[1] = d[2] = d[3] = val; }
+        { uint64_t ea = ((ctx->gpr[5] + ctx->gpr[1])) & ~0xFULL; vm_raw_ld16(&ctx->vr[6], ea); }
+        { uint32_t* d = (uint32_t*)&ctx->vr[8]; uint32_t val = ((uint32_t*)&ctx->vr[28])[1]; d[0] = d[1] = d[2] = d[3] = val; }
+        vmx_vmaddfp(&ctx->vr[2], &ctx->vr[6], &ctx->vr[31], &ctx->vr[2], ctx->vscr);
+        { uint32_t* d = (uint32_t*)&ctx->vr[9]; uint32_t val = ((uint32_t*)&ctx->vr[30])[2]; d[0] = d[1] = d[2] = d[3] = val; }
+        vmx_vmaddfp(&ctx->vr[3], &ctx->vr[6], &ctx->vr[31], &ctx->vr[3], ctx->vscr);
+        { uint32_t* d = (uint32_t*)&ctx->vr[10]; uint32_t val = ((uint32_t*)&ctx->vr[29])[2]; d[0] = d[1] = d[2] = d[3] = val; }
+        vmx_vmaddfp(&ctx->vr[4], &ctx->vr[6], &ctx->vr[31], &ctx->vr[4], ctx->vscr);
+        { uint32_t* d = (uint32_t*)&ctx->vr[12]; uint32_t val = ((uint32_t*)&ctx->vr[28])[2]; d[0] = d[1] = d[2] = d[3] = val; }
+        { uint64_t ea = ((ctx->gpr[6] + ctx->gpr[1])) & ~0xFULL; vm_raw_ld16(&ctx->vr[6], ea); }
+        { uint64_t _a = ctx->gpr[1]; uint64_t _r = _a + (uint64_t)(int64_t)(0x70); ctx->gpr[3] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t ea = ((ctx->gpr[7] + ctx->gpr[1])) & ~0xFULL; vm_raw_ld16(&ctx->vr[11], ea); }
+        ctx->gpr[4] = ctx->gpr[30] | 0x0;
+        vmx_vmaddfp(&ctx->vr[2], &ctx->vr[6], &ctx->vr[2], &ctx->vr[5], ctx->vscr);
+        vmx_vmaddfp(&ctx->vr[3], &ctx->vr[6], &ctx->vr[3], &ctx->vr[7], ctx->vscr);
+        vmx_vmaddfp(&ctx->vr[4], &ctx->vr[6], &ctx->vr[4], &ctx->vr[8], ctx->vscr);
+        vmx_vmaddfp(&ctx->vr[2], &ctx->vr[11], &ctx->vr[2], &ctx->vr[9], ctx->vscr);
+        vmx_vmaddfp(&ctx->vr[3], &ctx->vr[11], &ctx->vr[3], &ctx->vr[10], ctx->vscr);
+        vmx_vmaddfp(&ctx->vr[4], &ctx->vr[11], &ctx->vr[4], &ctx->vr[12], ctx->vscr);
+        { uint64_t ea = ((ctx->gpr[5] + ctx->gpr[1])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[2]); }
+        { uint64_t ea = ((ctx->gpr[6] + ctx->gpr[1])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[3]); }
+        { uint64_t ea = ((ctx->gpr[7] + ctx->gpr[1])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[4]); }
+        ctx->lr = 0x00234880; june_evt_func_00881C24(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0x78); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[23] = ftmp; }
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0x70); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[25] = ftmp; }
+        ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0x23 << 16);
+        ctx->fpr[30] = ppu_fp_single(ppu_fadd(ctx->fpr[23], ctx->fpr[23]));
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0x74); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[26] = ftmp; }
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0x7C); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[27] = ftmp; }
+        ctx->gpr[3] = ctx->gpr[3] + (int64_t)(0x45B0);
+        ctx->fpr[29] = ppu_fp_single(ppu_fadd(ctx->fpr[26], ctx->fpr[26]));
+        ctx->fpr[28] = ppu_fp_single(ppu_fadd(ctx->fpr[25], ctx->fpr[25]));
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x4); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[31] = ftmp; }
+        ctx->fpr[1] = ppu_fp_single(ppu_fmul(ctx->fpr[25], ctx->fpr[30]));
+        ctx->fpr[1] = ppu_fp_single(ppu_fmadd_core(ctx->fpr[27], ctx->fpr[29], ctx->fpr[1], 1, 0));
+        { double a = ctx->fpr[1]; double b = ctx->fpr[31]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        { uint32_t a = (ctx->cr >> (31 - 1)) & 1; uint32_t b = (ctx->cr >> (31 - 2)) & 1; ctx->cr = (ctx->cr & ~(1u << (31 - 6))) | ((a | b) << (31 - 6)); }
+        if ((((ctx->cr >> 25) & 1) == 1)) goto loc_002348C4;
+        goto loc_002348CC;
+loc_002348C4:
+        ctx->fpr[1] = ctx->fpr[31];
+        goto loc_002348EC;
+loc_002348CC:
+        ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0x23 << 16);
+        ctx->gpr[3] = ctx->gpr[3] + (int64_t)(0x45B0);
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x60); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[2] = ftmp; }
+        { double a = ctx->fpr[1]; double b = ctx->fpr[2]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        { uint32_t a = (ctx->cr >> (31 - 0)) & 1; uint32_t b = (ctx->cr >> (31 - 2)) & 1; ctx->cr = (ctx->cr & ~(1u << (31 - 6))) | ((a | b) << (31 - 6)); }
+        if ((((ctx->cr >> 25) & 1) == 1)) goto loc_002348E8;
+        goto loc_002348EC;
+loc_002348E8:
+        ctx->fpr[1] = ctx->fpr[2];
+loc_002348EC:
+        ctx->lr = 0x002348F0; june_evt_func_00AEBE50(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        ctx->fpr[3] = ctx->fpr[1];
+        ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0x23 << 16);
+        ctx->fpr[23] = ppu_fp_single(ppu_fmul(ctx->fpr[23], ctx->fpr[30]));
+        ctx->fpr[22] = ppu_fp_single(ppu_fmul(ctx->fpr[25], ctx->fpr[29]));
+        ctx->gpr[3] = ctx->gpr[3] + (int64_t)(0x45B0);
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x64); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[2] = ftmp; }
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x8); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[24] = ftmp; }
+        { double a = ctx->fpr[3]; double b = ctx->fpr[2]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        ctx->fpr[4] = ppu_fp_single(ppu_fmadd_core(ctx->fpr[25], ctx->fpr[28], ctx->fpr[23], 0, 0));
+        ctx->fpr[1] = ppu_fp_single(ppu_fmadd_core(ctx->fpr[27], ctx->fpr[30], ctx->fpr[22], 1, 1));
+        ctx->fpr[2] = ppu_fp_single(ppu_fsub(ctx->fpr[31], ctx->fpr[4]));
+        if ((((ctx->cr >> 31) & 1) == 1)) goto loc_00234928;
+        goto loc_00234984;
+loc_00234928:
+        ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0x23 << 16);
+        ctx->gpr[3] = ctx->gpr[3] + (int64_t)(0x45B0);
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x68); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[4] = ftmp; }
+        { double a = ctx->fpr[3]; double b = ctx->fpr[4]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 1)) goto loc_00234940;
+        goto loc_00234974;
+loc_00234940:
+        ctx->fpr[29] = ppu_fp_single(ppu_fmul(ctx->fpr[26], ctx->fpr[29]));
+        ctx->fpr[1] = ppu_fp_single(ppu_fmul(ctx->fpr[26], ctx->fpr[30]));
+        ctx->fpr[2] = ppu_fp_single(ppu_fmadd_core(ctx->fpr[25], ctx->fpr[28], ctx->fpr[29], 0, 0));
+        ctx->fpr[1] = ppu_fp_single(ppu_fmadd_core(ctx->fpr[27], ctx->fpr[28], ctx->fpr[1], 0, 0));
+        ctx->fpr[2] = ppu_fp_single(ppu_fsub(ctx->fpr[31], ctx->fpr[2]));
+        ctx->lr = 0x00234958; june_evt_func_00AEC10C(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        ctx->fpr[2] = ppu_fp_single(ppu_fadd(ctx->fpr[29], ctx->fpr[23]));
+        ctx->fpr[1] = ppu_fp_single(ppu_fmadd_core(ctx->fpr[27], ctx->fpr[30], ctx->fpr[22], 0, 0));
+        ctx->fpr[2] = ppu_fp_single(ppu_fsub(ctx->fpr[31], ctx->fpr[2]));
+        ctx->lr = 0x0023496C; june_evt_func_00AEC10C(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        goto loc_00234990;
+loc_00234974:
+        ctx->lr = 0x00234978; june_evt_func_00AEC10C(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        ctx->fpr[1] = ctx->fpr[24];
+        goto loc_00234990;
+loc_00234984:
+        ctx->lr = 0x00234988; june_evt_func_00AEC10C(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        ctx->fpr[1] = ctx->fpr[24];
+loc_00234990:
+        { float ftmp = (float)ctx->fpr[1]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[31] + 0x0, tmp); }
+loc_00234994:
+        ctx->gpr[0] = (int64_t)(int32_t)(0xB0);
+        { uint64_t ea = ((ctx->gpr[1] + ctx->gpr[0])) & ~0xFULL; vm_raw_ld16(&ctx->vr[28], ea); }
+        { uint64_t _a = ctx->gpr[0]; uint64_t _r = _a + (uint64_t)(int64_t)(0x10); ctx->gpr[0] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t ea = ((ctx->gpr[1] + ctx->gpr[0])) & ~0xFULL; vm_raw_ld16(&ctx->vr[29], ea); }
+        { uint64_t _a = ctx->gpr[0]; uint64_t _r = _a + (uint64_t)(int64_t)(0x10); ctx->gpr[0] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t ea = ((ctx->gpr[1] + ctx->gpr[0])) & ~0xFULL; vm_raw_ld16(&ctx->vr[30], ea); }
+        { uint64_t _a = ctx->gpr[0]; uint64_t _r = _a + (uint64_t)(int64_t)(0x10); ctx->gpr[0] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t ea = ((ctx->gpr[1] + ctx->gpr[0])) & ~0xFULL; vm_raw_ld16(&ctx->vr[31], ea); }
+        ctx->gpr[0] = vm_read64(ctx->gpr[1] + 0x160);
+        ctx->lr = ctx->gpr[0];
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0x100); memcpy(&ctx->fpr[22], &tmp, 8); }
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0x108); memcpy(&ctx->fpr[23], &tmp, 8); }
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0x110); memcpy(&ctx->fpr[24], &tmp, 8); }
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0x118); memcpy(&ctx->fpr[25], &tmp, 8); }
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0x120); memcpy(&ctx->fpr[26], &tmp, 8); }
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0x128); memcpy(&ctx->fpr[27], &tmp, 8); }
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0x130); memcpy(&ctx->fpr[28], &tmp, 8); }
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0x138); memcpy(&ctx->fpr[29], &tmp, 8); }
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0x140); memcpy(&ctx->fpr[30], &tmp, 8); }
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0x148); memcpy(&ctx->fpr[31], &tmp, 8); }
+        ctx->gpr[30] = _cs_30;
+        ctx->gpr[31] = _cs_31;
+        ctx->gpr[1] = ctx->gpr[1] + (int64_t)(0x150);
+        return;
 }
 
 void june_evt_func_00234A98(ppu_context* ctx) {
@@ -16912,7 +18394,476 @@ loc_002353D4:
 
 void june_evt_func_00235580(ppu_context* ctx) {
     PPU_MM_SNAP
-        { g_trampoline_fn = (void(*)(void*))june_evt_func_00235C78; return; }
+        uint64_t _cs_24 = ctx->gpr[24];
+        uint64_t _cs_25 = ctx->gpr[25];
+        uint64_t _cs_26 = ctx->gpr[26];
+        uint64_t _cs_27 = ctx->gpr[27];
+        uint64_t _cs_28 = ctx->gpr[28];
+        uint64_t _cs_29 = ctx->gpr[29];
+        uint64_t _cs_30 = ctx->gpr[30];
+        uint64_t _cs_31 = ctx->gpr[31];
+        vm_write64(ctx->gpr[1] + -0x240, ctx->gpr[1]); ctx->gpr[1] += -0x240;
+        ctx->gpr[0] = ctx->lr;
+        vm_write64(ctx->gpr[1] + 0x250, ctx->gpr[0]);
+        { uint64_t tmp; memcpy(&tmp, &ctx->fpr[29], 8); vm_write64(ctx->gpr[1] + 0x228, tmp); }
+        { uint64_t tmp; memcpy(&tmp, &ctx->fpr[30], 8); vm_write64(ctx->gpr[1] + 0x230, tmp); }
+        { uint64_t tmp; memcpy(&tmp, &ctx->fpr[31], 8); vm_write64(ctx->gpr[1] + 0x238, tmp); }
+        vm_write64(ctx->gpr[1] + 0x220, ctx->gpr[31]);
+        ctx->gpr[0] = ctx->gpr[1] + (int64_t)(0x170);
+        { uint64_t ea = (ctx->gpr[0]) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[25]); }
+        { uint64_t _a = ctx->gpr[0]; uint64_t _r = _a + (uint64_t)(int64_t)(0x10); ctx->gpr[0] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t ea = (ctx->gpr[0]) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[26]); }
+        { uint64_t _a = ctx->gpr[0]; uint64_t _r = _a + (uint64_t)(int64_t)(0x10); ctx->gpr[0] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t ea = (ctx->gpr[0]) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[27]); }
+        { uint64_t _a = ctx->gpr[0]; uint64_t _r = _a + (uint64_t)(int64_t)(0x10); ctx->gpr[0] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t ea = (ctx->gpr[0]) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[28]); }
+        { uint64_t _a = ctx->gpr[0]; uint64_t _r = _a + (uint64_t)(int64_t)(0x10); ctx->gpr[0] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t ea = (ctx->gpr[0]) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[29]); }
+        { uint64_t _a = ctx->gpr[0]; uint64_t _r = _a + (uint64_t)(int64_t)(0x10); ctx->gpr[0] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t ea = (ctx->gpr[0]) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[30]); }
+        { uint64_t _a = ctx->gpr[0]; uint64_t _r = _a + (uint64_t)(int64_t)(0x10); ctx->gpr[0] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t ea = (ctx->gpr[0]) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[31]); }
+        vm_write64(ctx->gpr[1] + 0x1F8, ctx->gpr[26]);
+        ctx->gpr[31] = ctx->gpr[3] | 0x0;
+        ctx->fpr[30] = ctx->fpr[1];
+        vm_write64(ctx->gpr[1] + 0x200, ctx->gpr[27]);
+        ctx->gpr[26] = (int64_t)(int8_t)ctx->gpr[5];
+        vm_write64(ctx->gpr[1] + 0x210, ctx->gpr[29]);
+        vm_write64(ctx->gpr[1] + 0x208, ctx->gpr[28]);
+        ctx->gpr[27] = (int64_t)(int8_t)ctx->gpr[6];
+        ctx->gpr[28] = (int64_t)(int8_t)ctx->gpr[7];
+        vm_write64(ctx->gpr[1] + 0x218, ctx->gpr[30]);
+        ctx->gpr[29] = (int64_t)(int8_t)ctx->gpr[8];
+        ctx->gpr[30] = (int64_t)(int32_t)(0);
+        vm_write64(ctx->gpr[1] + 0x1F0, ctx->gpr[25]);
+        vm_write64(ctx->gpr[1] + 0x1E8, ctx->gpr[24]);
+        { int64_t a = (int32_t)ctx->gpr[31]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 0)) goto loc_00235630;
+        ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0xE2 << 16);
+        ctx->gpr[5] = (int64_t)(int32_t)((uint32_t)0xE2 << 16);
+        ctx->gpr[4] = (int64_t)(int32_t)(0x45F);
+        { uint64_t _a = ctx->gpr[3]; uint64_t _r = _a + (uint64_t)(int64_t)(-27404); ctx->gpr[3] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t _a = ctx->gpr[5]; uint64_t _r = _a + (uint64_t)(int64_t)(-27328); ctx->gpr[5] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->lr = 0x0023562C; june_evt_func_00824F18(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+loc_00235630:
+        ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0x23 << 16);
+        ctx->gpr[3] = ctx->gpr[3] + (int64_t)(0x5490);
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x0); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[31] = ftmp; }
+        { double a = ctx->fpr[30]; double b = ctx->fpr[31]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 31) & 1) == 1)) goto loc_00235BE4;
+        ctx->lr = 0x00235648; june_evt_func_008F6EB4(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        ctx->fpr[2] = ctx->fpr[31];
+        ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0x23 << 16);
+        ctx->gpr[4] = (int64_t)(int32_t)((uint32_t)0x15E << 16);
+        ctx->fpr[5] = ppu_fp_single(ppu_fmul(ctx->fpr[30], ctx->fpr[1]));
+        ctx->gpr[3] = ctx->gpr[3] + (int64_t)(0x5490);
+        ctx->gpr[6] = (int64_t)(int32_t)((uint32_t)0x15E << 16);
+        { uint64_t _a = ctx->gpr[4]; uint64_t _r = _a + (uint64_t)(int64_t)(0x7BF0); ctx->gpr[5] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { int64_t a = (int32_t)ctx->gpr[26]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x4); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        { uint64_t _a = ctx->gpr[6]; uint64_t _r = _a + (uint64_t)(int64_t)(0x7BDC); ctx->gpr[3] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->gpr[4] = vm_read8(ctx->gpr[4] + 0x7BF0);
+        ctx->fpr[3] = ctx->fpr[2];
+        ctx->gpr[7] = vm_read8(ctx->gpr[5] + 0x1);
+        { uint64_t _a = ctx->gpr[4]; uint64_t _b = (uint64_t)(int64_t)(0x80); ctx->gpr[5] = _b - _a; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_b >= _a) ? (1u << 29) : 0u); }
+        ctx->gpr[6] = vm_read8(ctx->gpr[6] + 0x7BDC);
+        { uint64_t _a = ctx->gpr[7]; uint64_t _b = (uint64_t)(int64_t)(0x80); ctx->gpr[4] = _b - _a; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_b >= _a) ? (1u << 29) : 0u); }
+        ctx->gpr[3] = vm_read8(ctx->gpr[3] + 0x1);
+        { uint64_t _a = ctx->gpr[6]; uint64_t _b = (uint64_t)(int64_t)(0x80); ctx->gpr[7] = _b - _a; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_b >= _a) ? (1u << 29) : 0u); }
+        { uint64_t _a = ctx->gpr[3]; uint64_t _b = (uint64_t)(int64_t)(0x80); ctx->gpr[6] = _b - _a; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_b >= _a) ? (1u << 29) : 0u); }
+        ctx->fpr[5] = ppu_fp_single(ppu_fdiv(ctx->fpr[5], ctx->fpr[1]));
+        ctx->fpr[4] = ctx->fpr[3];
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_002357AC;
+        { int64_t a = (int32_t)ctx->gpr[7]; int64_t b = (int64_t)-32; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 31) & 1) == 1)) goto loc_002356B8;
+        ctx->fpr[4] = ctx->fpr[31];
+        { int64_t a = (int32_t)ctx->gpr[7]; int64_t b = (int64_t)0x20; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 0)) goto loc_002356E0;
+loc_002356B8:
+        ctx->gpr[3] = (int64_t)(int32_t)ctx->gpr[7];
+        vm_write64(ctx->gpr[1] + 0x18, ctx->gpr[3]);
+        ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0x23 << 16);
+        ctx->gpr[3] = ctx->gpr[3] + (int64_t)(0x5490);
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x8); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0x18); memcpy(&ctx->fpr[2], &tmp, 8); }
+        { int64_t iv; memcpy(&iv, &ctx->fpr[2], 8); ctx->fpr[2] = (double)iv; }
+        ctx->fpr[2] = ppu_frsp(ctx->fpr[2]);
+        ctx->fpr[4] = ppu_fp_single(ppu_fmul(ctx->fpr[2], ctx->fpr[1]));
+        ctx->fpr[4] = ppu_fp_single(ppu_fmul(ctx->fpr[4], ctx->fpr[5]));
+loc_002356E0:
+        { int64_t a = (int32_t)ctx->gpr[6]; int64_t b = (int64_t)-32; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 31) & 1) == 1)) goto loc_002356F4;
+        { int64_t a = (int32_t)ctx->gpr[6]; int64_t b = (int64_t)0x20; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        ctx->fpr[3] = ctx->fpr[31];
+        if ((((ctx->cr >> 30) & 1) == 0)) goto loc_0023571C;
+loc_002356F4:
+        ctx->gpr[3] = (int64_t)(int32_t)ctx->gpr[6];
+        ctx->gpr[6] = (int64_t)(int32_t)((uint32_t)0x23 << 16);
+        vm_write64(ctx->gpr[1] + 0x18, ctx->gpr[3]);
+        ctx->gpr[3] = ctx->gpr[6] + (int64_t)(0x5490);
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x8); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0x18); memcpy(&ctx->fpr[2], &tmp, 8); }
+        { int64_t iv; memcpy(&iv, &ctx->fpr[2], 8); ctx->fpr[2] = (double)iv; }
+        ctx->fpr[2] = ppu_frsp(ctx->fpr[2]);
+        ctx->fpr[3] = ppu_fp_single(ppu_fmul(ctx->fpr[2], ctx->fpr[1]));
+        ctx->fpr[3] = ppu_fp_single(ppu_fmul(ctx->fpr[3], ctx->fpr[5]));
+loc_0023571C:
+        ctx->fpr[2] = ctx->fpr[31];
+        { int64_t a = (int32_t)ctx->gpr[29]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_002357AC;
+        ctx->gpr[6] = (int64_t)(int32_t)((uint32_t)0x15E << 16);
+        ctx->fpr[2] = ctx->fpr[31];
+        ctx->gpr[6] = vm_read16(ctx->gpr[6] + 0x7BD8);
+        ctx->gpr[3] = ppc_rlw64(ctx->gpr[6], 0, 20, 20, 0, 0);
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_00235770;
+        ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0x15E << 16);
+        ctx->gpr[7] = (int64_t)(int32_t)((uint32_t)0x23 << 16);
+        ctx->gpr[7] = ctx->gpr[7] + (int64_t)(0x5490);
+        ctx->gpr[3] = vm_read16(ctx->gpr[3] + 0x7BE4);
+        ctx->gpr[3] = ppc_rlw64(ctx->gpr[3], 0, 20, 20, 0, 0);
+        { uint32_t tmp = vm_read32(ctx->gpr[7] + 0xC); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[2] = ftmp; }
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_0023576C;
+        ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0x23 << 16);
+        ctx->gpr[3] = ctx->gpr[3] + (int64_t)(0x5490);
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x10); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[2] = ftmp; }
+loc_0023576C:
+        ctx->fpr[2] = ppu_fp_single(ppu_fmul(ctx->fpr[5], ctx->fpr[2]));
+loc_00235770:
+        ctx->gpr[3] = ppc_rlw64(ctx->gpr[6], 0, 21, 21, 0, 0);
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_002357AC;
+        ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0x15E << 16);
+        ctx->gpr[6] = (int64_t)(int32_t)((uint32_t)0x23 << 16);
+        ctx->gpr[6] = ctx->gpr[6] + (int64_t)(0x5490);
+        ctx->gpr[3] = vm_read16(ctx->gpr[3] + 0x7BE4);
+        ctx->gpr[3] = ppc_rlw64(ctx->gpr[3], 0, 21, 21, 0, 0);
+        { uint32_t tmp = vm_read32(ctx->gpr[6] + 0x14); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[2] = ftmp; }
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_002357A8;
+        ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0x23 << 16);
+        ctx->gpr[3] = ctx->gpr[3] + (int64_t)(0x5490);
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x18); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[2] = ftmp; }
+loc_002357A8:
+        ctx->fpr[2] = ppu_fp_single(ppu_fmul(ctx->fpr[5], ctx->fpr[2]));
+loc_002357AC:
+        ctx->fpr[1] = ctx->fpr[31];
+        { int64_t a = (int32_t)ctx->gpr[27]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        ctx->fpr[29] = ctx->fpr[1];
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_0023583C;
+        { int64_t a = (int32_t)ctx->gpr[5]; int64_t b = (int64_t)-32; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 31) & 1) == 1)) goto loc_002357D0;
+        ctx->fpr[29] = ctx->fpr[31];
+        { int64_t a = (int32_t)ctx->gpr[5]; int64_t b = (int64_t)0x20; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 0)) goto loc_002357FC;
+loc_002357D0:
+        ctx->gpr[3] = (int64_t)(int32_t)ctx->gpr[5];
+        ctx->gpr[5] = (int64_t)(int32_t)((uint32_t)0x23 << 16);
+        vm_write64(ctx->gpr[1] + 0x18, ctx->gpr[3]);
+        ctx->gpr[3] = ctx->gpr[5] + (int64_t)(0x5490);
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x1C); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x20); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[6] = ftmp; }
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0x18); memcpy(&ctx->fpr[7], &tmp, 8); }
+        ctx->fpr[29] = ppu_fp_single(ppu_fmadd_core(ctx->fpr[5], ctx->fpr[1], ctx->fpr[6], 0, 0));
+        { int64_t iv; memcpy(&iv, &ctx->fpr[7], 8); ctx->fpr[7] = (double)iv; }
+        ctx->fpr[1] = ppu_frsp(ctx->fpr[7]);
+        ctx->fpr[29] = ppu_fp_single(ppu_fmul(ctx->fpr[1], ctx->fpr[29]));
+loc_002357FC:
+        { int64_t a = (int32_t)ctx->gpr[4]; int64_t b = (int64_t)-32; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 31) & 1) == 1)) goto loc_00235810;
+        ctx->fpr[1] = ctx->fpr[31];
+        { int64_t a = (int32_t)ctx->gpr[4]; int64_t b = (int64_t)0x20; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 0)) goto loc_0023583C;
+loc_00235810:
+        ctx->gpr[3] = (int64_t)(int32_t)ctx->gpr[4];
+        ctx->gpr[4] = (int64_t)(int32_t)((uint32_t)0x23 << 16);
+        vm_write64(ctx->gpr[1] + 0x18, ctx->gpr[3]);
+        ctx->gpr[3] = ctx->gpr[4] + (int64_t)(0x5490);
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x1C); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x20); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[6] = ftmp; }
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0x18); memcpy(&ctx->fpr[7], &tmp, 8); }
+        ctx->fpr[1] = ppu_fp_single(ppu_fmadd_core(ctx->fpr[5], ctx->fpr[1], ctx->fpr[6], 0, 0));
+        { int64_t iv; memcpy(&iv, &ctx->fpr[7], 8); ctx->fpr[7] = (double)iv; }
+        ctx->fpr[6] = ppu_frsp(ctx->fpr[7]);
+        ctx->fpr[1] = ppu_fp_single(ppu_fmul(ctx->fpr[6], ctx->fpr[1]));
+loc_0023583C:
+        ctx->fpr[30] = ctx->fpr[31];
+        { int64_t a = (int32_t)ctx->gpr[28]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_00235880;
+        { int64_t a = (int32_t)ctx->gpr[29]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        ctx->fpr[30] = ctx->fpr[31];
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_00235880;
+        ctx->gpr[4] = (int64_t)(int32_t)((uint32_t)0x15E << 16);
+        ctx->fpr[30] = ctx->fpr[31];
+        ctx->gpr[4] = vm_read16(ctx->gpr[4] + 0x7BD8);
+        ctx->gpr[3] = ppc_rlw64(ctx->gpr[4], 0, 23, 23, 0, 0);
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_00235870;
+        ctx->fpr[30] = ppu_fp_single(ppu_fadd(ctx->fpr[31], ctx->fpr[5]));
+loc_00235870:
+        ctx->gpr[3] = ppc_rlw64(ctx->gpr[4], 0, 22, 22, 0, 0);
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_00235880;
+        ctx->fpr[30] = ppu_fp_single(ppu_fsub(ctx->fpr[30], ctx->fpr[5]));
+loc_00235880:
+        { double a = ctx->fpr[30]; double b = ctx->fpr[31]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_002358D8;
+        ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0x23 << 16);
+        ctx->gpr[3] = ctx->gpr[3] + (int64_t)(0x5490);
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x24); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[6] = ftmp; }
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x28); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[5] = ftmp; }
+        { double a = ctx->fpr[30]; double b = ctx->fpr[6]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 31) & 1) == 1)) goto loc_002358A4;
+        goto loc_002358B4;
+loc_002358A4:
+        ctx->fpr[30] = ppu_fp_single(ppu_fadd(ctx->fpr[30], ctx->fpr[5]));
+        { double a = ctx->fpr[30]; double b = ctx->fpr[6]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 31) & 1) == 1)) goto loc_002358A4;
+        goto loc_002358D8;
+loc_002358B4:
+        ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0x23 << 16);
+        ctx->gpr[3] = ctx->gpr[3] + (int64_t)(0x5490);
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x2C); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[6] = ftmp; }
+        { double a = ctx->fpr[30]; double b = ctx->fpr[6]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 1)) goto loc_002358CC;
+        goto loc_002358D8;
+loc_002358CC:
+        ctx->fpr[30] = ppu_fp_single(ppu_fsub(ctx->fpr[30], ctx->fpr[5]));
+        { double a = ctx->fpr[30]; double b = ctx->fpr[6]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 1)) goto loc_002358CC;
+loc_002358D8:
+        { double a = ctx->fpr[3]; double b = ctx->fpr[31]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 0)) goto loc_00235908;
+        { double a = ctx->fpr[1]; double b = ctx->fpr[31]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 0)) goto loc_00235908;
+        { double a = ctx->fpr[29]; double b = ctx->fpr[31]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 0)) goto loc_00235908;
+        { double a = ctx->fpr[30]; double b = ctx->fpr[31]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 0)) goto loc_00235908;
+        { double a = ctx->fpr[4]; double b = ctx->fpr[31]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 0)) goto loc_00235908;
+        { double a = ctx->fpr[2]; double b = ctx->fpr[31]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_00235BE4;
+loc_00235908:
+        ctx->gpr[3] = (int64_t)(int32_t)(0xD0);
+        ctx->gpr[4] = (int64_t)(int32_t)(0x10);
+        { uint64_t ea = (ctx->gpr[31]) & ~0xFULL; vm_raw_ld16(&ctx->vr[31], ea); }
+        ctx->gpr[6] = (int64_t)(int32_t)(0xE0);
+        { float ftmp = (float)ctx->fpr[3]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x150, tmp); }
+        ctx->gpr[8] = (int64_t)(int32_t)(0x20);
+        { uint32_t v[4]; for(int i=0;i<4;i++) v[i]=(uint32_t)(int32_t)0; ppu_vstu4(&ctx->vr[29],v); }
+        ctx->gpr[5] = (int64_t)(int32_t)(0xF0);
+        { uint64_t ea = ((ctx->gpr[3] + ctx->gpr[1])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[31]); }
+        { uint64_t ea = ((ctx->gpr[4] + ctx->gpr[31])) & ~0xFULL; vm_raw_ld16(&ctx->vr[3], ea); }
+        ctx->gpr[7] = (int64_t)(int32_t)(0x30);
+        ctx->gpr[3] = (int64_t)(int32_t)(0x100);
+        { uint64_t ea = ((ctx->gpr[6] + ctx->gpr[1])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[3]); }
+        { uint64_t ea = ((ctx->gpr[8] + ctx->gpr[31])) & ~0xFULL; vm_raw_ld16(&ctx->vr[2], ea); }
+        ctx->gpr[0] = (int64_t)(int32_t)(0x150);
+        { uint64_t ea = ((ctx->gpr[5] + ctx->gpr[1])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[2]); }
+        { uint64_t ea = ((ctx->gpr[7] + ctx->gpr[31])) & ~0xFULL; vm_raw_ld16(&ctx->vr[4], ea); }
+        { double a = ctx->fpr[1]; double b = ctx->fpr[31]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        { uint64_t ea = ((ctx->gpr[3] + ctx->gpr[1])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[4]); }
+        { uint64_t ea = ((ctx->gpr[1] + ctx->gpr[0])) & ~0xFULL; vm_raw_ld16(&ctx->vr[5], ea); }
+        ctx->gpr[0] = (int64_t)(int32_t)(0x150);
+        { uint32_t* d = (uint32_t*)&ctx->vr[5]; uint32_t val = ((uint32_t*)&ctx->vr[5])[0]; d[0] = d[1] = d[2] = d[3] = val; }
+        { float ftmp = (float)ctx->fpr[4]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x150, tmp); }
+        vmx_vmaddfp(&ctx->vr[5], &ctx->vr[2], &ctx->vr[29], &ctx->vr[5], ctx->vscr);
+        vmx_vaddfp(&ctx->vr[30], &ctx->vr[4], &ctx->vr[5], ctx->vscr);
+        { uint64_t ea = ((ctx->gpr[1] + ctx->gpr[0])) & ~0xFULL; vm_raw_ld16(&ctx->vr[4], ea); }
+        ctx->gpr[0] = (int64_t)(int32_t)(0x150);
+        { uint32_t* d = (uint32_t*)&ctx->vr[4]; uint32_t val = ((uint32_t*)&ctx->vr[4])[0]; d[0] = d[1] = d[2] = d[3] = val; }
+        { float ftmp = (float)ctx->fpr[2]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x150, tmp); }
+        vmx_vmaddfp(&ctx->vr[4], &ctx->vr[31], &ctx->vr[29], &ctx->vr[4], ctx->vscr);
+        vmx_vaddfp(&ctx->vr[30], &ctx->vr[30], &ctx->vr[4], ctx->vscr);
+        { uint64_t ea = ((ctx->gpr[1] + ctx->gpr[0])) & ~0xFULL; vm_raw_ld16(&ctx->vr[4], ea); }
+        { uint32_t* d = (uint32_t*)&ctx->vr[28]; uint32_t val = ((uint32_t*)&ctx->vr[4])[0]; d[0] = d[1] = d[2] = d[3] = val; }
+        vmx_vmaddfp(&ctx->vr[28], &ctx->vr[3], &ctx->vr[29], &ctx->vr[28], ctx->vscr);
+        if ((((ctx->cr >> 29) & 1) == 0)) goto loc_002359A4;
+        { double a = ctx->fpr[29]; double b = ctx->fpr[31]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 0)) goto loc_002359A4;
+        { double a = ctx->fpr[30]; double b = ctx->fpr[31]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_00235BC0;
+loc_002359A4:
+        ctx->gpr[0] = (int64_t)(int32_t)(0x150);
+        { float ftmp = (float)ctx->fpr[1]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x150, tmp); }
+        { float ftmp = (float)ctx->fpr[1]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x154, tmp); }
+        { uint64_t _a = ctx->gpr[1]; uint64_t _r = _a + (uint64_t)(int64_t)(0xB0); ctx->gpr[5] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { float ftmp = (float)ctx->fpr[1]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x158, tmp); }
+        { uint64_t _a = ctx->gpr[1]; uint64_t _r = _a + (uint64_t)(int64_t)(0xC0); ctx->gpr[6] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { float ftmp = (float)ctx->fpr[1]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x15C, tmp); }
+        { uint64_t ea = ((ctx->gpr[1] + ctx->gpr[0])) & ~0xFULL; vm_raw_ld16(&ctx->vr[2], ea); }
+        ctx->lr = 0x002359C8; june_evt_func_00D535C0(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        ctx->gpr[3] = (int64_t)(int32_t)(0xB0);
+        { uint32_t v[4]; for(int i=0;i<4;i++) v[i]=(uint32_t)(int32_t)-1; ppu_vstu4(&ctx->vr[7],v); }
+        ctx->gpr[5] = (int64_t)(int32_t)((uint32_t)0x23 << 16);
+        { uint32_t* d = (uint32_t*)&ctx->vr[2]; uint32_t val = ((uint32_t*)&ctx->vr[31])[0]; d[0] = d[1] = d[2] = d[3] = val; }
+        ctx->gpr[4] = (int64_t)(int32_t)(0x30);
+        { uint32_t* d = (uint32_t*)&ctx->vr[4]; uint32_t val = ((uint32_t*)&ctx->vr[31])[1]; d[0] = d[1] = d[2] = d[3] = val; }
+        ctx->gpr[30] = ctx->gpr[5] + (int64_t)(0x5490);
+        { uint32_t* d = (uint32_t*)&ctx->vr[5]; uint32_t val = ((uint32_t*)&ctx->vr[31])[2]; d[0] = d[1] = d[2] = d[3] = val; }
+        ctx->gpr[6] = (int64_t)(int32_t)(0xC0);
+        vmx_vslw(&ctx->vr[27], &ctx->vr[7], &ctx->vr[7]);
+        { uint64_t ea = ((ctx->gpr[3] + ctx->gpr[1])) & ~0xFULL; vm_raw_ld16(&ctx->vr[3], ea); }
+        ctx->gpr[5] = (int64_t)(int32_t)(0x50);
+        ctx->gpr[3] = (int64_t)(int32_t)(0x40);
+        vmx_vmaddfp(&ctx->vr[3], &ctx->vr[31], &ctx->vr[29], &ctx->vr[3], ctx->vscr);
+        { uint64_t ea = (ctx->gpr[4] + ctx->gpr[30]); uint32_t sh = (uint32_t)(ea & 0xF); uint8_t* m = vm_base + (uint32_t)(ea & ~0xFULL); uint8_t* d = (uint8_t*)&ctx->vr[6]; for (int i = 0; i < 16; i++) d[i] = (sh + (uint32_t)i < 16) ? m[sh + i] : 0; }
+        ctx->gpr[7] = (int64_t)(int32_t)(0x70);
+        ctx->gpr[4] = (int64_t)(int32_t)(0x60);
+        { uint64_t ea = ((ctx->gpr[6] + ctx->gpr[1])) & ~0xFULL; vm_raw_ld16(&ctx->vr[8], ea); }
+        ctx->gpr[6] = (int64_t)(int32_t)(0xA0);
+        { uint32_t* d = (uint32_t*)&ctx->vr[6]; uint32_t val = ((uint32_t*)&ctx->vr[6])[0]; d[0] = d[1] = d[2] = d[3] = val; }
+        { uint64_t ea = ((ctx->gpr[3] + ctx->gpr[30])) & ~0xFULL; vm_raw_ld16(&ctx->vr[7], ea); }
+        ctx->gpr[8] = (int64_t)(int32_t)(0x80);
+        { uint64_t ea = ((ctx->gpr[5] + ctx->gpr[30])) & ~0xFULL; vm_raw_ld16(&ctx->vr[9], ea); }
+        ctx->gpr[3] = (int64_t)(int32_t)(0x90);
+        ctx->gpr[29] = (int64_t)(int32_t)(0x110);
+        { uint64_t ea = ((ctx->gpr[4] + ctx->gpr[30])) & ~0xFULL; vm_raw_ld16(&ctx->vr[11], ea); }
+        { uint64_t ea = ((ctx->gpr[6] + ctx->gpr[30])) & ~0xFULL; vm_raw_ld16(&ctx->vr[12], ea); }
+        ctx->gpr[28] = (int64_t)(int32_t)(0x120);
+        vmx_vsubfp(&ctx->vr[6], &ctx->vr[6], &ctx->vr[8], ctx->vscr);
+        ctx->gpr[26] = (int64_t)(int32_t)(0x130);
+        { uint64_t ea = ((ctx->gpr[7] + ctx->gpr[30])) & ~0xFULL; vm_raw_ld16(&ctx->vr[26], ea); }
+        ctx->gpr[6] = (int64_t)(int32_t)(0xB0);
+        { uint64_t* d = (uint64_t*)&ctx->vr[10]; uint64_t* a = (uint64_t*)&ctx->vr[3]; uint64_t* b = (uint64_t*)&ctx->vr[27]; d[0] = a[0] ^ b[0]; d[1] = a[1] ^ b[1]; }
+        ctx->gpr[27] = (int64_t)(int32_t)(0x140);
+        { uint64_t _a = ctx->gpr[1]; uint64_t _r = _a + (uint64_t)(int64_t)(0x110); ctx->gpr[25] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t _a = ctx->gpr[1]; uint64_t _r = _a + (uint64_t)(int64_t)(0xD0); ctx->gpr[24] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint8_t* a = (uint8_t*)&ctx->vr[3]; uint8_t* b = (uint8_t*)&ctx->vr[10]; uint8_t* c = (uint8_t*)&ctx->vr[7]; uint8_t* d = (uint8_t*)&ctx->vr[7]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+        { uint8_t* a = (uint8_t*)&ctx->vr[3]; uint8_t* b = (uint8_t*)&ctx->vr[10]; uint8_t* c = (uint8_t*)&ctx->vr[9]; uint8_t* d = (uint8_t*)&ctx->vr[9]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+        { uint8_t* a = (uint8_t*)&ctx->vr[3]; uint8_t* b = (uint8_t*)&ctx->vr[10]; uint8_t* c = (uint8_t*)&ctx->vr[11]; uint8_t* d = (uint8_t*)&ctx->vr[3]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+        { uint64_t* d=(uint64_t*)&ctx->vr[10]; uint64_t* a=(uint64_t*)&ctx->vr[31]; uint64_t* b=(uint64_t*)&ctx->vr[12]; d[0]=a[0]&~b[0]; d[1]=a[1]&~b[1]; }
+        { uint64_t ea = ((ctx->gpr[8] + ctx->gpr[30])) & ~0xFULL; vm_raw_ld16(&ctx->vr[31], ea); }
+        ctx->gpr[4] = ctx->gpr[25] | 0x0;
+        { uint64_t* d=(uint64_t*)&ctx->vr[7]; uint64_t* a=(uint64_t*)&ctx->vr[7]; uint64_t* b=(uint64_t*)&ctx->vr[8]; uint64_t* c=(uint64_t*)&ctx->vr[26]; d[0]=(a[0]&~c[0])|(b[0]&c[0]); d[1]=(a[1]&~c[1])|(b[1]&c[1]); }
+        ctx->gpr[5] = ctx->gpr[24] | 0x0;
+        { uint64_t ea = ((ctx->gpr[3] + ctx->gpr[30])) & ~0xFULL; vm_raw_ld16(&ctx->vr[25], ea); }
+        vmx_vmaddfp(&ctx->vr[2], &ctx->vr[10], &ctx->vr[29], &ctx->vr[2], ctx->vscr);
+        vmx_vmaddfp(&ctx->vr[4], &ctx->vr[10], &ctx->vr[29], &ctx->vr[4], ctx->vscr);
+        { uint64_t* d=(uint64_t*)&ctx->vr[9]; uint64_t* a=(uint64_t*)&ctx->vr[9]; uint64_t* b=(uint64_t*)&ctx->vr[8]; uint64_t* c=(uint64_t*)&ctx->vr[31]; d[0]=(a[0]&~c[0])|(b[0]&c[0]); d[1]=(a[1]&~c[1])|(b[1]&c[1]); }
+        vmx_vmaddfp(&ctx->vr[5], &ctx->vr[10], &ctx->vr[29], &ctx->vr[5], ctx->vscr);
+        { uint64_t* d=(uint64_t*)&ctx->vr[3]; uint64_t* a=(uint64_t*)&ctx->vr[3]; uint64_t* b=(uint64_t*)&ctx->vr[8]; uint64_t* c=(uint64_t*)&ctx->vr[25]; d[0]=(a[0]&~c[0])|(b[0]&c[0]); d[1]=(a[1]&~c[1])|(b[1]&c[1]); }
+        { uint64_t* d=(uint64_t*)&ctx->vr[7]; uint64_t* a=(uint64_t*)&ctx->vr[7]; uint64_t* b=(uint64_t*)&ctx->vr[12]; d[0]=a[0]&~b[0]; d[1]=a[1]&~b[1]; }
+        ctx->gpr[3] = ctx->gpr[24] | 0x0;
+        { uint64_t* d=(uint64_t*)&ctx->vr[8]; uint64_t* a=(uint64_t*)&ctx->vr[9]; uint64_t* b=(uint64_t*)&ctx->vr[12]; d[0]=a[0]&~b[0]; d[1]=a[1]&~b[1]; }
+        { uint64_t* d=(uint64_t*)&ctx->vr[3]; uint64_t* a=(uint64_t*)&ctx->vr[3]; uint64_t* b=(uint64_t*)&ctx->vr[12]; d[0]=a[0]&~b[0]; d[1]=a[1]&~b[1]; }
+        vmx_vmaddfp(&ctx->vr[2], &ctx->vr[2], &ctx->vr[7], &ctx->vr[6], ctx->vscr);
+        vmx_vmaddfp(&ctx->vr[4], &ctx->vr[4], &ctx->vr[8], &ctx->vr[6], ctx->vscr);
+        vmx_vmaddfp(&ctx->vr[3], &ctx->vr[5], &ctx->vr[3], &ctx->vr[6], ctx->vscr);
+        { uint64_t ea = ((ctx->gpr[29] + ctx->gpr[1])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[2]); }
+        { uint64_t ea = ((ctx->gpr[28] + ctx->gpr[1])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[4]); }
+        { uint64_t ea = ((ctx->gpr[26] + ctx->gpr[1])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[3]); }
+        { uint64_t ea = ((ctx->gpr[6] + ctx->gpr[30])) & ~0xFULL; vm_raw_ld16(&ctx->vr[29], ea); }
+        { uint64_t ea = ((ctx->gpr[27] + ctx->gpr[1])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[29]); }
+        ctx->lr = 0x00235AC8; june_evt_func_00234E3C(ctx); DRAIN_TRAMPOLINE(ctx);
+        ctx->gpr[0] = (int64_t)(int32_t)(0x150);
+        { float ftmp = (float)ctx->fpr[29]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x150, tmp); }
+        { uint64_t _a = ctx->gpr[1]; uint64_t _r = _a + (uint64_t)(int64_t)(0x90); ctx->gpr[5] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t _a = ctx->gpr[1]; uint64_t _r = _a + (uint64_t)(int64_t)(0xA0); ctx->gpr[6] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t ea = ((ctx->gpr[1] + ctx->gpr[0])) & ~0xFULL; vm_raw_ld16(&ctx->vr[2], ea); }
+        { uint32_t* d = (uint32_t*)&ctx->vr[2]; uint32_t val = ((uint32_t*)&ctx->vr[2])[0]; d[0] = d[1] = d[2] = d[3] = val; }
+        ctx->lr = 0x00235AE4; june_evt_func_00D535C0(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        ctx->gpr[3] = (int64_t)(int32_t)(0xA0);
+        ctx->gpr[4] = (int64_t)(int32_t)(0x90);
+        ctx->gpr[6] = (int64_t)(int32_t)(0xC0);
+        ctx->gpr[5] = ctx->gpr[24] | 0x0;
+        { uint64_t ea = ((ctx->gpr[3] + ctx->gpr[1])) & ~0xFULL; vm_raw_ld16(&ctx->vr[2], ea); }
+        { uint64_t ea = ((ctx->gpr[4] + ctx->gpr[1])) & ~0xFULL; vm_raw_ld16(&ctx->vr[3], ea); }
+        ctx->gpr[3] = ctx->gpr[24] | 0x0;
+        { uint64_t* d=(uint64_t*)&ctx->vr[4]; uint64_t* a=(uint64_t*)&ctx->vr[2]; uint64_t* b=(uint64_t*)&ctx->vr[26]; for(int i=0;i<2;i++) d[i]=a[i]&b[i]; }
+        ctx->gpr[4] = ctx->gpr[25] | 0x0;
+        { uint64_t* d = (uint64_t*)&ctx->vr[5]; uint64_t* a = (uint64_t*)&ctx->vr[3]; uint64_t* b = (uint64_t*)&ctx->vr[27]; d[0] = a[0] ^ b[0]; d[1] = a[1] ^ b[1]; }
+        { uint64_t* d=(uint64_t*)&ctx->vr[3]; uint64_t* a=(uint64_t*)&ctx->vr[3]; uint64_t* b=(uint64_t*)&ctx->vr[26]; for(int i=0;i<2;i++) d[i]=a[i]&b[i]; }
+        { uint64_t* d=(uint64_t*)&ctx->vr[4]; uint64_t* a=(uint64_t*)&ctx->vr[4]; uint64_t* b=(uint64_t*)&ctx->vr[5]; uint64_t* c=(uint64_t*)&ctx->vr[25]; d[0]=(a[0]&~c[0])|(b[0]&c[0]); d[1]=(a[1]&~c[1])|(b[1]&c[1]); }
+        { uint64_t* d=(uint64_t*)&ctx->vr[2]; uint64_t* a=(uint64_t*)&ctx->vr[3]; uint64_t* b=(uint64_t*)&ctx->vr[2]; uint64_t* c=(uint64_t*)&ctx->vr[25]; d[0]=(a[0]&~c[0])|(b[0]&c[0]); d[1]=(a[1]&~c[1])|(b[1]&c[1]); }
+        { uint64_t ea = ((ctx->gpr[29] + ctx->gpr[1])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[4]); }
+        { uint64_t ea = ((ctx->gpr[6] + ctx->gpr[30])) & ~0xFULL; vm_raw_ld16(&ctx->vr[3], ea); }
+        { uint64_t ea = ((ctx->gpr[26] + ctx->gpr[1])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[2]); }
+        { uint64_t ea = ((ctx->gpr[28] + ctx->gpr[1])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[3]); }
+        { uint64_t ea = ((ctx->gpr[27] + ctx->gpr[1])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[29]); }
+        ctx->lr = 0x00235B34; june_evt_func_00234E3C(ctx); DRAIN_TRAMPOLINE(ctx);
+        { uint32_t tmp = vm_read32(ctx->gpr[30] + 0xD0); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        ctx->gpr[0] = (int64_t)(int32_t)(0x150);
+        { uint64_t _a = ctx->gpr[1]; uint64_t _r = _a + (uint64_t)(int64_t)(0x70); ctx->gpr[5] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->fpr[1] = ppu_fp_single(ppu_fmul(ctx->fpr[30], ctx->fpr[1]));
+        { uint64_t _a = ctx->gpr[1]; uint64_t _r = _a + (uint64_t)(int64_t)(0x80); ctx->gpr[6] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { float ftmp = (float)ctx->fpr[1]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x150, tmp); }
+        { uint64_t ea = ((ctx->gpr[1] + ctx->gpr[0])) & ~0xFULL; vm_raw_ld16(&ctx->vr[2], ea); }
+        { uint32_t* d = (uint32_t*)&ctx->vr[2]; uint32_t val = ((uint32_t*)&ctx->vr[2])[0]; d[0] = d[1] = d[2] = d[3] = val; }
+        ctx->lr = 0x00235B58; june_evt_func_00D535C0(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        ctx->gpr[3] = (int64_t)(int32_t)(0x70);
+        ctx->gpr[4] = (int64_t)(int32_t)(0x80);
+        ctx->gpr[6] = (int64_t)(int32_t)(0xE0);
+        ctx->gpr[5] = ctx->gpr[24] | 0x0;
+        { uint64_t ea = ((ctx->gpr[3] + ctx->gpr[1])) & ~0xFULL; vm_raw_ld16(&ctx->vr[2], ea); }
+        { uint64_t ea = ((ctx->gpr[4] + ctx->gpr[1])) & ~0xFULL; vm_raw_ld16(&ctx->vr[3], ea); }
+        { uint64_t* d = (uint64_t*)&ctx->vr[4]; uint64_t* a = (uint64_t*)&ctx->vr[2]; uint64_t* b = (uint64_t*)&ctx->vr[27]; d[0] = a[0] ^ b[0]; d[1] = a[1] ^ b[1]; }
+        ctx->gpr[3] = ctx->gpr[24] | 0x0;
+        { uint64_t* d=(uint64_t*)&ctx->vr[5]; uint64_t* a=(uint64_t*)&ctx->vr[3]; uint64_t* b=(uint64_t*)&ctx->vr[26]; for(int i=0;i<2;i++) d[i]=a[i]&b[i]; }
+        ctx->gpr[4] = ctx->gpr[25] | 0x0;
+        { uint64_t* d=(uint64_t*)&ctx->vr[4]; uint64_t* a=(uint64_t*)&ctx->vr[4]; uint64_t* b=(uint64_t*)&ctx->vr[26]; for(int i=0;i<2;i++) d[i]=a[i]&b[i]; }
+        { uint64_t* d=(uint64_t*)&ctx->vr[2]; uint64_t* a=(uint64_t*)&ctx->vr[5]; uint64_t* b=(uint64_t*)&ctx->vr[2]; uint64_t* c=(uint64_t*)&ctx->vr[31]; d[0]=(a[0]&~c[0])|(b[0]&c[0]); d[1]=(a[1]&~c[1])|(b[1]&c[1]); }
+        { uint64_t* d=(uint64_t*)&ctx->vr[3]; uint64_t* a=(uint64_t*)&ctx->vr[4]; uint64_t* b=(uint64_t*)&ctx->vr[3]; uint64_t* c=(uint64_t*)&ctx->vr[31]; d[0]=(a[0]&~c[0])|(b[0]&c[0]); d[1]=(a[1]&~c[1])|(b[1]&c[1]); }
+        { uint64_t ea = ((ctx->gpr[29] + ctx->gpr[1])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[2]); }
+        { uint64_t ea = ((ctx->gpr[28] + ctx->gpr[1])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[3]); }
+        { uint64_t ea = ((ctx->gpr[6] + ctx->gpr[30])) & ~0xFULL; vm_raw_ld16(&ctx->vr[2], ea); }
+        { uint64_t ea = ((ctx->gpr[27] + ctx->gpr[1])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[29]); }
+        { uint64_t ea = ((ctx->gpr[26] + ctx->gpr[1])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[2]); }
+        ctx->lr = 0x00235BA8; june_evt_func_00234E3C(ctx); DRAIN_TRAMPOLINE(ctx);
+        ctx->gpr[3] = (int64_t)(int32_t)(0xD0);
+        ctx->gpr[4] = (int64_t)(int32_t)(0xE0);
+        ctx->gpr[5] = (int64_t)(int32_t)(0xF0);
+        { uint64_t ea = ((ctx->gpr[3] + ctx->gpr[1])) & ~0xFULL; vm_raw_ld16(&ctx->vr[31], ea); }
+        { uint64_t ea = ((ctx->gpr[4] + ctx->gpr[1])) & ~0xFULL; vm_raw_ld16(&ctx->vr[3], ea); }
+        { uint64_t ea = ((ctx->gpr[5] + ctx->gpr[1])) & ~0xFULL; vm_raw_ld16(&ctx->vr[2], ea); }
+loc_00235BC0:
+        vmx_vaddfp(&ctx->vr[4], &ctx->vr[30], &ctx->vr[28], ctx->vscr);
+        ctx->gpr[3] = (int64_t)(int32_t)(0x10);
+        { uint64_t ea = (ctx->gpr[31]) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[31]); }
+        ctx->gpr[4] = (int64_t)(int32_t)(0x20);
+        ctx->gpr[5] = (int64_t)(int32_t)(0x30);
+        ctx->gpr[30] = (int64_t)(int32_t)(1);
+        { uint64_t ea = ((ctx->gpr[3] + ctx->gpr[31])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[3]); }
+        { uint64_t ea = ((ctx->gpr[4] + ctx->gpr[31])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[2]); }
+        { uint64_t ea = ((ctx->gpr[5] + ctx->gpr[31])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[4]); }
+loc_00235BE4:
+        ctx->gpr[3] = ctx->gpr[30] | 0x0;
+        ctx->gpr[0] = (int64_t)(int32_t)(0x170);
+        { uint64_t ea = ((ctx->gpr[1] + ctx->gpr[0])) & ~0xFULL; vm_raw_ld16(&ctx->vr[25], ea); }
+        { uint64_t _a = ctx->gpr[0]; uint64_t _r = _a + (uint64_t)(int64_t)(0x10); ctx->gpr[0] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t ea = ((ctx->gpr[1] + ctx->gpr[0])) & ~0xFULL; vm_raw_ld16(&ctx->vr[26], ea); }
+        { uint64_t _a = ctx->gpr[0]; uint64_t _r = _a + (uint64_t)(int64_t)(0x10); ctx->gpr[0] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t ea = ((ctx->gpr[1] + ctx->gpr[0])) & ~0xFULL; vm_raw_ld16(&ctx->vr[27], ea); }
+        { uint64_t _a = ctx->gpr[0]; uint64_t _r = _a + (uint64_t)(int64_t)(0x10); ctx->gpr[0] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t ea = ((ctx->gpr[1] + ctx->gpr[0])) & ~0xFULL; vm_raw_ld16(&ctx->vr[28], ea); }
+        { uint64_t _a = ctx->gpr[0]; uint64_t _r = _a + (uint64_t)(int64_t)(0x10); ctx->gpr[0] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t ea = ((ctx->gpr[1] + ctx->gpr[0])) & ~0xFULL; vm_raw_ld16(&ctx->vr[29], ea); }
+        { uint64_t _a = ctx->gpr[0]; uint64_t _r = _a + (uint64_t)(int64_t)(0x10); ctx->gpr[0] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t ea = ((ctx->gpr[1] + ctx->gpr[0])) & ~0xFULL; vm_raw_ld16(&ctx->vr[30], ea); }
+        { uint64_t _a = ctx->gpr[0]; uint64_t _r = _a + (uint64_t)(int64_t)(0x10); ctx->gpr[0] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t ea = ((ctx->gpr[1] + ctx->gpr[0])) & ~0xFULL; vm_raw_ld16(&ctx->vr[31], ea); }
+        ctx->gpr[0] = vm_read64(ctx->gpr[1] + 0x250);
+        ctx->lr = ctx->gpr[0];
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0x228); memcpy(&ctx->fpr[29], &tmp, 8); }
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0x230); memcpy(&ctx->fpr[30], &tmp, 8); }
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0x238); memcpy(&ctx->fpr[31], &tmp, 8); }
+        ctx->gpr[24] = _cs_24;
+        ctx->gpr[25] = _cs_25;
+        ctx->gpr[26] = _cs_26;
+        ctx->gpr[27] = _cs_27;
+        ctx->gpr[28] = _cs_28;
+        ctx->gpr[29] = _cs_29;
+        ctx->gpr[30] = _cs_30;
+        ctx->gpr[31] = _cs_31;
+        ctx->gpr[1] = ctx->gpr[1] + (int64_t)(0x240);
+        return;
 }
 
 void june_evt_func_00235C78(ppu_context* ctx) {
@@ -17815,12 +19766,367 @@ loc_0023699C:
 
 void june_evt_func_002369D4(ppu_context* ctx) {
     PPU_MM_SNAP
-        { g_trampoline_fn = (void(*)(void*))june_evt_func_00236AC0; return; }
+        vm_write64(ctx->gpr[1] + -0x70, ctx->gpr[1]); ctx->gpr[1] += -0x70;
+        ctx->gpr[0] = ctx->lr;
+        vm_write64(ctx->gpr[1] + 0x80, ctx->gpr[0]);
+        ctx->gpr[5] = (int64_t)(int32_t)(1);
+        ctx->gpr[6] = (int64_t)(int32_t)(1);
+        ctx->gpr[7] = (int64_t)(int32_t)(1);
+        ctx->gpr[8] = (int64_t)(int32_t)(1);
+        ctx->lr = 0x002369F4; june_evt_func_002366D0(ctx); DRAIN_TRAMPOLINE(ctx);
+        ctx->gpr[0] = vm_read64(ctx->gpr[1] + 0x80);
+        ctx->lr = ctx->gpr[0];
+        ctx->gpr[1] = ctx->gpr[1] + (int64_t)(0x70);
+        return;
 }
 
 void june_evt_func_00236AC0(ppu_context* ctx) {
     PPU_MM_SNAP
-        { g_trampoline_fn = (void(*)(void*))june_evt_func_00236FC8; return; }
+        uint64_t _cs_27 = ctx->gpr[27];
+        uint64_t _cs_28 = ctx->gpr[28];
+        uint64_t _cs_29 = ctx->gpr[29];
+        uint64_t _cs_30 = ctx->gpr[30];
+        uint64_t _cs_31 = ctx->gpr[31];
+        vm_write64(ctx->gpr[1] + -0x170, ctx->gpr[1]); ctx->gpr[1] += -0x170;
+        ctx->gpr[0] = ctx->lr;
+        vm_write64(ctx->gpr[1] + 0x180, ctx->gpr[0]);
+        { uint64_t tmp; memcpy(&tmp, &ctx->fpr[31], 8); vm_write64(ctx->gpr[1] + 0x168, tmp); }
+        ctx->gpr[0] = ctx->gpr[1] + (int64_t)(0x130);
+        { uint64_t ea = (ctx->gpr[0]) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[31]); }
+        vm_write64(ctx->gpr[1] + 0x158, ctx->gpr[30]);
+        ctx->fpr[31] = ctx->fpr[1];
+        ctx->gpr[7] = (int64_t)(int32_t)((uint32_t)0x23 << 16);
+        vm_write64(ctx->gpr[1] + 0x160, ctx->gpr[31]);
+        ctx->gpr[30] = ctx->gpr[6] | 0x0;
+        vm_write64(ctx->gpr[1] + 0x150, ctx->gpr[29]);
+        ctx->gpr[31] = ctx->gpr[7] + (int64_t)(0x6A10);
+        vm_write64(ctx->gpr[1] + 0x148, ctx->gpr[28]);
+        ctx->gpr[29] = ctx->gpr[5] | 0x0;
+        vm_write64(ctx->gpr[1] + 0x140, ctx->gpr[27]);
+        ctx->gpr[28] = ctx->gpr[4] | 0x0;
+        ctx->gpr[27] = ctx->gpr[3] | 0x0;
+        ctx->lr = 0x00236B0C; june_evt_func_008F6EB4(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        ctx->fpr[4] = ppu_fp_single(ppu_fmul(ctx->fpr[31], ctx->fpr[1]));
+        { uint32_t tmp = vm_read32(ctx->gpr[31] + 0x0); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        { uint32_t v[4]; for(int i=0;i<4;i++) v[i]=(uint32_t)(int32_t)0; ppu_vstu4(&ctx->vr[2],v); }
+        ctx->gpr[3] = (int64_t)(int32_t)(0x70);
+        ctx->gpr[6] = (int64_t)(int32_t)((uint32_t)0x15E << 16);
+        ctx->fpr[4] = ppu_fp_single(ppu_fdiv(ctx->fpr[4], ctx->fpr[1]));
+        { uint64_t ea = ((ctx->gpr[3] + ctx->gpr[1])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[2]); }
+        { uint32_t tmp = vm_read32(ctx->gpr[31] + 0x4); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[3] = ftmp; }
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0x70); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        ctx->gpr[31] = (int64_t)(int32_t)(1);
+        ctx->gpr[6] = vm_read16(ctx->gpr[6] + 0x7BD8);
+        ctx->gpr[3] = ppc_rlw64(ctx->gpr[6], 0, 27, 27, 0, 0);
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        ctx->fpr[3] = ppu_fp_single(ppu_fmul(ctx->fpr[4], ctx->fpr[3]));
+        ctx->fpr[2] = -ctx->fpr[4];
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_00236B70;
+        ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0x115 << 16);
+        ctx->gpr[4] = vm_read32(ctx->gpr[3] + -0x496C);
+        { uint64_t _a = ctx->gpr[4]; uint64_t _r = _a + (uint64_t)(int64_t)(1); ctx->gpr[4] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { int64_t a = (int32_t)ctx->gpr[4]; int64_t b = (int64_t)4; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        vm_write32(ctx->gpr[3] + -0x496C, ctx->gpr[4]);
+        if ((((ctx->cr >> 31) & 1) == 1)) goto loc_00236B98;
+        { float ftmp = (float)ctx->fpr[3]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x78, tmp); }
+        goto loc_00236B98;
+loc_00236B70:
+        ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0x115 << 16);
+        ctx->gpr[3] = vm_read32(ctx->gpr[3] + -0x496C);
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)4; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 24)) | (cr_val << 24); }
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_00236B98;
+        if ((((ctx->cr >> 26) & 1) == 1)) goto loc_00236B8C;
+        { float ftmp = (float)ctx->fpr[2]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x78, tmp); }
+loc_00236B8C:
+        ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0x115 << 16);
+        ctx->gpr[4] = (int64_t)(int32_t)(0);
+        vm_write32(ctx->gpr[3] + -0x496C, ctx->gpr[4]);
+loc_00236B98:
+        ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0x23 << 16);
+        ctx->gpr[4] = ppc_rlw64(ctx->gpr[6], 0, 25, 25, 0, 0);
+        ctx->gpr[3] = ctx->gpr[3] + (int64_t)(0x6A10);
+        { int64_t a = (int32_t)ctx->gpr[4]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        ctx->gpr[7] = (int64_t)(int32_t)((uint32_t)0x115 << 16);
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x8); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[5] = ftmp; }
+        ctx->fpr[5] = ppu_fp_single(ppu_fmul(ctx->fpr[4], ctx->fpr[5]));
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_00236BD4;
+        ctx->gpr[3] = vm_read32(ctx->gpr[7] + -0x4970);
+        { uint64_t _a = ctx->gpr[3]; uint64_t _r = _a + (uint64_t)(int64_t)(1); ctx->gpr[3] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)4; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        vm_write32(ctx->gpr[7] + -0x4970, ctx->gpr[3]);
+        if ((((ctx->cr >> 31) & 1) == 1)) goto loc_00236BF4;
+        { float ftmp = (float)ctx->fpr[5]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x78, tmp); }
+        goto loc_00236BF4;
+loc_00236BD4:
+        ctx->gpr[3] = vm_read32(ctx->gpr[7] + -0x4970);
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)4; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 24)) | (cr_val << 24); }
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_00236BF4;
+        if ((((ctx->cr >> 26) & 1) == 1)) goto loc_00236BEC;
+        { float ftmp = (float)ctx->fpr[4]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x78, tmp); }
+loc_00236BEC:
+        ctx->gpr[3] = (int64_t)(int32_t)(0);
+        vm_write32(ctx->gpr[7] + -0x4970, ctx->gpr[3]);
+loc_00236BF4:
+        ctx->gpr[3] = ppc_rlw64(ctx->gpr[6], 0, 24, 24, 0, 0);
+        ctx->gpr[7] = (int64_t)(int32_t)((uint32_t)0x115 << 16);
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_00236C24;
+        ctx->gpr[3] = vm_read32(ctx->gpr[7] + -0x497C);
+        { uint64_t _a = ctx->gpr[3]; uint64_t _r = _a + (uint64_t)(int64_t)(1); ctx->gpr[3] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)4; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        vm_write32(ctx->gpr[7] + -0x497C, ctx->gpr[3]);
+        if ((((ctx->cr >> 31) & 1) == 1)) goto loc_00236C48;
+        ctx->fpr[1] = ctx->fpr[3];
+        { float ftmp = (float)ctx->fpr[3]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x70, tmp); }
+        goto loc_00236C48;
+loc_00236C24:
+        ctx->gpr[3] = vm_read32(ctx->gpr[7] + -0x497C);
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)4; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 24)) | (cr_val << 24); }
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_00236C48;
+        if ((((ctx->cr >> 26) & 1) == 1)) goto loc_00236C40;
+        ctx->fpr[1] = ctx->fpr[2];
+        { float ftmp = (float)ctx->fpr[2]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x70, tmp); }
+loc_00236C40:
+        ctx->gpr[3] = (int64_t)(int32_t)(0);
+        vm_write32(ctx->gpr[7] + -0x497C, ctx->gpr[3]);
+loc_00236C48:
+        ctx->gpr[3] = ppc_rlw64(ctx->gpr[6], 0, 26, 26, 0, 0);
+        ctx->gpr[7] = (int64_t)(int32_t)((uint32_t)0x115 << 16);
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_00236C78;
+        ctx->gpr[3] = vm_read32(ctx->gpr[7] + -0x4980);
+        { uint64_t _a = ctx->gpr[3]; uint64_t _r = _a + (uint64_t)(int64_t)(1); ctx->gpr[3] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)4; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        vm_write32(ctx->gpr[7] + -0x4980, ctx->gpr[3]);
+        if ((((ctx->cr >> 31) & 1) == 1)) goto loc_00236C9C;
+        ctx->fpr[1] = ctx->fpr[5];
+        { float ftmp = (float)ctx->fpr[5]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x70, tmp); }
+        goto loc_00236C9C;
+loc_00236C78:
+        ctx->gpr[3] = vm_read32(ctx->gpr[7] + -0x4980);
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)4; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 24)) | (cr_val << 24); }
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_00236C9C;
+        if ((((ctx->cr >> 26) & 1) == 1)) goto loc_00236C94;
+        ctx->fpr[1] = ctx->fpr[4];
+        { float ftmp = (float)ctx->fpr[4]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x70, tmp); }
+loc_00236C94:
+        ctx->gpr[3] = (int64_t)(int32_t)(0);
+        vm_write32(ctx->gpr[7] + -0x4980, ctx->gpr[3]);
+loc_00236C9C:
+        ctx->gpr[3] = ppc_rlw64(ctx->gpr[6], 0, 21, 21, 0, 0);
+        ctx->gpr[7] = (int64_t)(int32_t)((uint32_t)0x115 << 16);
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_00236CD8;
+        ctx->gpr[3] = vm_read32(ctx->gpr[7] + -0x4978);
+        { uint64_t _a = ctx->gpr[3]; uint64_t _r = _a + (uint64_t)(int64_t)(1); ctx->gpr[3] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)4; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        vm_write32(ctx->gpr[7] + -0x4978, ctx->gpr[3]);
+        if ((((ctx->cr >> 31) & 1) == 1)) goto loc_00236CF8;
+        ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0x23 << 16);
+        ctx->gpr[3] = ctx->gpr[3] + (int64_t)(0x6A10);
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0xC); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[3] = ftmp; }
+        ctx->fpr[3] = ppu_fp_single(ppu_fmul(ctx->fpr[4], ctx->fpr[3]));
+        { float ftmp = (float)ctx->fpr[3]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x74, tmp); }
+        goto loc_00236CF8;
+loc_00236CD8:
+        ctx->gpr[3] = vm_read32(ctx->gpr[7] + -0x4978);
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)4; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 24)) | (cr_val << 24); }
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_00236CF8;
+        if ((((ctx->cr >> 26) & 1) == 1)) goto loc_00236CF0;
+        { float ftmp = (float)ctx->fpr[4]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x74, tmp); }
+loc_00236CF0:
+        ctx->gpr[3] = (int64_t)(int32_t)(0);
+        vm_write32(ctx->gpr[7] + -0x4978, ctx->gpr[3]);
+loc_00236CF8:
+        ctx->gpr[3] = ppc_rlw64(ctx->gpr[6], 0, 20, 20, 0, 0);
+        ctx->gpr[6] = (int64_t)(int32_t)((uint32_t)0x115 << 16);
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_00236D34;
+        ctx->gpr[3] = vm_read32(ctx->gpr[6] + -0x4974);
+        { uint64_t _a = ctx->gpr[3]; uint64_t _r = _a + (uint64_t)(int64_t)(1); ctx->gpr[3] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)4; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        vm_write32(ctx->gpr[6] + -0x4974, ctx->gpr[3]);
+        if ((((ctx->cr >> 31) & 1) == 1)) goto loc_00236D54;
+        ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0x23 << 16);
+        ctx->gpr[3] = ctx->gpr[3] + (int64_t)(0x6A10);
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x10); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[2] = ftmp; }
+        ctx->fpr[2] = ppu_fp_single(ppu_fmul(ctx->fpr[4], ctx->fpr[2]));
+        { float ftmp = (float)ctx->fpr[2]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x74, tmp); }
+        goto loc_00236D54;
+loc_00236D34:
+        ctx->gpr[3] = vm_read32(ctx->gpr[6] + -0x4974);
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)4; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 24)) | (cr_val << 24); }
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_00236D54;
+        if ((((ctx->cr >> 26) & 1) == 1)) goto loc_00236D4C;
+        { float ftmp = (float)ctx->fpr[2]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x74, tmp); }
+loc_00236D4C:
+        ctx->gpr[3] = (int64_t)(int32_t)(0);
+        vm_write32(ctx->gpr[6] + -0x4974, ctx->gpr[3]);
+loc_00236D54:
+        ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0x15E << 16);
+        ctx->gpr[3] = vm_read16(ctx->gpr[3] + 0x7BE4);
+        ctx->gpr[3] = ppc_rlw64(ctx->gpr[3], 0, 31, 31, 0, 0);
+        { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_00236D74;
+        { uint32_t tmp = vm_read32(ctx->gpr[27] + 0x4); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[2] = ftmp; }
+        ctx->fpr[2] = -ctx->fpr[2];
+        { float ftmp = (float)ctx->fpr[2]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[1] + 0x74, tmp); }
+loc_00236D74:
+        ctx->fpr[2] = ctx->fpr[1];
+        ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0x23 << 16);
+        ctx->gpr[3] = ctx->gpr[3] + (int64_t)(0x6A10);
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x14); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        { double a = ctx->fpr[2]; double b = ctx->fpr[1]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 0)) goto loc_00236DA4;
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0x74); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[2] = ftmp; }
+        { double a = ctx->fpr[2]; double b = ctx->fpr[1]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 0)) goto loc_00236DA4;
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0x78); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[2] = ftmp; }
+        { double a = ctx->fpr[2]; double b = ctx->fpr[1]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_00236F7C;
+loc_00236DA4:
+        { uint64_t _a = ctx->gpr[29]; uint64_t _r = _a + (uint64_t)(int64_t)(0x10); ctx->gpr[4] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t _a = ctx->gpr[1]; uint64_t _r = _a + (uint64_t)(int64_t)(0xB0); ctx->gpr[3] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->gpr[4] = ppc_rldicl(ctx->gpr[4], 0, 32);
+        ctx->lr = 0x00236DB4; june_evt_func_00234B98(ctx); DRAIN_TRAMPOLINE(ctx);
+        { int64_t a = (int32_t)ctx->gpr[30]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_00236DDC;
+        { uint64_t _a = ctx->gpr[1]; uint64_t _r = _a + (uint64_t)(int64_t)(0xF0); ctx->gpr[29] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->gpr[4] = ctx->gpr[30] | 0x0;
+        ctx->gpr[3] = ctx->gpr[29] | 0x0;
+        ctx->lr = 0x00236DCC; june_evt_func_00234CA8(ctx); DRAIN_TRAMPOLINE(ctx);
+        { uint64_t _a = ctx->gpr[1]; uint64_t _r = _a + (uint64_t)(int64_t)(0xB0); ctx->gpr[3] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->gpr[4] = ctx->gpr[29] | 0x0;
+        ctx->gpr[5] = ctx->gpr[3] | 0x0;
+        ctx->lr = 0x00236DDC; june_evt_func_00234E3C(ctx); DRAIN_TRAMPOLINE(ctx);
+loc_00236DDC:
+        ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0x23 << 16);
+        ctx->gpr[4] = (int64_t)(int32_t)(0xD0);
+        { uint32_t v[4]; for(int i=0;i<4;i++) v[i]=(uint32_t)(int32_t)0; ppu_vstu4(&ctx->vr[3],v); }
+        ctx->gpr[3] = ctx->gpr[3] + (int64_t)(0x6A10);
+        ctx->gpr[5] = (int64_t)(int32_t)(0x20);
+        ctx->gpr[6] = (int64_t)(int32_t)(0x30);
+        { uint64_t ea = ((ctx->gpr[4] + ctx->gpr[1])) & ~0xFULL; vm_raw_ld16(&ctx->vr[2], ea); }
+        ctx->gpr[4] = (int64_t)(int32_t)(0x40);
+        { uint64_t ea = ((ctx->gpr[5] + ctx->gpr[3])) & ~0xFULL; vm_raw_ld16(&ctx->vr[4], ea); }
+        { uint64_t ea = ((ctx->gpr[6] + ctx->gpr[3])) & ~0xFULL; vm_raw_ld16(&ctx->vr[5], ea); }
+        { uint8_t* a = (uint8_t*)&ctx->vr[2]; uint8_t* b = (uint8_t*)&ctx->vr[3]; uint8_t* c = (uint8_t*)&ctx->vr[4]; uint8_t* d = (uint8_t*)&ctx->vr[4]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+        { uint8_t* a = (uint8_t*)&ctx->vr[3]; uint8_t* b = (uint8_t*)&ctx->vr[2]; uint8_t* c = (uint8_t*)&ctx->vr[5]; uint8_t* d = (uint8_t*)&ctx->vr[5]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+        ctx->gpr[5] = (int64_t)(int32_t)(0x54);
+        { uint64_t ea = ((ctx->gpr[4] + ctx->gpr[3])) & ~0xFULL; vm_raw_ld16(&ctx->vr[7], ea); }
+        vmx_vmaddfp(&ctx->vr[6], &ctx->vr[4], &ctx->vr[3], &ctx->vr[4], ctx->vscr);
+        { uint8_t* a = (uint8_t*)&ctx->vr[2]; uint8_t* b = (uint8_t*)&ctx->vr[3]; uint8_t* c = (uint8_t*)&ctx->vr[7]; uint8_t* d = (uint8_t*)&ctx->vr[2]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+        ctx->gpr[4] = (int64_t)(int32_t)(0x50);
+        { uint64_t* d = (uint64_t*)&ctx->vr[7]; uint64_t* a = (uint64_t*)&ctx->vr[3]; uint64_t* b = (uint64_t*)&ctx->vr[3]; d[0] = a[0] ^ b[0]; d[1] = a[1] ^ b[1]; }
+        ctx->gpr[6] = (int64_t)(int32_t)(0x70);
+        vmx_vmaddfp(&ctx->vr[5], &ctx->vr[5], &ctx->vr[6], &ctx->vr[5], ctx->vscr);
+        { uint64_t ea = (ctx->gpr[4] + ctx->gpr[3]); uint32_t sh = (uint32_t)(ea & 0xF); uint8_t* m = vm_base + (uint32_t)(ea & ~0xFULL); uint8_t* d = (uint8_t*)&ctx->vr[6]; for (int i = 0; i < 16; i++) d[i] = (sh + (uint32_t)i < 16) ? m[sh + i] : 0; }
+        { uint64_t ea = (ctx->gpr[5] + ctx->gpr[3]); uint32_t sh = (uint32_t)(ea & 0xF); uint8_t* m = vm_base + (uint32_t)(ea & ~0xFULL); uint8_t* d = (uint8_t*)&ctx->vr[8]; for (int i = 0; i < 16; i++) d[i] = (sh + (uint32_t)i < 16) ? m[sh + i] : 0; }
+        { uint32_t* d = (uint32_t*)&ctx->vr[6]; uint32_t val = ((uint32_t*)&ctx->vr[6])[0]; d[0] = d[1] = d[2] = d[3] = val; }
+        ctx->gpr[4] = (int64_t)(int32_t)(0x90);
+        ctx->gpr[5] = (int64_t)(int32_t)(0x80);
+        { uint64_t ea = ((ctx->gpr[4] + ctx->gpr[3])) & ~0xFULL; vm_raw_ld16(&ctx->vr[10], ea); }
+        vmx_vmaddfp(&ctx->vr[2], &ctx->vr[2], &ctx->vr[5], &ctx->vr[2], ctx->vscr);
+        { uint32_t* d = (uint32_t*)&ctx->vr[5]; uint32_t val = ((uint32_t*)&ctx->vr[8])[0]; d[0] = d[1] = d[2] = d[3] = val; }
+        ctx->gpr[4] = (int64_t)(int32_t)(0xA0);
+        { uint64_t ea = ((ctx->gpr[5] + ctx->gpr[3])) & ~0xFULL; vm_raw_ld16(&ctx->vr[11], ea); }
+        { uint64_t ea = ((ctx->gpr[6] + ctx->gpr[3])) & ~0xFULL; vm_raw_ld16(&ctx->vr[12], ea); }
+        { uint64_t ea = ((ctx->gpr[4] + ctx->gpr[3])) & ~0xFULL; vm_raw_ld16(&ctx->vr[13], ea); }
+        { uint32_t* d = (uint32_t*)&ctx->vr[2]; uint32_t val = ((uint32_t*)&ctx->vr[2])[0]; d[0] = d[1] = d[2] = d[3] = val; }
+        vmx_vrsqrtefp(&ctx->vr[8], &ctx->vr[2], ctx->vscr);
+        ctx->gpr[4] = (int64_t)(int32_t)(0x60);
+        ctx->gpr[5] = (int64_t)(int32_t)(0x70);
+        { int64_t a = (int32_t)ctx->gpr[28]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        vmx_vmaddfp(&ctx->vr[2], &ctx->vr[8], &ctx->vr[7], &ctx->vr[2], ctx->vscr);
+        vmx_vmaddfp(&ctx->vr[9], &ctx->vr[8], &ctx->vr[7], &ctx->vr[6], ctx->vscr);
+        vmx_vnmsubfp(&ctx->vr[2], &ctx->vr[8], &ctx->vr[5], &ctx->vr[2], ctx->vscr);
+        vmx_vmaddfp(&ctx->vr[2], &ctx->vr[2], &ctx->vr[8], &ctx->vr[9], ctx->vscr);
+        (void)vmx_vcmpeqfp(&ctx->vr[9], &ctx->vr[2], &ctx->vr[2]);
+        { uint64_t* d=(uint64_t*)&ctx->vr[2]; uint64_t* a=(uint64_t*)&ctx->vr[8]; uint64_t* b=(uint64_t*)&ctx->vr[2]; uint64_t* c=(uint64_t*)&ctx->vr[9]; d[0]=(a[0]&~c[0])|(b[0]&c[0]); d[1]=(a[1]&~c[1])|(b[1]&c[1]); }
+        vmx_vmaddfp(&ctx->vr[31], &ctx->vr[4], &ctx->vr[3], &ctx->vr[2], ctx->vscr);
+        { uint8_t* a = (uint8_t*)&ctx->vr[31]; uint8_t* b = (uint8_t*)&ctx->vr[31]; uint8_t* c = (uint8_t*)&ctx->vr[10]; uint8_t* d = (uint8_t*)&ctx->vr[2]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+        { uint8_t* a = (uint8_t*)&ctx->vr[31]; uint8_t* b = (uint8_t*)&ctx->vr[31]; uint8_t* c = (uint8_t*)&ctx->vr[12]; uint8_t* d = (uint8_t*)&ctx->vr[4]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+        vmx_vmaddfp(&ctx->vr[2], &ctx->vr[11], &ctx->vr[3], &ctx->vr[2], ctx->vscr);
+        vmx_vnmsubfp(&ctx->vr[2], &ctx->vr[13], &ctx->vr[2], &ctx->vr[4], ctx->vscr);
+        vmx_vmaddfp(&ctx->vr[4], &ctx->vr[2], &ctx->vr[3], &ctx->vr[2], ctx->vscr);
+        { uint8_t tmp[32]; memcpy(tmp, &ctx->vr[2], 16); memcpy(tmp+16, &ctx->vr[2], 16); memcpy(&ctx->vr[8], tmp + 4, 16); }
+        { uint8_t tmp[32]; memcpy(tmp, &ctx->vr[2], 16); memcpy(tmp+16, &ctx->vr[2], 16); memcpy(&ctx->vr[9], tmp + 8, 16); }
+        vmx_vmaddfp(&ctx->vr[4], &ctx->vr[8], &ctx->vr[4], &ctx->vr[8], ctx->vscr);
+        vmx_vmaddfp(&ctx->vr[4], &ctx->vr[9], &ctx->vr[4], &ctx->vr[9], ctx->vscr);
+        { uint64_t ea = ((ctx->gpr[4] + ctx->gpr[3])) & ~0xFULL; vm_raw_ld16(&ctx->vr[9], ea); }
+        { uint64_t ea = ((ctx->gpr[5] + ctx->gpr[1])) & ~0xFULL; vm_raw_ld16(&ctx->vr[10], ea); }
+        { uint32_t* d = (uint32_t*)&ctx->vr[11]; uint32_t val = ((uint32_t*)&ctx->vr[10])[0]; d[0] = d[1] = d[2] = d[3] = val; }
+        { uint32_t* d = (uint32_t*)&ctx->vr[4]; uint32_t val = ((uint32_t*)&ctx->vr[4])[0]; d[0] = d[1] = d[2] = d[3] = val; }
+        vmx_vrsqrtefp(&ctx->vr[8], &ctx->vr[4], ctx->vscr);
+        vmx_vmaddfp(&ctx->vr[4], &ctx->vr[8], &ctx->vr[7], &ctx->vr[4], ctx->vscr);
+        vmx_vmaddfp(&ctx->vr[6], &ctx->vr[8], &ctx->vr[7], &ctx->vr[6], ctx->vscr);
+        { uint32_t* d = (uint32_t*)&ctx->vr[7]; uint32_t val = ((uint32_t*)&ctx->vr[10])[1]; d[0] = d[1] = d[2] = d[3] = val; }
+        vmx_vnmsubfp(&ctx->vr[4], &ctx->vr[8], &ctx->vr[5], &ctx->vr[4], ctx->vscr);
+        { uint32_t* d = (uint32_t*)&ctx->vr[5]; uint32_t val = ((uint32_t*)&ctx->vr[10])[2]; d[0] = d[1] = d[2] = d[3] = val; }
+        vmx_vmaddfp(&ctx->vr[4], &ctx->vr[4], &ctx->vr[8], &ctx->vr[6], ctx->vscr);
+        (void)vmx_vcmpeqfp(&ctx->vr[6], &ctx->vr[4], &ctx->vr[4]);
+        { uint64_t* d=(uint64_t*)&ctx->vr[4]; uint64_t* a=(uint64_t*)&ctx->vr[8]; uint64_t* b=(uint64_t*)&ctx->vr[4]; uint64_t* c=(uint64_t*)&ctx->vr[6]; d[0]=(a[0]&~c[0])|(b[0]&c[0]); d[1]=(a[1]&~c[1])|(b[1]&c[1]); }
+        vmx_vmaddfp(&ctx->vr[2], &ctx->vr[2], &ctx->vr[3], &ctx->vr[4], ctx->vscr);
+        vmx_vmaddfp(&ctx->vr[2], &ctx->vr[2], &ctx->vr[3], &ctx->vr[11], ctx->vscr);
+        vmx_vmaddfp(&ctx->vr[2], &ctx->vr[9], &ctx->vr[2], &ctx->vr[7], ctx->vscr);
+        vmx_vmaddfp(&ctx->vr[31], &ctx->vr[31], &ctx->vr[2], &ctx->vr[5], ctx->vscr);
+        { uint64_t ea = ((ctx->gpr[5] + ctx->gpr[1])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[31]); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_00236F44;
+        { uint64_t _a = ctx->gpr[1]; uint64_t _r = _a + (uint64_t)(int64_t)(0x80); ctx->gpr[3] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->gpr[4] = ctx->gpr[28] | 0x0;
+        ctx->lr = 0x00236F08; june_evt_func_002344D0(ctx); DRAIN_TRAMPOLINE(ctx);
+        ctx->gpr[3] = (int64_t)(int32_t)(0x80);
+        { uint32_t* d = (uint32_t*)&ctx->vr[2]; uint32_t val = ((uint32_t*)&ctx->vr[31])[0]; d[0] = d[1] = d[2] = d[3] = val; }
+        { uint32_t v[4]; for(int i=0;i<4;i++) v[i]=(uint32_t)(int32_t)0; ppu_vstu4(&ctx->vr[3],v); }
+        ctx->gpr[4] = (int64_t)(int32_t)(0x90);
+        { uint32_t* d = (uint32_t*)&ctx->vr[4]; uint32_t val = ((uint32_t*)&ctx->vr[31])[1]; d[0] = d[1] = d[2] = d[3] = val; }
+        ctx->gpr[5] = (int64_t)(int32_t)(0xA0);
+        { uint64_t ea = ((ctx->gpr[3] + ctx->gpr[1])) & ~0xFULL; vm_raw_ld16(&ctx->vr[5], ea); }
+        vmx_vmaddfp(&ctx->vr[2], &ctx->vr[5], &ctx->vr[3], &ctx->vr[2], ctx->vscr);
+        { uint64_t ea = ((ctx->gpr[4] + ctx->gpr[1])) & ~0xFULL; vm_raw_ld16(&ctx->vr[3], ea); }
+        ctx->gpr[3] = (int64_t)(int32_t)(0x70);
+        { uint32_t* d = (uint32_t*)&ctx->vr[5]; uint32_t val = ((uint32_t*)&ctx->vr[31])[2]; d[0] = d[1] = d[2] = d[3] = val; }
+        { uint64_t ea = ((ctx->gpr[5] + ctx->gpr[1])) & ~0xFULL; vm_raw_ld16(&ctx->vr[6], ea); }
+        vmx_vmaddfp(&ctx->vr[2], &ctx->vr[3], &ctx->vr[2], &ctx->vr[4], ctx->vscr);
+        vmx_vmaddfp(&ctx->vr[2], &ctx->vr[6], &ctx->vr[2], &ctx->vr[5], ctx->vscr);
+        { uint64_t ea = ((ctx->gpr[3] + ctx->gpr[1])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[2]); }
+loc_00236F44:
+        { uint32_t tmp = vm_read32(ctx->gpr[27] + 0x0); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0x70); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[2] = ftmp; }
+        ctx->gpr[3] = ctx->gpr[31] | 0x0;
+        ctx->fpr[1] = ppu_fp_single(ppu_fadd(ctx->fpr[1], ctx->fpr[2]));
+        { uint32_t tmp = vm_read32(ctx->gpr[27] + 0x4); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[2] = ftmp; }
+        { uint32_t tmp = vm_read32(ctx->gpr[27] + 0x8); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[3] = ftmp; }
+        { float ftmp = (float)ctx->fpr[1]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[27] + 0x0, tmp); }
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0x74); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        ctx->fpr[1] = ppu_fp_single(ppu_fadd(ctx->fpr[2], ctx->fpr[1]));
+        { float ftmp = (float)ctx->fpr[1]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[27] + 0x4, tmp); }
+        { uint32_t tmp = vm_read32(ctx->gpr[1] + 0x78); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        ctx->fpr[1] = ppu_fp_single(ppu_fadd(ctx->fpr[3], ctx->fpr[1]));
+        { float ftmp = (float)ctx->fpr[1]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[27] + 0x8, tmp); }
+        goto loc_00236F80;
+loc_00236F7C:
+        ctx->gpr[3] = (int64_t)(int32_t)(0);
+loc_00236F80:
+        ctx->gpr[0] = (int64_t)(int32_t)(0x130);
+        { uint64_t ea = ((ctx->gpr[1] + ctx->gpr[0])) & ~0xFULL; vm_raw_ld16(&ctx->vr[31], ea); }
+        ctx->gpr[0] = vm_read64(ctx->gpr[1] + 0x180);
+        ctx->lr = ctx->gpr[0];
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0x168); memcpy(&ctx->fpr[31], &tmp, 8); }
+        ctx->gpr[27] = _cs_27;
+        ctx->gpr[28] = _cs_28;
+        ctx->gpr[29] = _cs_29;
+        ctx->gpr[30] = _cs_30;
+        ctx->gpr[31] = _cs_31;
+        ctx->gpr[1] = ctx->gpr[1] + (int64_t)(0x170);
+        return;
 }
 
 void june_evt_func_00236FC8(ppu_context* ctx) {
@@ -19120,7 +21426,91 @@ loc_00238404:
 
 void june_evt_func_00238470(ppu_context* ctx) {
     PPU_MM_SNAP
-        { g_trampoline_fn = (void(*)(void*))june_evt_func_00238598; return; }
+        vm_write64(ctx->gpr[1] + -0xA0, ctx->gpr[1]); ctx->gpr[1] += -0xA0;
+        ctx->gpr[0] = ctx->lr;
+        vm_write64(ctx->gpr[1] + 0xB0, ctx->gpr[0]);
+        { uint64_t tmp; memcpy(&tmp, &ctx->fpr[27], 8); vm_write64(ctx->gpr[1] + 0x78, tmp); }
+        { uint64_t tmp; memcpy(&tmp, &ctx->fpr[28], 8); vm_write64(ctx->gpr[1] + 0x80, tmp); }
+        { uint64_t tmp; memcpy(&tmp, &ctx->fpr[29], 8); vm_write64(ctx->gpr[1] + 0x88, tmp); }
+        { uint64_t tmp; memcpy(&tmp, &ctx->fpr[30], 8); vm_write64(ctx->gpr[1] + 0x90, tmp); }
+        { uint64_t tmp; memcpy(&tmp, &ctx->fpr[31], 8); vm_write64(ctx->gpr[1] + 0x98, tmp); }
+        ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0x24 << 16);
+        ctx->gpr[3] = ctx->gpr[3] + (int64_t)(-31652);
+        ctx->fpr[27] = ctx->fpr[1];
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x0); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[28] = ftmp; }
+        ctx->fpr[30] = ctx->fpr[28];
+        { double a = ctx->fpr[2]; double b = ctx->fpr[30]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 1)) goto loc_002384B0;
+        goto loc_002384B4;
+loc_002384B0:
+        ctx->fpr[30] = ctx->fpr[2];
+loc_002384B4:
+        ctx->fpr[31] = ctx->fpr[28];
+        { double a = ctx->fpr[3]; double b = ctx->fpr[31]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 1)) goto loc_002384C4;
+        goto loc_002384C8;
+loc_002384C4:
+        ctx->fpr[31] = ctx->fpr[3];
+loc_002384C8:
+        ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0x24 << 16);
+        ctx->gpr[3] = ctx->gpr[3] + (int64_t)(-31652);
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x4); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x8); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[29] = ftmp; }
+        { double a = ctx->fpr[27]; double b = ctx->fpr[1]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 31) & 1) == 1)) goto loc_002384E4;
+        goto loc_002384EC;
+loc_002384E4:
+        ctx->fpr[1] = ctx->fpr[29];
+        goto loc_0023856C;
+loc_002384EC:
+        { double a = ctx->fpr[3]; double b = ctx->fpr[2]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 1)) goto loc_00238510;
+        ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0xE2 << 16);
+        ctx->gpr[5] = (int64_t)(int32_t)((uint32_t)0xE2 << 16);
+        { uint64_t _a = ctx->gpr[3]; uint64_t _r = _a + (uint64_t)(int64_t)(-27404); ctx->gpr[3] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t _a = ctx->gpr[5]; uint64_t _r = _a + (uint64_t)(int64_t)(-27076); ctx->gpr[5] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->gpr[4] = (int64_t)(int32_t)(0x875);
+        ctx->lr = 0x0023850C; june_evt_func_00824F18(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+loc_00238510:
+        { double a = ctx->fpr[27]; double b = ctx->fpr[29]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 31) & 1) == 1)) goto loc_0023851C;
+        goto loc_00238520;
+loc_0023851C:
+        goto loc_00238534;
+loc_00238520:
+        { double a = ctx->fpr[27]; double b = ctx->fpr[28]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 1)) goto loc_0023852C;
+        goto loc_00238530;
+loc_0023852C:
+        ctx->fpr[27] = ctx->fpr[28];
+loc_00238530:
+        ctx->fpr[29] = ctx->fpr[27];
+loc_00238534:
+        ctx->fpr[1] = ppu_fp_single(ppu_fadd(ctx->fpr[31], ctx->fpr[30]));
+        ctx->fpr[2] = ppu_fp_single(ppu_fsub(ctx->fpr[31], ctx->fpr[30]));
+        ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0x24 << 16);
+        ctx->gpr[3] = ctx->gpr[3] + (int64_t)(-31652);
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0xC); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[3] = ftmp; }
+        ctx->fpr[1] = ppu_fp_single(ppu_fdiv(ctx->fpr[1], ctx->fpr[2]));
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x10); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[4] = ftmp; }
+        ctx->fpr[3] = ppu_fp_single(ppu_fsub(ctx->fpr[29], ctx->fpr[3]));
+        ctx->fpr[5] = ppu_fp_single(ppu_fmul(ctx->fpr[31], ctx->fpr[4]));
+        ctx->fpr[5] = ppu_fp_single(ppu_fmul(ctx->fpr[5], ctx->fpr[30]));
+        ctx->fpr[1] = ppu_fp_single(ppu_fmadd_core(ctx->fpr[3], ctx->fpr[4], ctx->fpr[1], 1, 0));
+        ctx->fpr[1] = ppu_fp_single(ppu_fdiv(ctx->fpr[5], ctx->fpr[1]));
+        ctx->fpr[1] = ppu_fp_single(ppu_fdiv(ctx->fpr[1], ctx->fpr[2]));
+        ctx->fpr[1] = -ctx->fpr[1];
+loc_0023856C:
+        ctx->gpr[0] = vm_read64(ctx->gpr[1] + 0xB0);
+        ctx->lr = ctx->gpr[0];
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0x78); memcpy(&ctx->fpr[27], &tmp, 8); }
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0x80); memcpy(&ctx->fpr[28], &tmp, 8); }
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0x88); memcpy(&ctx->fpr[29], &tmp, 8); }
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0x90); memcpy(&ctx->fpr[30], &tmp, 8); }
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0x98); memcpy(&ctx->fpr[31], &tmp, 8); }
+        ctx->gpr[1] = ctx->gpr[1] + (int64_t)(0xA0);
+        return;
 }
 
 void june_evt_func_00238598(ppu_context* ctx) {
@@ -19380,17 +21770,274 @@ loc_002389E0:
 
 void june_evt_func_00238A00(ppu_context* ctx) {
     PPU_MM_SNAP
-        { g_trampoline_fn = (void(*)(void*))june_evt_func_00238AE0; return; }
+        uint64_t _cs_31 = ctx->gpr[31];
+        vm_write64(ctx->gpr[1] + -0xF0, ctx->gpr[1]); ctx->gpr[1] += -0xF0;
+        ctx->gpr[0] = ctx->lr;
+        vm_write64(ctx->gpr[1] + 0x100, ctx->gpr[0]);
+        { uint64_t tmp; memcpy(&tmp, &ctx->fpr[29], 8); vm_write64(ctx->gpr[1] + 0xD8, tmp); }
+        { uint64_t tmp; memcpy(&tmp, &ctx->fpr[30], 8); vm_write64(ctx->gpr[1] + 0xE0, tmp); }
+        { uint64_t tmp; memcpy(&tmp, &ctx->fpr[31], 8); vm_write64(ctx->gpr[1] + 0xE8, tmp); }
+        ctx->gpr[6] = (int64_t)(int32_t)(0xFF);
+        ctx->gpr[5] = ctx->gpr[4] | 0x0;
+        ctx->fpr[30] = ctx->fpr[2];
+        ctx->gpr[4] = ctx->gpr[7] | 0x0;
+        ctx->fpr[29] = ctx->fpr[1];
+        ctx->gpr[7] = (int64_t)(int32_t)(0);
+        vm_write8(ctx->gpr[1] + 0xC0, ctx->gpr[6]);
+        vm_write8(ctx->gpr[1] + 0xC1, ctx->gpr[6]);
+        vm_write64(ctx->gpr[1] + 0xD0, ctx->gpr[31]);
+        { int64_t a = (int32_t)ctx->gpr[4]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        ctx->gpr[31] = ctx->gpr[3] | 0x0;
+        vm_write8(ctx->gpr[1] + 0xC2, ctx->gpr[7]);
+        vm_write8(ctx->gpr[1] + 0xC3, ctx->gpr[6]);
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_00238A58;
+        { uint64_t _a = ctx->gpr[1]; uint64_t _r = _a + (uint64_t)(int64_t)(0x80); ctx->gpr[3] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->lr = 0x00238A58; june_evt_func_00234E3C(ctx); DRAIN_TRAMPOLINE(ctx);
+loc_00238A58:
+        ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0x24 << 16);
+        ctx->gpr[3] = ctx->gpr[3] + (int64_t)(-30212);
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x0); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[31] = ftmp; }
+        { double a = ctx->fpr[29]; double b = ctx->fpr[31]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 1)) goto loc_00238A70;
+        goto loc_00238A98;
+loc_00238A70:
+        ctx->gpr[5] = (int64_t)(int32_t)(0xB0);
+        ctx->fpr[1] = ctx->fpr[29];
+        ctx->gpr[7] = (int64_t)(int32_t)(0x70);
+        { uint64_t _a = ctx->gpr[1]; uint64_t _r = _a + (uint64_t)(int64_t)(0xC0); ctx->gpr[4] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t _a = ctx->gpr[1]; uint64_t _r = _a + (uint64_t)(int64_t)(0x70); ctx->gpr[6] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->gpr[3] = ctx->gpr[31] | 0x0;
+        { uint64_t ea = ((ctx->gpr[5] + ctx->gpr[1])) & ~0xFULL; vm_raw_ld16(&ctx->vr[2], ea); }
+        { uint64_t ea = ((ctx->gpr[7] + ctx->gpr[1])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[2]); }
+        ctx->lr = 0x00238A94; june_evt_func_008F1114(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+loc_00238A98:
+        { double a = ctx->fpr[30]; double b = ctx->fpr[31]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 1)) goto loc_00238AA4;
+        goto loc_00238AB8;
+loc_00238AA4:
+        { uint64_t _a = ctx->gpr[1]; uint64_t _r = _a + (uint64_t)(int64_t)(0x80); ctx->gpr[5] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->fpr[1] = ctx->fpr[30];
+        ctx->gpr[3] = ctx->gpr[31] | 0x0;
+        ctx->lr = 0x00238AB4; june_evt_func_008EEFC8(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+loc_00238AB8:
+        ctx->gpr[0] = vm_read64(ctx->gpr[1] + 0x100);
+        ctx->lr = ctx->gpr[0];
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0xD8); memcpy(&ctx->fpr[29], &tmp, 8); }
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0xE0); memcpy(&ctx->fpr[30], &tmp, 8); }
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0xE8); memcpy(&ctx->fpr[31], &tmp, 8); }
+        ctx->gpr[31] = _cs_31;
+        ctx->gpr[1] = ctx->gpr[1] + (int64_t)(0xF0);
+        return;
 }
 
 void june_evt_func_00238AE0(ppu_context* ctx) {
     PPU_MM_SNAP
-        { g_trampoline_fn = (void(*)(void*))june_evt_func_00238CC0; return; }
+        uint64_t _cs_27 = ctx->gpr[27];
+        uint64_t _cs_28 = ctx->gpr[28];
+        uint64_t _cs_29 = ctx->gpr[29];
+        uint64_t _cs_30 = ctx->gpr[30];
+        uint64_t _cs_31 = ctx->gpr[31];
+        vm_write64(ctx->gpr[1] + -0x100, ctx->gpr[1]); ctx->gpr[1] += -0x100;
+        ctx->gpr[0] = ctx->lr;
+        vm_write64(ctx->gpr[1] + 0x110, ctx->gpr[0]);
+        { uint64_t tmp; memcpy(&tmp, &ctx->fpr[28], 8); vm_write64(ctx->gpr[1] + 0xE0, tmp); }
+        { uint64_t tmp; memcpy(&tmp, &ctx->fpr[29], 8); vm_write64(ctx->gpr[1] + 0xE8, tmp); }
+        { uint64_t tmp; memcpy(&tmp, &ctx->fpr[30], 8); vm_write64(ctx->gpr[1] + 0xF0, tmp); }
+        { uint64_t tmp; memcpy(&tmp, &ctx->fpr[31], 8); vm_write64(ctx->gpr[1] + 0xF8, tmp); }
+        vm_write64(ctx->gpr[1] + 0xD8, ctx->gpr[31]);
+        ctx->gpr[4] = (int64_t)(int32_t)((uint32_t)0x24 << 16);
+        ctx->gpr[31] = ctx->gpr[3] | 0x0;
+        vm_write64(ctx->gpr[1] + 0xD0, ctx->gpr[30]);
+        ctx->fpr[28] = ctx->fpr[3];
+        ctx->gpr[30] = ctx->gpr[4] + (int64_t)(-29992);
+        ctx->fpr[31] = ctx->fpr[2];
+        vm_write64(ctx->gpr[1] + 0xC8, ctx->gpr[29]);
+        vm_write64(ctx->gpr[1] + 0xC0, ctx->gpr[28]);
+        vm_write64(ctx->gpr[1] + 0xB8, ctx->gpr[27]);
+        ctx->fpr[29] = ctx->fpr[1];
+        ctx->lr = 0x00238B2C; june_evt_func_00827264(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        ctx->gpr[29] = ctx->gpr[3] | 0x0;
+        ctx->lr = 0x00238B38; june_evt_func_00827274(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        { uint64_t _a = ctx->gpr[31]; uint64_t _r = _a + (uint64_t)(int64_t)(0x10); ctx->gpr[4] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t _a = ctx->gpr[1]; uint64_t _r = _a + (uint64_t)(int64_t)(0x70); ctx->gpr[28] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->gpr[27] = ctx->gpr[3] | 0x0;
+        ctx->gpr[4] = ppc_rldicl(ctx->gpr[4], 0, 32);
+        ctx->gpr[3] = ctx->gpr[28] | 0x0;
+        ctx->lr = 0x00238B54; june_evt_func_00234CA8(ctx); DRAIN_TRAMPOLINE(ctx);
+        ctx->gpr[4] = ctx->gpr[28] | 0x0;
+        ctx->gpr[3] = (int64_t)(int32_t)(0x11);
+        ctx->lr = 0x00238B60; june_evt_func_008C2FA0(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        ctx->lr = 0x00238B68; june_evt_func_00827B24(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        ctx->gpr[4] = (int64_t)(int32_t)(0x40);
+        ctx->lr = 0x00238B74; june_evt_func_008EED20(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+        ctx->gpr[4] = ppc_sraw(&ctx->xer, (int32_t)ctx->gpr[29], 1);
+        ctx->gpr[4] = (int64_t)(int32_t)ctx->gpr[4];
+        ctx->gpr[31] = ctx->gpr[3] | 0x0;
+        vm_write64(ctx->gpr[1] + 0x18, ctx->gpr[4]);
+        ctx->gpr[4] = ppc_sraw(&ctx->xer, (int32_t)ctx->gpr[27], 1);
+        ctx->gpr[4] = (int64_t)(int32_t)ctx->gpr[4];
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0x18); memcpy(&ctx->fpr[1], &tmp, 8); }
+        vm_write64(ctx->gpr[1] + 0x18, ctx->gpr[4]);
+        { int64_t iv; memcpy(&iv, &ctx->fpr[1], 8); ctx->fpr[1] = (double)iv; }
+        ctx->fpr[1] = ppu_frsp(ctx->fpr[1]);
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0x18); memcpy(&ctx->fpr[2], &tmp, 8); }
+        ctx->fpr[3] = -ctx->fpr[1];
+        { int64_t iv; memcpy(&iv, &ctx->fpr[2], 8); ctx->fpr[2] = (double)iv; }
+        { float ftmp = (float)ctx->fpr[1]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[31] + 0x20, tmp); }
+        { float ftmp = (float)ctx->fpr[1]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[31] + 0x30, tmp); }
+        ctx->fpr[1] = ppu_frsp(ctx->fpr[2]);
+        { float ftmp = (float)ctx->fpr[3]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[31] + 0x0, tmp); }
+        { float ftmp = (float)ctx->fpr[3]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[31] + 0x10, tmp); }
+        ctx->fpr[2] = -ctx->fpr[1];
+        { float ftmp = (float)ctx->fpr[1]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[31] + 0x4, tmp); }
+        { float ftmp = (float)ctx->fpr[1]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[31] + 0x24, tmp); }
+        { float ftmp = (float)ctx->fpr[2]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[31] + 0x14, tmp); }
+        { float ftmp = (float)ctx->fpr[2]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[31] + 0x34, tmp); }
+        { uint32_t tmp = vm_read32(ctx->gpr[30] + 0x0); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[30] = ftmp; }
+        { double a = ctx->fpr[28]; double b = ctx->fpr[30]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        { uint32_t a = (ctx->cr >> (31 - 1)) & 1; uint32_t b = (ctx->cr >> (31 - 2)) & 1; ctx->cr = (ctx->cr & ~(1u << (31 - 6))) | ((a | b) << (31 - 6)); }
+        if ((((ctx->cr >> 25) & 1) == 1)) goto loc_00238BE8;
+        goto loc_00238C3C;
+loc_00238BE8:
+        ctx->gpr[4] = (int64_t)(int32_t)((uint32_t)0x8000 << 16);
+        ctx->gpr[3] = (int64_t)(int32_t)(4);
+        ctx->fpr[28] = -ctx->fpr[28];
+        ctx->gpr[5] = ctx->gpr[31] | 0x0;
+        ctx->gpr[4] = ctx->gpr[4] | 0x40;
+        ctx->ctr = ctx->gpr[3];
+loc_00238C00:
+        { uint64_t _a = ctx->gpr[5]; uint64_t _r = _a + (uint64_t)(int64_t)(8); ctx->gpr[3] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t _a = ctx->gpr[5]; uint64_t _r = _a + (uint64_t)(int64_t)(0xC); ctx->gpr[6] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->gpr[3] = ppc_rldicl(ctx->gpr[3], 0, 32);
+        ctx->gpr[6] = ppc_rldicl(ctx->gpr[6], 0, 32);
+        { uint64_t _a = ctx->gpr[5]; uint64_t _r = _a + (uint64_t)(int64_t)(0x10); ctx->gpr[5] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { float ftmp = (float)ctx->fpr[28]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[3] + 0x0, tmp); }
+        vm_write32(ctx->gpr[6] + 0x0, ctx->gpr[4]);
+        if (((ctx->ctr = (uint64_t)(ctx->ctr - 1)) != 0)) goto loc_00238C00;
+        ctx->gpr[3] = (int64_t)(int32_t)(0x11);
+        ctx->gpr[4] = (int64_t)(int32_t)(4);
+        ctx->gpr[5] = ctx->gpr[31] | 0x0;
+        ctx->gpr[6] = (int64_t)(int32_t)(4);
+        ctx->gpr[7] = (int64_t)(int32_t)(0);
+        ctx->lr = 0x00238C38; june_evt_func_008B8CB0(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+loc_00238C3C:
+        { double a = ctx->fpr[29]; double b = ctx->fpr[30]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        { uint32_t a = (ctx->cr >> (31 - 1)) & 1; uint32_t b = (ctx->cr >> (31 - 2)) & 1; ctx->cr = (ctx->cr & ~(1u << (31 - 6))) | ((a | b) << (31 - 6)); }
+        if ((((ctx->cr >> 25) & 1) == 1)) goto loc_00238C4C;
+        goto loc_00238CA0;
+loc_00238C4C:
+        ctx->gpr[4] = (int64_t)(int32_t)((uint32_t)0x80 << 16);
+        ctx->fpr[29] = -ctx->fpr[29];
+        ctx->gpr[3] = (int64_t)(int32_t)(4);
+        ctx->gpr[5] = ctx->gpr[31] | 0x0;
+        ctx->gpr[4] = ctx->gpr[4] | 0x40;
+        ctx->ctr = ctx->gpr[3];
+loc_00238C64:
+        { uint64_t _a = ctx->gpr[5]; uint64_t _r = _a + (uint64_t)(int64_t)(8); ctx->gpr[3] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t _a = ctx->gpr[5]; uint64_t _r = _a + (uint64_t)(int64_t)(0xC); ctx->gpr[6] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->gpr[3] = ppc_rldicl(ctx->gpr[3], 0, 32);
+        ctx->gpr[6] = ppc_rldicl(ctx->gpr[6], 0, 32);
+        { uint64_t _a = ctx->gpr[5]; uint64_t _r = _a + (uint64_t)(int64_t)(0x10); ctx->gpr[5] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { float ftmp = (float)ctx->fpr[29]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[3] + 0x0, tmp); }
+        vm_write32(ctx->gpr[6] + 0x0, ctx->gpr[4]);
+        if (((ctx->ctr = (uint64_t)(ctx->ctr - 1)) != 0)) goto loc_00238C64;
+        ctx->gpr[3] = (int64_t)(int32_t)(0x11);
+        ctx->gpr[4] = (int64_t)(int32_t)(4);
+        ctx->gpr[5] = ctx->gpr[31] | 0x0;
+        ctx->gpr[6] = (int64_t)(int32_t)(4);
+        ctx->gpr[7] = (int64_t)(int32_t)(0);
+        ctx->lr = 0x00238C9C; june_evt_func_008B8CB0(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+loc_00238CA0:
+        { double a = ctx->fpr[31]; double b = ctx->fpr[30]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        { uint32_t a = (ctx->cr >> (31 - 1)) & 1; uint32_t b = (ctx->cr >> (31 - 2)) & 1; ctx->cr = (ctx->cr & ~(1u << (31 - 6))) | ((a | b) << (31 - 6)); }
+        if ((((ctx->cr >> 25) & 1) == 1)) goto loc_00238CB0;
+        goto loc_00238D04;
+loc_00238CB0:
+        ctx->gpr[4] = (int64_t)(int32_t)((uint32_t)0x0 << 16);
+        ctx->gpr[3] = (int64_t)(int32_t)(4);
+        ctx->fpr[31] = -ctx->fpr[31];
+        ctx->gpr[5] = ctx->gpr[31] | 0x0;
+        ctx->gpr[4] = ctx->gpr[4] | 0x8040;
+        ctx->ctr = ctx->gpr[3];
+loc_00238CC8:
+        { uint64_t _a = ctx->gpr[5]; uint64_t _r = _a + (uint64_t)(int64_t)(8); ctx->gpr[3] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t _a = ctx->gpr[5]; uint64_t _r = _a + (uint64_t)(int64_t)(0xC); ctx->gpr[6] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->gpr[3] = ppc_rldicl(ctx->gpr[3], 0, 32);
+        ctx->gpr[6] = ppc_rldicl(ctx->gpr[6], 0, 32);
+        { uint64_t _a = ctx->gpr[5]; uint64_t _r = _a + (uint64_t)(int64_t)(0x10); ctx->gpr[5] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { float ftmp = (float)ctx->fpr[31]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[3] + 0x0, tmp); }
+        vm_write32(ctx->gpr[6] + 0x0, ctx->gpr[4]);
+        if (((ctx->ctr = (uint64_t)(ctx->ctr - 1)) != 0)) goto loc_00238CC8;
+        ctx->gpr[3] = (int64_t)(int32_t)(0x11);
+        ctx->gpr[4] = (int64_t)(int32_t)(4);
+        ctx->gpr[5] = ctx->gpr[31] | 0x0;
+        ctx->gpr[6] = (int64_t)(int32_t)(4);
+        ctx->gpr[7] = (int64_t)(int32_t)(0);
+        ctx->lr = 0x00238D00; june_evt_func_008B8CB0(ctx); DRAIN_TRAMPOLINE(ctx);
+        ;
+loc_00238D04:
+        ctx->gpr[0] = vm_read64(ctx->gpr[1] + 0x110);
+        ctx->lr = ctx->gpr[0];
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0xE0); memcpy(&ctx->fpr[28], &tmp, 8); }
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0xE8); memcpy(&ctx->fpr[29], &tmp, 8); }
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0xF0); memcpy(&ctx->fpr[30], &tmp, 8); }
+        { uint64_t tmp = vm_read64(ctx->gpr[1] + 0xF8); memcpy(&ctx->fpr[31], &tmp, 8); }
+        ctx->gpr[27] = _cs_27;
+        ctx->gpr[28] = _cs_28;
+        ctx->gpr[29] = _cs_29;
+        ctx->gpr[30] = _cs_30;
+        ctx->gpr[31] = _cs_31;
+        ctx->gpr[1] = ctx->gpr[1] + (int64_t)(0x100);
+        return;
 }
 
 void june_evt_func_00238CC0(ppu_context* ctx) {
     PPU_MM_SNAP
-        { g_trampoline_fn = (void(*)(void*))june_evt_func_00238D38; return; }
+    uint64_t _cs_27 = vm_read64(ctx->gpr[1] + 0xB8);
+    uint64_t _cs_28 = vm_read64(ctx->gpr[1] + 0xC0);
+    uint64_t _cs_29 = vm_read64(ctx->gpr[1] + 0xC8);
+    uint64_t _cs_30 = vm_read64(ctx->gpr[1] + 0xD0);
+    uint64_t _cs_31 = vm_read64(ctx->gpr[1] + 0xD8);
+    ctx->gpr[4] = ctx->gpr[4] | 0x8040;
+    ctx->ctr = ctx->gpr[3];
+loc_00238CC8:
+    { uint64_t _a = ctx->gpr[5]; uint64_t _r = _a + (uint64_t)(int64_t)(8); ctx->gpr[3] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+    { uint64_t _a = ctx->gpr[5]; uint64_t _r = _a + (uint64_t)(int64_t)(0xC); ctx->gpr[6] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+    ctx->gpr[3] = ppc_rldicl(ctx->gpr[3], 0, 32);
+    ctx->gpr[6] = ppc_rldicl(ctx->gpr[6], 0, 32);
+    { uint64_t _a = ctx->gpr[5]; uint64_t _r = _a + (uint64_t)(int64_t)(0x10); ctx->gpr[5] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+    { float ftmp = (float)ctx->fpr[31]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[3] + 0x0, tmp); }
+    vm_write32(ctx->gpr[6] + 0x0, ctx->gpr[4]);
+    if (((ctx->ctr = (uint64_t)(ctx->ctr - 1)) != 0)) goto loc_00238CC8;
+    ctx->gpr[3] = (int64_t)(int32_t)(0x11);
+    ctx->gpr[4] = (int64_t)(int32_t)(4);
+    ctx->gpr[5] = ctx->gpr[31] | 0x0;
+    ctx->gpr[6] = (int64_t)(int32_t)(4);
+    ctx->gpr[7] = (int64_t)(int32_t)(0);
+    ctx->lr = 0x00238D00; june_evt_func_008B8CB0(ctx); DRAIN_TRAMPOLINE(ctx);
+    ;
+    ctx->gpr[0] = vm_read64(ctx->gpr[1] + 0x110);
+    ctx->lr = ctx->gpr[0];
+    { uint64_t tmp = vm_read64(ctx->gpr[1] + 0xE0); memcpy(&ctx->fpr[28], &tmp, 8); }
+    { uint64_t tmp = vm_read64(ctx->gpr[1] + 0xE8); memcpy(&ctx->fpr[29], &tmp, 8); }
+    { uint64_t tmp = vm_read64(ctx->gpr[1] + 0xF0); memcpy(&ctx->fpr[30], &tmp, 8); }
+    { uint64_t tmp = vm_read64(ctx->gpr[1] + 0xF8); memcpy(&ctx->fpr[31], &tmp, 8); }
+    ctx->gpr[27] = _cs_27;
+    ctx->gpr[28] = _cs_28;
+    ctx->gpr[29] = _cs_29;
+    ctx->gpr[30] = _cs_30;
+    ctx->gpr[31] = _cs_31;
+    ctx->gpr[1] = ctx->gpr[1] + (int64_t)(0x100);
+    return;
 }
 
 void june_evt_func_00238D38(ppu_context* ctx) {
@@ -19735,7 +22382,17 @@ loc_00239E54:
 
 void june_evt_func_00239E58(ppu_context* ctx) {
     PPU_MM_SNAP
-        { g_trampoline_fn = (void(*)(void*))june_evt_func_00239F14; return; }
+        ctx->gpr[8] = (int64_t)(int32_t)((uint32_t)0xE2 << 16);
+        ctx->gpr[7] = (int64_t)(int32_t)(4);
+        ctx->gpr[9] = (int64_t)(int32_t)(0);
+        { uint64_t _a = ctx->gpr[8]; uint64_t _r = _a + (uint64_t)(int64_t)(-27452); ctx->gpr[8] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        vm_write32(ctx->gpr[3] + 0x0, ctx->gpr[7]);
+        vm_write8(ctx->gpr[4] + 0x0, ctx->gpr[9]);
+        { uint32_t tmp = vm_read32(ctx->gpr[8] + 0x20); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        { float ftmp = (float)ctx->fpr[1]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[5] + 0x0, tmp); }
+        { uint32_t tmp = vm_read32(ctx->gpr[8] + 0x24); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        { float ftmp = (float)ctx->fpr[1]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[6] + 0x0, tmp); }
+        return;
 }
 
 void june_evt_func_00239F14(ppu_context* ctx) {
@@ -19770,7 +22427,47 @@ void june_evt_func_00239F14(ppu_context* ctx) {
 
 void june_evt_func_00239F7C(ppu_context* ctx) {
     PPU_MM_SNAP
-        { g_trampoline_fn = (void(*)(void*))june_evt_func_0023A018; return; }
+        uint64_t _cs_29 = ctx->gpr[29];
+        uint64_t _cs_30 = ctx->gpr[30];
+        uint64_t _cs_31 = ctx->gpr[31];
+        vm_write64(ctx->gpr[1] + -0x50, ctx->gpr[1]); ctx->gpr[1] += -0x50;
+        ctx->gpr[8] = (int64_t)(int32_t)((uint32_t)0x115 << 16);
+        ctx->gpr[12] = (int64_t)(int32_t)((uint32_t)0x115 << 16);
+        ctx->gpr[9] = (int64_t)(int32_t)((uint32_t)0x115 << 16);
+        ctx->gpr[10] = (int64_t)(int32_t)((uint32_t)0x115 << 16);
+        ctx->gpr[11] = (int64_t)(int32_t)((uint32_t)0x115 << 16);
+        ctx->gpr[7] = vm_read8(ctx->gpr[8] + -0x4984);
+        { int64_t a = (int32_t)ctx->gpr[7]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        vm_write64(ctx->gpr[1] + 0x48, ctx->gpr[31]);
+        vm_write64(ctx->gpr[1] + 0x40, ctx->gpr[30]);
+        vm_write64(ctx->gpr[1] + 0x38, ctx->gpr[29]);
+        ctx->gpr[7] = vm_read32(ctx->gpr[12] + -0x4994);
+        if ((((ctx->cr >> 29) & 1) == 0)) goto loc_00239FE0;
+        ctx->gpr[31] = (int64_t)(int32_t)((uint32_t)0xE2 << 16);
+        ctx->gpr[7] = (int64_t)(int32_t)(4);
+        ctx->gpr[30] = (int64_t)(int32_t)(1);
+        { uint64_t _a = ctx->gpr[31]; uint64_t _r = _a + (uint64_t)(int64_t)(-27452); ctx->gpr[31] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->gpr[29] = (int64_t)(int32_t)(0);
+        vm_write32(ctx->gpr[12] + -0x4994, ctx->gpr[7]);
+        vm_write8(ctx->gpr[8] + -0x4984, ctx->gpr[30]);
+        vm_write8(ctx->gpr[11] + -0x4990, ctx->gpr[29]);
+        { uint32_t tmp = vm_read32(ctx->gpr[31] + 0x20); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        { uint32_t tmp = vm_read32(ctx->gpr[31] + 0x24); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[2] = ftmp; }
+        { float ftmp = (float)ctx->fpr[1]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[10] + -0x498C, tmp); }
+        { float ftmp = (float)ctx->fpr[2]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[9] + -0x4988, tmp); }
+loc_00239FE0:
+        vm_write32(ctx->gpr[3] + 0x0, ctx->gpr[7]);
+        ctx->gpr[3] = vm_read8(ctx->gpr[11] + -0x4990);
+        vm_write8(ctx->gpr[4] + 0x0, ctx->gpr[3]);
+        { uint32_t tmp = vm_read32(ctx->gpr[10] + -0x498C); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        { float ftmp = (float)ctx->fpr[1]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[5] + 0x0, tmp); }
+        { uint32_t tmp = vm_read32(ctx->gpr[9] + -0x4988); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        { float ftmp = (float)ctx->fpr[1]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[6] + 0x0, tmp); }
+        ctx->gpr[29] = _cs_29;
+        ctx->gpr[30] = _cs_30;
+        ctx->gpr[31] = _cs_31;
+        ctx->gpr[1] = ctx->gpr[1] + (int64_t)(0x50);
+        return;
 }
 
 void june_evt_func_0023A018(ppu_context* ctx) {
@@ -21823,7 +24520,62 @@ void june_evt_func_0023EECC(ppu_context* ctx) {
 
 void june_evt_func_0023EFA0(ppu_context* ctx) {
     PPU_MM_SNAP
-        { g_trampoline_fn = (void(*)(void*))june_evt_func_0023F064; return; }
+    uint64_t _cs_30 = ctx->gpr[30];
+    uint64_t _cs_31 = ctx->gpr[31];
+    vm_write64(ctx->gpr[1] + -0x80, ctx->gpr[1]); ctx->gpr[1] += -0x80;
+    ctx->gpr[0] = ctx->lr;
+    vm_write64(ctx->gpr[1] + 0x90, ctx->gpr[0]);
+    vm_write64(ctx->gpr[1] + 0x78, ctx->gpr[31]);
+    vm_write64(ctx->gpr[1] + 0x70, ctx->gpr[30]);
+    ctx->gpr[31] = ctx->gpr[4] | 0x0;
+    ctx->gpr[30] = ctx->gpr[3] | 0x0;
+    { int64_t a = (int32_t)ctx->gpr[31]; int64_t b = (int64_t)2; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 24)) | (cr_val << 24); }
+    { int64_t a = (int32_t)ctx->gpr[31]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+    if ((((ctx->cr >> 31) & 1) == 1)) goto loc_0023EFDC;
+    if ((((ctx->cr >> 27) & 1) == 0)) goto loc_0023EFDC;
+    ctx->gpr[5] = vm_read32(ctx->gpr[30] + 0x34);
+    ctx->gpr[3] = ppc_rlw64(ctx->gpr[5], 0, 23, 23, 0, 0);
+    { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+    if ((((ctx->cr >> 29) & 1) == 1)) goto loc_0023EFE4;
+loc_0023EFDC:
+    ctx->gpr[3] = (int64_t)(int32_t)(0);
+    goto loc_0023F04C;
+loc_0023EFE4:
+    ctx->gpr[3] = ppc_rlw64(ctx->gpr[5], 0, 27, 27, 0, 0);
+    { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+    if ((((ctx->cr >> 29) & 1) == 0)) goto loc_0023F014;
+    ctx->gpr[3] = ctx->gpr[31] | 0x0;
+    ctx->gpr[4] = vm_read32(ctx->gpr[30] + 0x30);
+    ctx->lr = 0x0023EFFC; june_evt_func_0001A628(ctx); DRAIN_TRAMPOLINE(ctx);
+    ;
+    ctx->gpr[5] = vm_read32(ctx->gpr[30] + 0x34);
+    { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+    if ((((ctx->cr >> 29) & 1) == 1)) goto loc_0023F014;
+    ctx->gpr[5] = ctx->gpr[5] | 0x10;
+    vm_write32(ctx->gpr[30] + 0x34, ctx->gpr[5]);
+loc_0023F014:
+    ctx->gpr[3] = ppc_rlw64(ctx->gpr[5], 0, 26, 26, 0, 0);
+    { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+    if ((((ctx->cr >> 29) & 1) == 0)) goto loc_0023F044;
+    ctx->gpr[3] = ctx->gpr[31] | 0x0;
+    ctx->gpr[4] = vm_read32(ctx->gpr[30] + 0x30);
+    ctx->lr = 0x0023F02C; june_evt_func_0001A304(ctx); DRAIN_TRAMPOLINE(ctx);
+    ;
+    { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+    if ((((ctx->cr >> 29) & 1) == 1)) goto loc_0023F044;
+    ctx->gpr[3] = vm_read32(ctx->gpr[30] + 0x34);
+    ctx->gpr[3] = ctx->gpr[3] | 0x20;
+    vm_write32(ctx->gpr[30] + 0x34, ctx->gpr[3]);
+loc_0023F044:
+    ctx->gpr[3] = (int64_t)(int32_t)(1);
+    vm_write32(ctx->gpr[30] + 0xCC, ctx->gpr[31]);
+loc_0023F04C:
+    ctx->gpr[0] = vm_read64(ctx->gpr[1] + 0x90);
+    ctx->lr = ctx->gpr[0];
+    ctx->gpr[30] = _cs_30;
+    ctx->gpr[31] = _cs_31;
+    ctx->gpr[1] = ctx->gpr[1] + (int64_t)(0x80);
+    return;
 }
 
 void june_evt_func_0023F064(ppu_context* ctx) {
@@ -21901,7 +24653,130 @@ loc_0023F14C:
 
 void june_evt_func_0023F178(ppu_context* ctx) {
     PPU_MM_SNAP
-        { g_trampoline_fn = (void(*)(void*))june_evt_func_0023F358; return; }
+    uint64_t _cs_29 = ctx->gpr[29];
+    uint64_t _cs_30 = ctx->gpr[30];
+    uint64_t _cs_31 = ctx->gpr[31];
+    vm_write64(ctx->gpr[1] + -0xE0, ctx->gpr[1]); ctx->gpr[1] += -0xE0;
+    ctx->gpr[0] = ctx->lr;
+    vm_write64(ctx->gpr[1] + 0xF0, ctx->gpr[0]);
+    { uint64_t tmp; memcpy(&tmp, &ctx->fpr[22], 8); vm_write64(ctx->gpr[1] + 0x90, tmp); }
+    { uint64_t tmp; memcpy(&tmp, &ctx->fpr[23], 8); vm_write64(ctx->gpr[1] + 0x98, tmp); }
+    { uint64_t tmp; memcpy(&tmp, &ctx->fpr[24], 8); vm_write64(ctx->gpr[1] + 0xA0, tmp); }
+    { uint64_t tmp; memcpy(&tmp, &ctx->fpr[25], 8); vm_write64(ctx->gpr[1] + 0xA8, tmp); }
+    { uint64_t tmp; memcpy(&tmp, &ctx->fpr[26], 8); vm_write64(ctx->gpr[1] + 0xB0, tmp); }
+    { uint64_t tmp; memcpy(&tmp, &ctx->fpr[27], 8); vm_write64(ctx->gpr[1] + 0xB8, tmp); }
+    { uint64_t tmp; memcpy(&tmp, &ctx->fpr[28], 8); vm_write64(ctx->gpr[1] + 0xC0, tmp); }
+    { uint64_t tmp; memcpy(&tmp, &ctx->fpr[29], 8); vm_write64(ctx->gpr[1] + 0xC8, tmp); }
+    { uint64_t tmp; memcpy(&tmp, &ctx->fpr[30], 8); vm_write64(ctx->gpr[1] + 0xD0, tmp); }
+    { uint64_t tmp; memcpy(&tmp, &ctx->fpr[31], 8); vm_write64(ctx->gpr[1] + 0xD8, tmp); }
+    { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x8); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[26] = ftmp; }
+    { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x0); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[24] = ftmp; }
+    ctx->gpr[7] = (int64_t)(int32_t)((uint32_t)0x24 << 16);
+    ctx->fpr[30] = ppu_fp_single(ppu_fadd(ctx->fpr[26], ctx->fpr[26]));
+    { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x4); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[25] = ftmp; }
+    { uint32_t tmp = vm_read32(ctx->gpr[3] + 0xC); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[27] = ftmp; }
+    ctx->gpr[7] = ctx->gpr[7] + (int64_t)(-3740);
+    vm_write64(ctx->gpr[1] + 0x88, ctx->gpr[31]);
+    ctx->fpr[29] = ppu_fp_single(ppu_fadd(ctx->fpr[25], ctx->fpr[25]));
+    vm_write64(ctx->gpr[1] + 0x80, ctx->gpr[30]);
+    ctx->gpr[31] = ctx->gpr[6] | 0x0;
+    ctx->gpr[30] = ctx->gpr[5] | 0x0;
+    vm_write64(ctx->gpr[1] + 0x78, ctx->gpr[29]);
+    ctx->fpr[28] = ppu_fp_single(ppu_fadd(ctx->fpr[24], ctx->fpr[24]));
+    ctx->gpr[29] = ctx->gpr[4] | 0x0;
+    { uint32_t tmp = vm_read32(ctx->gpr[7] + 0x0); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[31] = ftmp; }
+    ctx->fpr[1] = ppu_fp_single(ppu_fmul(ctx->fpr[24], ctx->fpr[30]));
+    ctx->fpr[1] = ppu_fp_single(ppu_fmadd_core(ctx->fpr[27], ctx->fpr[29], ctx->fpr[1], 1, 0));
+    { double a = ctx->fpr[1]; double b = ctx->fpr[31]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+    { uint32_t a = (ctx->cr >> (31 - 1)) & 1; uint32_t b = (ctx->cr >> (31 - 2)) & 1; ctx->cr = (ctx->cr & ~(1u << (31 - 6))) | ((a | b) << (31 - 6)); }
+    if ((((ctx->cr >> 25) & 1) == 1)) goto loc_0023F204;
+    goto loc_0023F20C;
+loc_0023F204:
+    ctx->fpr[1] = ctx->fpr[31];
+    goto loc_0023F22C;
+loc_0023F20C:
+    ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0x24 << 16);
+    ctx->gpr[3] = ctx->gpr[3] + (int64_t)(-3740);
+    { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x4); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[2] = ftmp; }
+    { double a = ctx->fpr[1]; double b = ctx->fpr[2]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+    { uint32_t a = (ctx->cr >> (31 - 0)) & 1; uint32_t b = (ctx->cr >> (31 - 2)) & 1; ctx->cr = (ctx->cr & ~(1u << (31 - 6))) | ((a | b) << (31 - 6)); }
+    if ((((ctx->cr >> 25) & 1) == 1)) goto loc_0023F228;
+    goto loc_0023F22C;
+loc_0023F228:
+    ctx->fpr[1] = ctx->fpr[2];
+loc_0023F22C:
+    ctx->lr = 0x0023F230; june_evt_func_00AEBE50(ctx); DRAIN_TRAMPOLINE(ctx);
+    ;
+    ctx->fpr[22] = ctx->fpr[1];
+    ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0x24 << 16);
+    ctx->fpr[26] = ppu_fp_single(ppu_fmul(ctx->fpr[26], ctx->fpr[30]));
+    ctx->gpr[3] = ctx->gpr[3] + (int64_t)(-3740);
+    ctx->fpr[23] = ppu_fp_single(ppu_fmul(ctx->fpr[24], ctx->fpr[29]));
+    { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x8); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[2] = ftmp; }
+    { double a = ctx->fpr[22]; double b = ctx->fpr[2]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+    ctx->fpr[3] = ppu_fp_single(ppu_fmadd_core(ctx->fpr[24], ctx->fpr[28], ctx->fpr[26], 0, 0));
+    ctx->fpr[1] = ppu_fp_single(ppu_fmadd_core(ctx->fpr[27], ctx->fpr[30], ctx->fpr[23], 1, 1));
+    ctx->fpr[2] = ppu_fp_single(ppu_fsub(ctx->fpr[31], ctx->fpr[3]));
+    if ((((ctx->cr >> 31) & 1) == 1)) goto loc_0023F264;
+    goto loc_0023F2DC;
+loc_0023F264:
+    ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0x24 << 16);
+    ctx->gpr[3] = ctx->gpr[3] + (int64_t)(-3740);
+    { uint32_t tmp = vm_read32(ctx->gpr[3] + 0xC); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[3] = ftmp; }
+    { double a = ctx->fpr[22]; double b = ctx->fpr[3]; uint32_t cr_val = (a != a || b != b) ? 1 : (a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+    if ((((ctx->cr >> 30) & 1) == 1)) goto loc_0023F27C;
+    goto loc_0023F2BC;
+loc_0023F27C:
+    ctx->fpr[29] = ppu_fp_single(ppu_fmul(ctx->fpr[25], ctx->fpr[29]));
+    ctx->fpr[1] = ppu_fp_single(ppu_fmul(ctx->fpr[25], ctx->fpr[30]));
+    ctx->fpr[2] = ppu_fp_single(ppu_fmadd_core(ctx->fpr[24], ctx->fpr[28], ctx->fpr[29], 0, 0));
+    ctx->fpr[1] = ppu_fp_single(ppu_fmadd_core(ctx->fpr[27], ctx->fpr[28], ctx->fpr[1], 0, 0));
+    ctx->fpr[2] = ppu_fp_single(ppu_fsub(ctx->fpr[31], ctx->fpr[2]));
+    ctx->lr = 0x0023F294; june_evt_func_00AEC10C(ctx); DRAIN_TRAMPOLINE(ctx);
+    ;
+    ctx->fpr[2] = ppu_fp_single(ppu_fadd(ctx->fpr[29], ctx->fpr[26]));
+    { float ftmp = (float)ctx->fpr[1]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[29] + 0x0, tmp); }
+    ctx->fpr[1] = ppu_fp_single(ppu_fmadd_core(ctx->fpr[27], ctx->fpr[30], ctx->fpr[23], 0, 0));
+    { float ftmp = (float)ctx->fpr[22]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[30] + 0x0, tmp); }
+    ctx->fpr[2] = ppu_fp_single(ppu_fsub(ctx->fpr[31], ctx->fpr[2]));
+    ctx->lr = 0x0023F2B0; june_evt_func_00AEC10C(ctx); DRAIN_TRAMPOLINE(ctx);
+    ;
+    { float ftmp = (float)ctx->fpr[1]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[31] + 0x0, tmp); }
+    goto loc_0023F2F4;
+loc_0023F2BC:
+    ctx->lr = 0x0023F2C0; june_evt_func_00AEC10C(ctx); DRAIN_TRAMPOLINE(ctx);
+    ;
+    ctx->fpr[1] = -ctx->fpr[1];
+    ctx->gpr[3] = (int64_t)(int32_t)(0);
+    { float ftmp = (float)ctx->fpr[1]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[29] + 0x0, tmp); }
+    { float ftmp = (float)ctx->fpr[22]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[30] + 0x0, tmp); }
+    vm_write32(ctx->gpr[31] + 0x0, ctx->gpr[3]);
+    goto loc_0023F2F4;
+loc_0023F2DC:
+    ctx->lr = 0x0023F2E0; june_evt_func_00AEC10C(ctx); DRAIN_TRAMPOLINE(ctx);
+    ;
+    ctx->gpr[3] = (int64_t)(int32_t)(0);
+    { float ftmp = (float)ctx->fpr[1]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[29] + 0x0, tmp); }
+    { float ftmp = (float)ctx->fpr[22]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[30] + 0x0, tmp); }
+    vm_write32(ctx->gpr[31] + 0x0, ctx->gpr[3]);
+loc_0023F2F4:
+    ctx->gpr[0] = vm_read64(ctx->gpr[1] + 0xF0);
+    ctx->lr = ctx->gpr[0];
+    { uint64_t tmp = vm_read64(ctx->gpr[1] + 0x90); memcpy(&ctx->fpr[22], &tmp, 8); }
+    { uint64_t tmp = vm_read64(ctx->gpr[1] + 0x98); memcpy(&ctx->fpr[23], &tmp, 8); }
+    { uint64_t tmp = vm_read64(ctx->gpr[1] + 0xA0); memcpy(&ctx->fpr[24], &tmp, 8); }
+    { uint64_t tmp = vm_read64(ctx->gpr[1] + 0xA8); memcpy(&ctx->fpr[25], &tmp, 8); }
+    { uint64_t tmp = vm_read64(ctx->gpr[1] + 0xB0); memcpy(&ctx->fpr[26], &tmp, 8); }
+    { uint64_t tmp = vm_read64(ctx->gpr[1] + 0xB8); memcpy(&ctx->fpr[27], &tmp, 8); }
+    { uint64_t tmp = vm_read64(ctx->gpr[1] + 0xC0); memcpy(&ctx->fpr[28], &tmp, 8); }
+    { uint64_t tmp = vm_read64(ctx->gpr[1] + 0xC8); memcpy(&ctx->fpr[29], &tmp, 8); }
+    { uint64_t tmp = vm_read64(ctx->gpr[1] + 0xD0); memcpy(&ctx->fpr[30], &tmp, 8); }
+    { uint64_t tmp = vm_read64(ctx->gpr[1] + 0xD8); memcpy(&ctx->fpr[31], &tmp, 8); }
+    ctx->gpr[29] = _cs_29;
+    ctx->gpr[30] = _cs_30;
+    ctx->gpr[31] = _cs_31;
+    ctx->gpr[1] = ctx->gpr[1] + (int64_t)(0xE0);
+    return;
 }
 
 void june_evt_func_0023F358(ppu_context* ctx) {

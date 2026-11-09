@@ -186,6 +186,10 @@ void rsx_dispatch_init(rsx_dispatch* rsx, const rsx_dispatch_sink* sink)
      * the seed, consumers substituted mask=ALL for 0 and force-wrote the
      * depth-only pass's garbage FP output (the blue-character class). */
     rsx->regs[M_COLOR_MASK >> 2] = 0x01010101u;
+    /* NV40 reset window. An explicit zero extent must remain an empty
+     * scissor rather than being confused with an unwritten register. */
+    rsx->regs[0x08C0u >> 2] = 4096u << 16;
+    rsx->regs[0x08C4u >> 2] = 4096u << 16;
     rsx->regs[0x1D7C >> 2] = 0xFFFF0000u;
 
     /* NV40 reset state is counter-clockwise front winding.  Leaving this

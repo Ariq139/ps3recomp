@@ -1043,7 +1043,106 @@ loc_009DE140:
 
 void june_evt_func_009E2D74(ppu_context* ctx) {
     PPU_MM_SNAP
-        { g_trampoline_fn = (void(*)(void*))june_evt_func_009E8D74; return; }
+        uint64_t _cs_29 = ctx->gpr[29];
+        uint64_t _cs_30 = ctx->gpr[30];
+        uint64_t _cs_31 = ctx->gpr[31];
+        vm_write64(ctx->gpr[1] + -0x50, ctx->gpr[1]); ctx->gpr[1] += -0x50;
+        ctx->gpr[6] = ppc_rlw64(ctx->gpr[5], 0, 28, 31, 0, 0);
+        vm_write64(ctx->gpr[1] + 0x48, ctx->gpr[31]);
+        vm_write64(ctx->gpr[1] + 0x40, ctx->gpr[30]);
+        vm_write64(ctx->gpr[1] + 0x38, ctx->gpr[29]);
+        { int64_t a = (int32_t)ctx->gpr[6]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_009E2DB4;
+loc_009E2D90:
+        ctx->gpr[9] = vm_read32(ctx->gpr[4] + 0x0);
+        { uint64_t _a = ctx->gpr[4]; uint64_t _r = _a + (uint64_t)(int64_t)(4); ctx->gpr[7] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t _a = ctx->gpr[3]; uint64_t _r = _a + (uint64_t)(int64_t)(4); ctx->gpr[8] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        { uint64_t _a = ctx->gpr[6]; uint64_t _r = _a + (uint64_t)(int64_t)(-1); ctx->gpr[6] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        vm_write32(ctx->gpr[3] + 0x0, ctx->gpr[9]);
+        ctx->gpr[4] = ppc_rldicl(ctx->gpr[7], 0, 32);
+        { int64_t a = (int32_t)ctx->gpr[6]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        ctx->gpr[3] = ppc_rldicl(ctx->gpr[8], 0, 32);
+        if ((((ctx->cr >> 29) & 1) == 0)) goto loc_009E2D90;
+loc_009E2DB4:
+        ctx->gpr[5] = ppc_rlw64(ctx->gpr[5], 28, 4, 31, 0, 0);
+        { int64_t a = (int32_t)ctx->gpr[5]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 29) & 1) == 1)) goto loc_009E2ED4;
+loc_009E2DC0:
+        { uint64_t _a = ctx->gpr[4]; uint64_t _r = _a + (uint64_t)(int64_t)(4); ctx->gpr[6] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->gpr[6] = ppc_rldicl(ctx->gpr[6], 0, 32);
+        ctx->gpr[4] = vm_read32(ctx->gpr[4] + 0x0);
+        { uint64_t _a = ctx->gpr[6]; uint64_t _r = _a + (uint64_t)(int64_t)(4); ctx->gpr[7] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->gpr[7] = ppc_rldicl(ctx->gpr[7], 0, 32);
+        ctx->gpr[6] = vm_read32(ctx->gpr[6] + 0x0);
+        { uint64_t _a = ctx->gpr[7]; uint64_t _r = _a + (uint64_t)(int64_t)(4); ctx->gpr[8] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->gpr[8] = ppc_rldicl(ctx->gpr[8], 0, 32);
+        ctx->gpr[7] = vm_read32(ctx->gpr[7] + 0x0);
+        { uint64_t _a = ctx->gpr[8]; uint64_t _r = _a + (uint64_t)(int64_t)(4); ctx->gpr[9] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->gpr[9] = ppc_rldicl(ctx->gpr[9], 0, 32);
+        ctx->gpr[8] = vm_read32(ctx->gpr[8] + 0x0);
+        { uint64_t _a = ctx->gpr[9]; uint64_t _r = _a + (uint64_t)(int64_t)(4); ctx->gpr[10] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        vm_write32(ctx->gpr[3] + 0x0, ctx->gpr[4]);
+        ctx->gpr[10] = ppc_rldicl(ctx->gpr[10], 0, 32);
+        vm_write32(ctx->gpr[3] + 0x4, ctx->gpr[6]);
+        { uint64_t _a = ctx->gpr[10]; uint64_t _r = _a + (uint64_t)(int64_t)(4); ctx->gpr[11] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        vm_write32(ctx->gpr[3] + 0x8, ctx->gpr[7]);
+        ctx->gpr[11] = ppc_rldicl(ctx->gpr[11], 0, 32);
+        vm_write32(ctx->gpr[3] + 0xC, ctx->gpr[8]);
+        { uint64_t _a = ctx->gpr[11]; uint64_t _r = _a + (uint64_t)(int64_t)(4); ctx->gpr[12] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->gpr[8] = vm_read32(ctx->gpr[9] + 0x0);
+        ctx->gpr[12] = ppc_rldicl(ctx->gpr[12], 0, 32);
+        ctx->gpr[9] = vm_read32(ctx->gpr[10] + 0x0);
+        { uint64_t _a = ctx->gpr[12]; uint64_t _r = _a + (uint64_t)(int64_t)(4); ctx->gpr[31] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->gpr[11] = vm_read32(ctx->gpr[11] + 0x0);
+        ctx->gpr[31] = ppc_rldicl(ctx->gpr[31], 0, 32);
+        ctx->gpr[12] = vm_read32(ctx->gpr[12] + 0x0);
+        { uint64_t _a = ctx->gpr[31]; uint64_t _r = _a + (uint64_t)(int64_t)(4); ctx->gpr[30] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        vm_write32(ctx->gpr[3] + 0x10, ctx->gpr[8]);
+        ctx->gpr[30] = ppc_rldicl(ctx->gpr[30], 0, 32);
+        vm_write32(ctx->gpr[3] + 0x14, ctx->gpr[9]);
+        { uint64_t _a = ctx->gpr[30]; uint64_t _r = _a + (uint64_t)(int64_t)(4); ctx->gpr[29] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        vm_write32(ctx->gpr[3] + 0x18, ctx->gpr[11]);
+        { uint64_t _a = ctx->gpr[5]; uint64_t _r = _a + (uint64_t)(int64_t)(-1); ctx->gpr[5] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->gpr[4] = ppc_rldicl(ctx->gpr[29], 0, 32);
+        vm_write32(ctx->gpr[3] + 0x1C, ctx->gpr[12]);
+        ctx->gpr[11] = vm_read32(ctx->gpr[31] + 0x0);
+        { int64_t a = (int32_t)ctx->gpr[5]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        { uint64_t _a = ctx->gpr[4]; uint64_t _r = _a + (uint64_t)(int64_t)(4); ctx->gpr[6] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->gpr[12] = vm_read32(ctx->gpr[30] + 0x0);
+        ctx->gpr[6] = ppc_rldicl(ctx->gpr[6], 0, 32);
+        ctx->gpr[4] = vm_read32(ctx->gpr[4] + 0x0);
+        { uint64_t _a = ctx->gpr[6]; uint64_t _r = _a + (uint64_t)(int64_t)(4); ctx->gpr[7] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->gpr[7] = ppc_rldicl(ctx->gpr[7], 0, 32);
+        ctx->gpr[6] = vm_read32(ctx->gpr[6] + 0x0);
+        { uint64_t _a = ctx->gpr[7]; uint64_t _r = _a + (uint64_t)(int64_t)(4); ctx->gpr[10] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        vm_write32(ctx->gpr[3] + 0x20, ctx->gpr[11]);
+        ctx->gpr[10] = ppc_rldicl(ctx->gpr[10], 0, 32);
+        vm_write32(ctx->gpr[3] + 0x24, ctx->gpr[12]);
+        { uint64_t _a = ctx->gpr[10]; uint64_t _r = _a + (uint64_t)(int64_t)(4); ctx->gpr[29] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        vm_write32(ctx->gpr[3] + 0x28, ctx->gpr[4]);
+        ctx->gpr[8] = ppc_rldicl(ctx->gpr[29], 0, 32);
+        vm_write32(ctx->gpr[3] + 0x2C, ctx->gpr[6]);
+        { uint64_t _a = ctx->gpr[8]; uint64_t _r = _a + (uint64_t)(int64_t)(4); ctx->gpr[9] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->gpr[6] = vm_read32(ctx->gpr[7] + 0x0);
+        ctx->gpr[9] = ppc_rldicl(ctx->gpr[9], 0, 32);
+        ctx->gpr[7] = vm_read32(ctx->gpr[10] + 0x0);
+        { uint64_t _a = ctx->gpr[9]; uint64_t _r = _a + (uint64_t)(int64_t)(4); ctx->gpr[11] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->gpr[8] = vm_read32(ctx->gpr[8] + 0x0);
+        { uint64_t _a = ctx->gpr[3]; uint64_t _r = _a + (uint64_t)(int64_t)(0x40); ctx->gpr[10] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+        ctx->gpr[4] = ppc_rldicl(ctx->gpr[11], 0, 32);
+        ctx->gpr[9] = vm_read32(ctx->gpr[9] + 0x0);
+        vm_write32(ctx->gpr[3] + 0x30, ctx->gpr[6]);
+        vm_write32(ctx->gpr[3] + 0x34, ctx->gpr[7]);
+        vm_write32(ctx->gpr[3] + 0x38, ctx->gpr[8]);
+        vm_write32(ctx->gpr[3] + 0x3C, ctx->gpr[9]);
+        ctx->gpr[3] = ppc_rldicl(ctx->gpr[10], 0, 32);
+        if ((((ctx->cr >> 29) & 1) == 0)) goto loc_009E2DC0;
+loc_009E2ED4:
+        ctx->gpr[29] = _cs_29;
+        ctx->gpr[30] = _cs_30;
+        ctx->gpr[31] = _cs_31;
+        ctx->gpr[1] = ctx->gpr[1] + (int64_t)(0x50);
+        return;
 }
 
 void june_evt_func_009E8D74(ppu_context* ctx) {

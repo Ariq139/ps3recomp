@@ -525,10 +525,14 @@ static inline u128 spu_shufb(u128 a, u128 b, u128 c) {
      * puts that byte's bit 4 there without interference from its neighbor. */
     const __m128i fromb = _mm_slli_epi16(C, 3);
     __m128i r = _mm_blendv_epi8(_mm_shuffle_epi8(A, idx), _mm_shuffle_epi8(B, idx), fromb);
-    /* 10x is already zero. Fill 110 with FF, then override 111 with 80. */
-    const __m128i mC0 = _mm_cmpeq_epi8(_mm_and_si128(C, _mm_set1_epi8((char)0xC0)), _mm_set1_epi8((char)0xC0));
-    const __m128i mE0 = _mm_cmpeq_epi8(_mm_and_si128(C, _mm_set1_epi8((char)0xE0)), _mm_set1_epi8((char)0xE0));
-    r = _mm_blendv_epi8(_mm_or_si128(r, mC0), _mm_set1_epi8((char)0x80), mE0);
+    /* PSHUFB already zeroes every selector with bit 7 set. Decode the high
+     * nibble once: 0x8..0xB supply zero, 0xC..0xD supply FF, 0xE..0xF supply
+     * 80. The mask removes the neighboring byte introduced by the word shift.
+     * This replaces two comparisons and the final blend with one LUT shuffle. */
+    const __m128i specials = _mm_setr_epi8(0,0,0,0, 0,0,0,0, 0,0,0,0,
+                                          (char)0xFF,(char)0xFF,(char)0x80,(char)0x80);
+    const __m128i nibble = _mm_and_si128(_mm_srli_epi16(C, 4), _mm_set1_epi8(15));
+    r = _mm_or_si128(r, _mm_shuffle_epi8(specials, nibble));
     u128 out; memcpy(&out, &r, 16); return out;
 }
 #elif defined(__ARM_NEON)
@@ -1112,8 +1116,8 @@ SPU__NV_INLINE u128 spu_fnms(u128 a, u128 b, u128 c) { return SPU__NV_FMA(a, b, 
 /* The NEON fast path above, on x86 with AVX2: the four lanes widened to one f64x4 (exact),
  * the operation, the 29 low significand bits cleared, narrowed (exact). Same lane rules: an
  * ordinary single or a true +-0 takes the vector result, a zero result loses its sign, fa/fs
- * also needs the exponents within 29 of each other, and fma keeps a lane only if TwoSum says
- * the add did not round onto a 24-bit boundary. Every other lane is redone one by one. The
+ * also needs the exponents within 29 of each other, and fma checks addition exactness only
+ * at a 24-bit boundary. Every other lane is redone one by one. The
  * product of two 24-bit significands is exact in double, so a compiler contracting a multiply
  * and an add into an FMA cannot change any rounding here. */
 #include <immintrin.h>
@@ -1131,9 +1135,9 @@ SPU__X8_INLINE __m256d spu__x8_wide(__m128i x) { return _mm256_cvtps_pd(_mm_cast
 SPU__X8_INLINE __m128i spu__x8_narrow(__m256i m) {
     return _mm256_castsi256_si128(_mm256_permutevar8x32_epi32(m, _mm256_setr_epi32(0, 2, 4, 6, 0, 2, 4, 6)));
 }
-/* d truncated to singles. *ok: lanes whose result is a normal single or an exact zero and, when
- * err is given, did not both round and land on a 24-bit boundary. *zm: the zero lanes. */
-SPU__X8_INLINE __m128i spu__x8_trunc0(__m256d d, __m128i* ok, __m128i* zm, const __m256d* err) {
+/* d truncated to singles. *ok: normal single results or exact zero; *zm: zero
+ * lanes. FMA separately rejects rounded sums on a 24-bit boundary. */
+SPU__X8_INLINE __m128i spu__x8_trunc0(__m256d d, __m128i* ok, __m128i* zm) {
     const __m256i u = _mm256_castpd_si256(d);
     const __m256i az = _mm256_cmpeq_epi64(_mm256_slli_epi64(u, 1), _mm256_setzero_si256());
     const __m256i e = _mm256_sub_epi64(_mm256_and_si256(_mm256_srli_epi64(u, 52), _mm256_set1_epi64x(0x7FF)),
@@ -1141,12 +1145,6 @@ SPU__X8_INLINE __m128i spu__x8_trunc0(__m256d d, __m128i* ok, __m128i* zm, const
     __m256i good = _mm256_andnot_si256(_mm256_or_si256(_mm256_cmpgt_epi64(_mm256_set1_epi64x(-126), e),
                                                        _mm256_cmpgt_epi64(e, _mm256_set1_epi64x(127))),
                                        _mm256_set1_epi64x(-1));
-    if (err) {
-        const __m256i low = _mm256_and_si256(u, _mm256_set1_epi64x(0x1FFFFFFF));
-        const __m256i bnd = _mm256_cmpeq_epi64(low, _mm256_setzero_si256());
-        const __m256i rnd = _mm256_castpd_si256(_mm256_cmp_pd(*err, _mm256_setzero_pd(), _CMP_NEQ_UQ));
-        good = _mm256_andnot_si256(_mm256_and_si256(bnd, rnd), good);
-    }
     *ok = spu__x8_narrow(_mm256_or_si256(good, az));
     *zm = spu__x8_narrow(az);
     const __m256d t = _mm256_castsi256_pd(_mm256_and_si256(u, _mm256_set1_epi64x(~0x1FFFFFFFll)));
@@ -1177,7 +1175,7 @@ SPU__X8_INLINE u128 spu__x8_fa(u128 a, u128 b, uint32_t negb) {
     const __m128i pre = _mm_and_si128(_mm_and_si128(spu__x8_plain0(x), spu__x8_plain0(y)),
                                       _mm_or_si128(gap, _mm_or_si128(spu__x8_zero(x), spu__x8_zero(y))));
     __m128i ok, zm;
-    const __m128i r = spu__x8_trunc0(_mm256_add_pd(spu__x8_wide(x), spu__x8_wide(y)), &ok, &zm, NULL);
+    const __m128i r = spu__x8_trunc0(_mm256_add_pd(spu__x8_wide(x), spu__x8_wide(y)), &ok, &zm);
     ok = _mm_and_si128(ok, pre);
     return spu__x8_all4(ok) ? spu__x8_st(r) : spu__x8_fa_fix(spu__x8_st(r), ok, a, b, negb);
 }
@@ -1186,19 +1184,40 @@ SPU__X8_INLINE u128 spu_fs(u128 a, u128 b) { return spu__x8_fa(a, b, 0x80000000u
 SPU__X8_INLINE u128 spu_fm(u128 a, u128 b) {
     const __m128i x = spu__x8_ld(a), y = spu__x8_ld(b);
     __m128i ok, zm;
-    const __m128i r = spu__x8_trunc0(_mm256_mul_pd(spu__x8_wide(x), spu__x8_wide(y)), &ok, &zm, NULL);
+    const __m128i r = spu__x8_trunc0(_mm256_mul_pd(spu__x8_wide(x), spu__x8_wide(y)), &ok, &zm);
     ok = _mm_and_si128(ok, _mm_and_si128(spu__x8_plain0(x), spu__x8_plain0(y)));
     return spu__x8_all4(ok) ? spu__x8_st(r) : spu__x8_fm_fix(spu__x8_st(r), ok, a, b);
 }
-/* (+-a*b) + (+-c): the product is exact in double; TwoSum gives the add's exact rounding error. */
+/* (+-a*b) + (+-c): a binary32 product is exact in binary64. Rounding the
+ * double addition cannot alter the final 24-bit truncation unless its result
+ * lands on a 24-bit boundary (29 low bits zero). Only those sums need the
+ * exactness check below; the other sums avoid it entirely.
+ *
+ * An exact addition reproduces both operands when either is subtracted from
+ * the sum. For an inexact addition, the sum and the larger-magnitude operand
+ * are within a factor of two, so their subtraction is exact by Sterbenz's
+ * lemma and differs from the smaller operand. Checking both differences thus
+ * detects inexact addition in every host rounding mode. The former TwoSum
+ * error expansion assumed round-to-nearest and could accept a wrong boundary
+ * under directed rounding. Non-finite/extended operands still use the exact
+ * per-lane fallback via plain0, as before. */
 SPU__X8_INLINE u128 spu__x8_fma(u128 a, u128 b, u128 c, uint32_t negp, uint32_t negc) {
     const __m128i x = _mm_xor_si128(spu__x8_ld(a), _mm_set1_epi32((int)negp)), y = spu__x8_ld(b);
     const __m128i z = _mm_xor_si128(spu__x8_ld(c), _mm_set1_epi32((int)negc));
     const __m256d p = _mm256_mul_pd(spu__x8_wide(x), spu__x8_wide(y)), zz = spu__x8_wide(z);
-    const __m256d sum = _mm256_add_pd(p, zz), bb = _mm256_sub_pd(sum, p);
-    const __m256d err = _mm256_add_pd(_mm256_sub_pd(p, _mm256_sub_pd(sum, bb)), _mm256_sub_pd(zz, bb));
+    const __m256d sum = _mm256_add_pd(p, zz);
+    const __m256i boundary = _mm256_cmpeq_epi64(
+        _mm256_and_si256(_mm256_castpd_si256(sum), _mm256_set1_epi64x(0x1FFFFFFF)),
+        _mm256_setzero_si256());
     __m128i ok, zm;
-    const __m128i r = spu__x8_trunc0(sum, &ok, &zm, &err);
+    const __m128i r = spu__x8_trunc0(sum, &ok, &zm);
+    if (_mm256_movemask_pd(_mm256_castsi256_pd(boundary))) {
+        const __m256d inexact = _mm256_or_pd(
+            _mm256_cmp_pd(_mm256_sub_pd(sum, p), zz, _CMP_NEQ_UQ),
+            _mm256_cmp_pd(_mm256_sub_pd(sum, zz), p, _CMP_NEQ_UQ));
+        ok = _mm_andnot_si128(spu__x8_narrow(_mm256_and_si256(
+            boundary, _mm256_castpd_si256(inexact))), ok);
+    }
     ok = _mm_and_si128(ok, _mm_and_si128(_mm_and_si128(spu__x8_plain0(x), spu__x8_plain0(y)), spu__x8_plain0(z)));
     return spu__x8_all4(ok) ? spu__x8_st(r) : spu__x8_fma_fix(spu__x8_st(r), ok, a, b, c, negp, negc);
 }

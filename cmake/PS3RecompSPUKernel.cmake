@@ -1,0 +1,132 @@
+# Replace one lifted TU with a build-cache copy containing a verified pure
+# kernel transform. Call after applying the original TU's compile properties.
+function(ps3recomp_promote_spu_kernel target source kernel)
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    get_filename_component(original "${source}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+    file(TO_CMAKE_PATH "${original}" original)
+    get_filename_component(image_dir "${original}" DIRECTORY)
+    get_filename_component(image "${image_dir}" NAME)
+    get_filename_component(filename "${original}" NAME)
+    set(output "${CMAKE_CURRENT_BINARY_DIR}/cache/spu/${image}/${kernel}/${filename}")
+    get_target_property(sources "${target}" SOURCES)
+    set(replaced FALSE)
+    set(updated "")
+    foreach(item IN LISTS sources)
+        if(item MATCHES "^\\$<")
+            list(APPEND updated "${item}")
+            continue()
+        endif()
+        get_filename_component(item_abs "${item}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+        file(TO_CMAKE_PATH "${item_abs}" item_abs)
+        set(lhs "${item_abs}")
+        set(rhs "${original}")
+        if(WIN32)
+            string(TOLOWER "${lhs}" lhs)
+            string(TOLOWER "${rhs}" rhs)
+        endif()
+        if(lhs STREQUAL rhs)
+            set(replaced TRUE)
+            set(property_source "${item}")
+            list(APPEND updated "${output}")
+        else()
+            list(APPEND updated "${item}")
+        endif()
+    endforeach()
+    if(NOT replaced)
+        message(FATAL_ERROR "SPU kernel source is not in target ${target}: ${original}")
+    endif()
+    add_custom_command(OUTPUT "${output}"
+        COMMAND "${Python3_EXECUTABLE}" "${PS3RECOMP_DIR}/tools/promote_spu_kernel.py"
+            --source "${original}" --function "${kernel}" --output "${output}"
+        DEPENDS "${original}" "${PS3RECOMP_DIR}/tools/promote_spu_kernel.py"
+            "${PS3RECOMP_DIR}/tools/spu_kernel_replay.py"
+            "${PS3RECOMP_DIR}/runtime/spu/spu_helpers.h"
+        COMMENT "Generating guarded SPU kernel ${kernel}"
+        VERBATIM)
+    foreach(property IN ITEMS COMPILE_OPTIONS COMPILE_DEFINITIONS COMPILE_FLAGS
+                              INCLUDE_DIRECTORIES LANGUAGE SKIP_PRECOMPILE_HEADERS
+                              OBJECT_DEPENDS SKIP_UNITY_BUILD_INCLUSION)
+        get_source_file_property(value "${property_source}" "${property}")
+        if(NOT value STREQUAL "NOTFOUND")
+            set_property(SOURCE "${output}" PROPERTY "${property}" "${value}")
+        endif()
+    endforeach()
+    set_property(SOURCE "${output}" APPEND PROPERTY INCLUDE_DIRECTORIES "${image_dir}")
+    set_property(TARGET "${target}" PROPERTY SOURCES "${updated}")
+    if(ARGC GREATER 3)
+        set("${ARGV3}" "${output}" PARENT_SCOPE)
+    endif()
+    message(STATUS "Guarded SPU kernel: ${kernel} (${original})")
+endfunction()
+
+# Chain a pure-loop transform after any earlier source-cache transformation.
+# source is the current target TU (possibly returned by the helper above).
+function(ps3recomp_outline_spu_loop target source kernel start entry exit_pc mode)
+    string(TOUPPER "${mode}" mode)
+    if(NOT mode MATCHES "^(OFF|CAPTURE|NATIVE)$")
+        message(FATAL_ERROR "SPU loop mode must be OFF, CAPTURE or NATIVE")
+    endif()
+    if(mode STREQUAL "OFF")
+        if(ARGC GREATER 7)
+            set("${ARGV7}" "${source}" PARENT_SCOPE)
+        endif()
+        return()
+    endif()
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    get_filename_component(input "${source}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+    file(TO_CMAKE_PATH "${input}" input)
+    get_filename_component(input_dir "${input}" DIRECTORY)
+    get_filename_component(filename "${input}" NAME)
+    set(output "${CMAKE_CURRENT_BINARY_DIR}/cache/spu/loops/${kernel}_${start}_${exit_pc}_${mode}/${filename}")
+    get_target_property(sources "${target}" SOURCES)
+    set(updated "")
+    set(replaced FALSE)
+    foreach(item IN LISTS sources)
+        if(item MATCHES "^\\$<")
+            list(APPEND updated "${item}")
+            continue()
+        endif()
+        get_filename_component(item_abs "${item}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+        file(TO_CMAKE_PATH "${item_abs}" item_abs)
+        set(lhs "${item_abs}")
+        set(rhs "${input}")
+        if(WIN32)
+            string(TOLOWER "${lhs}" lhs)
+            string(TOLOWER "${rhs}" rhs)
+        endif()
+        if(lhs STREQUAL rhs)
+            set(replaced TRUE)
+            set(property_source "${item}")
+            list(APPEND updated "${output}")
+        else()
+            list(APPEND updated "${item}")
+        endif()
+    endforeach()
+    if(NOT replaced)
+        message(FATAL_ERROR "SPU loop input is not in target ${target}: ${input}")
+    endif()
+    add_custom_command(OUTPUT "${output}"
+        COMMAND "${Python3_EXECUTABLE}" "${PS3RECOMP_DIR}/tools/outline_spu_loop.py"
+            --source "${input}" --function "${kernel}" --start "${start}"
+            --entry "${entry}" --exit "${exit_pc}" --mode "${mode}" --output "${output}"
+        DEPENDS "${input}" "${PS3RECOMP_DIR}/tools/outline_spu_loop.py"
+            "${PS3RECOMP_DIR}/tools/spu_kernel_replay.py"
+            "${PS3RECOMP_DIR}/runtime/spu/spu_helpers.h"
+        BYPRODUCTS "${output}.outline.json"
+        COMMENT "Generating ${mode} SPU loop ${kernel} [${start},${exit_pc})"
+        VERBATIM)
+    foreach(property IN ITEMS COMPILE_OPTIONS COMPILE_DEFINITIONS COMPILE_FLAGS
+                              INCLUDE_DIRECTORIES LANGUAGE SKIP_PRECOMPILE_HEADERS
+                              OBJECT_DEPENDS SKIP_UNITY_BUILD_INCLUSION)
+        get_source_file_property(value "${property_source}" "${property}")
+        if(NOT value STREQUAL "NOTFOUND")
+            set_property(SOURCE "${output}" PROPERTY "${property}" "${value}")
+        endif()
+    endforeach()
+    set_property(SOURCE "${output}" APPEND PROPERTY INCLUDE_DIRECTORIES "${input_dir}")
+    set_property(TARGET "${target}" PROPERTY SOURCES "${updated}")
+    if(ARGC GREATER 7)
+        set("${ARGV7}" "${output}" PARENT_SCOPE)
+    endif()
+    message(STATUS "${mode} SPU loop: ${kernel} [${start},${exit_pc})")
+endfunction()

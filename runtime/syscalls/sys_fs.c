@@ -3,6 +3,11 @@
  */
 
 #include "sys_fs.h"
+
+extern int ps3recomp_resolve_event_editor_path(const char* game_root,
+                                               const char* guest_path,
+                                               char* host_path,
+                                               size_t host_path_capacity);
 #include "../../libs/filesystem/edat.h"
 #include "../memory/vm.h"
 #include <string.h>
@@ -156,6 +161,19 @@ void sys_fs_translate_path(const char* ps3_path, char* host_path, int host_path_
     if (g_sys_fs_root[0] == '.' && g_sys_fs_root[1] == '\0') {
         const char* env = getenv("PS3_VFS_ROOT");
         if (env && *env) { strncpy(g_sys_fs_root, env, sizeof(g_sys_fs_root) - 1); g_sys_fs_root[sizeof(g_sys_fs_root)-1] = 0; }
+    }
+
+    /* The June editor concatenates event directory names and filenames without
+     * separators. Resolve that spelling against the same loose event tree used
+     * by the cellFs-backed picker before generic mount translation loses it. */
+    if (ps3_path && host_path && host_path_size > 0) {
+        if (ps3recomp_resolve_event_editor_path(g_sys_fs_root, ps3_path,
+                                               host_path, (size_t)host_path_size)) {
+            fs_normalize_sep(host_path);
+            fprintf(stderr, "[sys_fs] repaired event-editor path '%s' -> '%s'\n",
+                    ps3_path, host_path);
+            return;
+        }
     }
 
     /* /dev_hdd0 overlays the installed game-update dir (patchN.farc live there

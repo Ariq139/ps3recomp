@@ -111,6 +111,7 @@ static void sys_process_is_stack(ppu_context* ctx)
 #define LWM_OWNER  0x00
 #define LWM_ATTR   0x08
 #define LWM_RECUR  0x0C
+#define LWM_SIZE   0x18
 /* Owner id = ctx->thread_id, which is nonzero for every thread since main
  * registers as id 1 (ppu_thread_register_main). The old 0->1 fallback made
  * main alias the FIRST CREATED thread: each passed the other's recursive
@@ -119,6 +120,30 @@ static void sys_process_is_stack(ppu_context* ctx)
  * unregistered context (bug); stamp a sentinel that matches no real thread. */
 #define LWM_SELF(ctx) ((uint32_t)(ctx)->thread_id ? (uint32_t)(ctx)->thread_id : 0x7FFFFFFEu)
 
+static uint32_t lwm_guest_address_error(uint32_t addr, uint32_t size)
+{
+    if (!VM_READY || addr < VM_MAIN_MEM_BASE ||
+        (uint64_t)addr + size > VM_TOTAL_SIZE ||
+        (ppu_vm_size && (uint64_t)addr + size > ppu_vm_size))
+        return CELL_EFAULT;
+    if (addr & 3u)
+        return CELL_EALIGN;
+    return CELL_OK;
+}
+
+static void lwm_return_address_error(ppu_context* ctx, uint32_t addr,
+                                     uint32_t error, const char* operation)
+{
+    static volatile long invalid_count;
+    if (_InterlockedIncrement(&invalid_count) <= 16) {
+        fprintf(stderr,
+                "[LWM-INVALID] op=%s addr=0x%08X error=0x%08X tid=%llu cia=0x%08X lr=0x%08X\n",
+                operation, addr, error, (unsigned long long)ctx->thread_id,
+                ctx->cia, (uint32_t)ctx->lr);
+    }
+    ctx->gpr[3] = (uint64_t)(int64_t)(int32_t)error;
+}
+
 struct LwmSlot;
 static struct LwmSlot* lwm_slot(uint32_t addr);   /* fwd (defined below) */
 static void lwm_release(struct LwmSlot* sl);
@@ -126,6 +151,13 @@ static void sys_lwmutex_create(ppu_context* ctx)
 {
     uint32_t lwm  = (uint32_t)ctx->gpr[3];
     uint32_t attr = (uint32_t)ctx->gpr[4];
+    uint32_t error = lwm_guest_address_error(lwm, LWM_SIZE);
+    if (!error && attr)
+        error = lwm_guest_address_error(attr, 4);
+    if (error) {
+        lwm_return_address_error(ctx, lwm, error, "create");
+        return;
+    }
     { static long long _n=0; _n++;
       if (getenv("LWM_COUNT") && (_n<=24 || (_n%50000)==0))
         fprintf(stderr, "[LWM] create #%lld lwm=0x%08X attr=0x%08X\n", _n, lwm, attr); }
@@ -256,9 +288,39 @@ static void lwm_release(struct LwmSlot* sl)
 volatile int g_nd_inpump = 0;
 /* syscalls/sys_ppu_thread.c: this thread is about to wait (PS3_PRIO_START). */
 extern "C" void ppu_thread_note_block(uint64_t tid);
+struct LwmWatch {
+    ppu_context* ctx;
+    uint32_t address;
+    const char* operation;
+    bool enabled;
+    LwmWatch(ppu_context* context, const char* action)
+        : ctx(context), address((uint32_t)context->gpr[3]), operation(action) {
+        static const uint32_t watched = []() {
+            const char* value = getenv("PS3_LWMUTEX_WATCH");
+            return value ? (uint32_t)strtoul(value, nullptr, 0) : 0u;
+        }();
+        enabled = watched && address == watched;
+        if (enabled) report("enter");
+    }
+    void report(const char* phase) {
+        fprintf(stderr, "[lwm-watch] %s %s tid=%llu lr=%08X cia=%08X toc=%08X owner=%u recur=%u outer=%u result=%08X\n",
+                operation, phase, (unsigned long long)ctx->thread_id,
+                (uint32_t)ctx->lr, (uint32_t)ctx->cia, (uint32_t)ctx->gpr[2],
+                vm_read32(address + LWM_OWNER), vm_read32(address + LWM_RECUR),
+                vm_read32(address - 0x10u), (uint32_t)ctx->gpr[3]);
+    }
+    ~LwmWatch() { if (enabled) report("leave"); }
+};
+
 static void sys_lwmutex_lock(ppu_context* ctx)
 {
+    LwmWatch watch(ctx, "lock");
     uint32_t lwm = (uint32_t)ctx->gpr[3];
+    uint32_t error = lwm_guest_address_error(lwm, LWM_SIZE);
+    if (error) {
+        lwm_return_address_error(ctx, lwm, error, "lock");
+        return;
+    }
     uint32_t self = LWM_SELF(ctx);
     /* lv2 ABI: r4 = timeout in microseconds, 0 = infinite. The real kernel
      * returns ETIMEDOUT (0x8001000B) when the wait expires; games rely on that
@@ -310,7 +372,9 @@ static void sys_lwmutex_lock(ppu_context* ctx)
  * call while PS3_LWMUTEX_TRACE is on, take the full handler. */
 static int sys_lwmutex_lock_fast(ppu_context* ctx)
 {
+    LwmWatch watch(ctx, "lock-fast");
     const uint32_t lwm = (uint32_t)ctx->gpr[3];
+    if (lwm_guest_address_error(lwm, LWM_SIZE)) return 0;
     struct LwmSlot* sl = lwm_slot(lwm);
     if (!sl || lwm_trace()) return 0;
     const uint32_t self = LWM_SELF(ctx);
@@ -334,6 +398,11 @@ static int sys_lwmutex_unlock_fast(ppu_context* ctx)
 static void sys_lwmutex_trylock(ppu_context* ctx)
 {
     uint32_t lwm = (uint32_t)ctx->gpr[3];
+    uint32_t error = lwm_guest_address_error(lwm, LWM_SIZE);
+    if (error) {
+        lwm_return_address_error(ctx, lwm, error, "trylock");
+        return;
+    }
     uint32_t self = LWM_SELF(ctx);
     struct LwmSlot* sl0 = lwm_slot(lwm);
     if (sl0) {
@@ -351,7 +420,13 @@ static void sys_lwmutex_trylock(ppu_context* ctx)
 }
 static void sys_lwmutex_unlock(ppu_context* ctx)
 {
+    LwmWatch watch(ctx, "unlock");
     uint32_t lwm = (uint32_t)ctx->gpr[3];
+    uint32_t error = lwm_guest_address_error(lwm, LWM_SIZE);
+    if (error) {
+        lwm_return_address_error(ctx, lwm, error, "unlock");
+        return;
+    }
     uint32_t rc = vm_read32(lwm + LWM_RECUR);
     if (rc > 1) {                       /* recursive hold: count down, keep the lock */
         vm_write32(lwm + LWM_RECUR, rc - 1);

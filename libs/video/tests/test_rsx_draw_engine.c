@@ -1123,6 +1123,14 @@ static void test_scissor(void)
           "a scissor larger than the surface is clipped to it (%ux%u)",
           stub.scissor[2], stub.scissor[3]);
 
+    m(M_SCISSOR_H, 16u); /* explicitly empty width */
+    draw_triangle();
+    CHECK(stub.scissor[2] == 0, "a written zero width clips every pixel");
+    m(M_SCISSOR_H, 4096u << 16);
+    m(M_SCISSOR_V, 8u); /* explicitly empty height */
+    draw_triangle();
+    CHECK(stub.scissor[3] == 0, "a written zero height clips every pixel");
+
     engine_down();
 }
 

@@ -38,6 +38,7 @@
  * passthrough to <windows.h>; off Windows the toolkit's shim supplies the same
  * names over pthreads and mmap, so the call sites below are written once. */
 #include "win32_compat.h"
+#include "../runtime/platform/ps3_frame_pacing.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -152,15 +153,9 @@ extern "C" int  rsx_null_backend_pump_messages(void);
 /* ---------------------------------------------------------------------------
  * Frame clock
  * -----------------------------------------------------------------------*/
-/* On real hardware the RSX raises a vblank interrupt about 60 times a second
- * and that is what drives the game's frame loop. With no RSX it is synthesized
- * here: a host thread calls cellGcmTickVBlank/TickFlip, which invoke the
- * handlers the guest registered, and drains the GCM FIFO. Without this the
- * title initialises, registers its handlers and then waits forever.
- *
- * The ticks are driven off real elapsed time rather than off how long present()
- * took. A hidden or occluded window makes present block hard, and pacing the
- * ticks behind it paces the whole game behind it. */
+/* Vblank runs on its own 60 Hz clock. The FIFO owner presents completed
+ * guest frames at the title's requested rate, then delivers flip completion.
+ * Guest timing therefore does not inherit the display's refresh rate. */
 static volatile LONG g_frames_presented = 0;
 static volatile LONG g_frame_phase = 0;
 static DWORD WINAPI frame_probe(LPVOID)
@@ -182,10 +177,15 @@ extern "C" unsigned ppu_boot_frames_presented(void)
     return (unsigned)g_frames_presented;
 }
 
+static ps3_frame_pacer g_guest_frame_pacer;
+
 static void present_guest_frame(void)
 {
+    ps3_frame_pacer_wait(&g_guest_frame_pacer);
     g_frame_phase = 3;
     rsx_backend_present();
+    /* Completion remains on the FIFO owner, after the capped frame boundary. */
+    cellGcmTickFlip();
     /* This thread increments and guest threads read, so interlocked rather
      * than a volatile ++, which on arm64 is neither atomic nor a fence. */
     InterlockedIncrement(&g_frames_presented);
@@ -206,6 +206,20 @@ static uint32_t window_dimension_from_environment(const char* name,
     return (uint32_t)parsed;
 }
 
+/* Vblank belongs to guest time, independently of host Present latency. It
+ * never drains the FIFO, consumes flips, or submits graphics work. Missed
+ * vblanks are skipped rather than replayed as a burst of callbacks. */
+static DWORD WINAPI guest_vblank_clock(LPVOID)
+{
+    ps3_frame_pacer clock;
+    ps3_frame_pacer_init(&clock, 60);
+    for (;;) {
+        ps3_frame_pacer_wait(&clock);
+        cellGcmTickVBlank();
+    }
+    return 0;
+}
+
 static DWORD WINAPI frame_clock(LPVOID)
 {
     const char* title = getenv("PS3_TITLE");
@@ -218,41 +232,20 @@ static DWORD WINAPI frame_clock(LPVOID)
     fprintf(stderr, "[rsx] %s backend init %s\n", RSX_BACKEND_NAME,
             rsx_ok ? "OK -- window open" : "FAILED");
 
-    ULONGLONG next_tick = GetTickCount64();
+    const unsigned frame_limit = ps3_guest_frame_limit();
+    ps3_frame_pacer_init(&g_guest_frame_pacer, frame_limit);
+    printf("[frame-clock] guest frame limit: %u FPS; vblank: 60 Hz\n", frame_limit);
+    if (frame_limit != 30)
+        fprintf(stderr, "[frame-clock] PS3_FPS_LIMIT=%u is a diagnostic override; game logic may accelerate\n", frame_limit);
+    HANDLE clock_thread = CreateThread(NULL, 0, guest_vblank_clock, NULL, 0, NULL);
+    if (!clock_thread) { fprintf(stderr, "[frame-clock] cannot start vblank clock\n"); abort(); }
+    CloseHandle(clock_thread);
 
     for (;;) {
-        /* Match the toolkit runner: a fence waiter signals this event when the
-         * GCM reference queue runs dry, so the present thread can feed the next
-         * FIFO commands immediately instead of adding another fixed sleep to
-         * every cellGcmFinish in the movie frame. The timeout still bounds
-         * vblank and message-pump latency when no fence needs draining. */
         cellGcm_fifo_kick_wait(4);
-        ULONGLONG now = GetTickCount64();
 
-        int fired = 0;
-        while ((long long)(now - next_tick) >= 0 && fired < 240) {
-            g_frame_phase = 1;
-            cellGcmTickVBlank();
-            g_frame_phase = 2;
-            cellGcmTickFlip();
-            /* Drain the FIFO every tick. This is what writes the RSX sync-fence
-             * labels the game's per-frame logic blocks on, so it has to keep
-             * advancing at 60 Hz even while present() throttles. */
-            if (rsx_ok) { g_frame_phase = 4; cellGcm_rsx_process_fifo(); }
-            /* FIFO flips are exact parser boundaries and are presentable as
-             * soon as this drain reaches them. Direct API flips are separately
-             * held until get == put by cellGcm_take_flip_pending_synced(). */
-            if (rsx_ok && cellGcm_take_flip_pending_synced())
-                present_guest_frame();
-            next_tick += 16;             /* ~60 Hz */
-            fired++;
-        }
-        if (fired >= 240) next_tick = now;   /* fell too far behind -- resync */
-
-        /* Drain at the outer cadence too, not only on the 16 ms tick: titles
-         * fence every render pass on a label the drain writes, and one wave of
-         * those at 16 ms apiece paces the guest into single-figure frame rates.
-         * The real RSX writes them in microseconds. */
+        /* Service FIFO fences independently of guest frame pacing: a frame
+         * can contain many render passes and their dependencies must progress. */
         if (rsx_ok) {
             g_frame_phase = 5;
             cellGcm_rsx_process_fifo();
@@ -489,6 +482,15 @@ int main(int argc, char** argv)
 
     /* Install the guest-callback hook, then start the frame clock. It no-ops
      * until the title registers its vblank and flip handlers during init. */
+    /* Deliver guest flip callbacks at the capped completion boundary on the
+     * FIFO owner. Explicit diagnostic overrides remain available. */
+    if (!getenv("GCM_FLIPCB_ONTICK")) {
+#ifdef _WIN32
+        _putenv_s("GCM_FLIPCB_ONTICK", "1");
+#else
+        setenv("GCM_FLIPCB_ONTICK", "1", 0);
+#endif
+    }
     g_ps3_guest_caller = harness_guest_caller;
     CreateThread(NULL, 4u * 1024 * 1024, frame_clock, NULL, 0, NULL);
     if (getenv("GFD_FRAME_TRACE")) CreateThread(NULL, 0, frame_probe, NULL, 0, NULL);

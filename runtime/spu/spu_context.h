@@ -444,6 +444,26 @@ typedef struct spu_context {
 #define SPU_EVENT_CLEAR(c, b) __atomic_fetch_and(&(c)->event_status, ~(uint32_t)(b), __ATOMIC_SEQ_CST)
 #endif
 
+/* Match concurrent event raises/acknowledgements with an atomic observation.
+ * Plain loads mixed with the atomic writers are a C data race. */
+static inline uint32_t spu_event_load(const spu_context* ctx)
+{
+#if defined(_MSC_VER) && !defined(__clang__)
+#if defined(_M_X64) || defined(_M_IX86)
+    /* An aligned 32-bit load is atomic and acquire-ordered on x86.
+     * Avoid a locked RMW on every SPU interrupt poll. */
+    uint32_t value = *(const volatile uint32_t*)&ctx->event_status;
+    _ReadWriteBarrier();
+    return value;
+#else
+    return (uint32_t)_InterlockedCompareExchange(
+        (volatile long*)&ctx->event_status, 0, 0);
+#endif
+#else
+    return __atomic_load_n(&ctx->event_status, __ATOMIC_ACQUIRE);
+#endif
+}
+
 /* Reserved LS addresses (inside the kernel area, below the 0xA00 policy-module
  * base) that the HLE kernel plants as exitToKernelAddr / selectWorkloadAddr in
  * the SpursKernelContext. A policy module branching to them is performing a
@@ -881,6 +901,7 @@ void yz_lockstep_tick(spu_context* ctx);             /* round-robin token gate *
 void spu_task_launch_check(spu_context* ctx, void* fn); /* SPURS task-launch    */
 /* Complete ordered hop; the launch-only ABI above does not tick lockstep. */
 void spu_drain_hop(spu_context* ctx, void (*fn)(spu_context*));
+void (*spu_drain_hop_select(spu_context* ctx, void (*fn)(spu_context*)))(spu_context*);
 extern unsigned g_spu_stack_reset_count; /* read-only outside registration */
 static inline int spu_stack_reset_needed(const spu_context* ctx)
 {
@@ -991,9 +1012,9 @@ static inline void spu_pchist_tick(const spu_context* ctx)
             }                                                              \
             void (*_tf)(spu_context*) = g_spu_trampoline_fn;    \
             g_spu_trampoline_fn = 0;                            \
-            spu_drain_hop((ctx), _tf);                          \
+            _tf = spu_drain_hop_select((ctx), _tf);             \
             if ((ctx)->int_enable &&                            \
-                ((ctx)->event_status & (ctx)->event_mask))      \
+                (spu_event_load(ctx) & (ctx)->event_mask))      \
                 _tf = spu_take_interrupt((ctx), _tf);          \
             else if (__builtin_expect(g_spu_irqwait_diag != 0, 0) && \
                      (ctx)->int_enable)                         \
@@ -1032,7 +1053,7 @@ void spu_direct_init(void);
         (ctx)->pc = _dpc;                                                     \
         if (__builtin_expect(g_spu_direct > 0, 1) && (_dpc & SPU_LS_MASK) &&  \
             (ctx)->steps && !g_spu_stack_reset_hint[(_dpc >> 2) & 1023u] &&    \
-            !((ctx)->int_enable && ((ctx)->event_status & (ctx)->event_mask))) \
+            !((ctx)->int_enable && (spu_event_load(ctx) & (ctx)->event_mask))) \
             __attribute__((musttail)) return FN(ctx);                         \
         g_spu_trampoline_fn = FN;                                             \
         return;                                                               \

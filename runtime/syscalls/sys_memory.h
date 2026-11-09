@@ -89,6 +89,8 @@ int sys_memory_contains(uint32_t addr, uint32_t size);
  * small alignment/size, for callback-scoped guest payloads. */
 int32_t ps3_guest_memory_alloc(uint32_t size, uint32_t alignment,
                                uint32_t* out_addr);
+int32_t ps3_guest_memory_alloc_spill(uint32_t size, uint32_t alignment,
+                                     uint32_t* out_addr);
 int32_t ps3_guest_memory_free(uint32_t addr);
 
 /* Syscall handlers */

@@ -1202,8 +1202,8 @@ s32 cellSpursCreateTask(CellSpursTaskset* taskset, CellSpursTaskId* taskId,
                 if (sz)
                     /* Async: SPURS tasks are persistent workers — running them
                      * inline would block this PPU thread forever (deadlock). */
-                    spu_workload_dispatch_async(host_elf, (uint32_t)sz,
-                                                (uint32_t)(uintptr_t)context);
+                    spu_workload_dispatch_task_async(host_elf, (uint32_t)sz,
+                                                (uint32_t)(uintptr_t)context, taskset_ea, i);
             }
             return CELL_OK;
         }
@@ -1800,15 +1800,15 @@ static DWORD WINAPI spurs_pm_worker(LPVOID p)
         ReleaseSRWLockExclusive(&si->lock);
         spu_run_policy_module(slot->fn, slot->image_id, slot->pm, slot->pm_size,
                               slot->data, slot->wid, slot->ea, slot->spu_num);
-        extern SPU_THREAD_LOCAL volatile unsigned g_spurs_pm_polls;
-        unsigned polls = g_spurs_pm_polls;
         AcquireSRWLockExclusive(&si->lock);
         u32 wid = slot->wid;
         if (si->active[wid]) si->active[wid]--;
         spu_lockline_lock();
         vm_base[slot->ea + SPURS_WKL_CURCONT + wid] = si->active[wid];
         ef_line_end(slot->ea);
-        if (polls) si->idle[wid] = 0;
+        if (vm_read8(slot->ea + SPURS_WKL_READY1 + wid) ||
+            (vm_read16(slot->ea + SPURS_WKL_SIGNAL1) & (0x8000u >> wid)))
+            si->idle[wid] = 0;
         else if (si->idle[wid] < 4) si->idle[wid]++;
         slot->busy = 0;
         WakeAllConditionVariable(&si->wake);

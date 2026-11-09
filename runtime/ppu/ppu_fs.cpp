@@ -20,6 +20,7 @@
 #include "ps3emu/nid.h"      /* ps3_compute_nid */
 #include "ps3emu/guest_call.h" /* ps3_invoke_guest: AIO completion is a guest OPD */
 #include "sdata_decrypt.h"   /* SDATA/EDAT (NPD) decryption for cellFsSdataOpen */
+#include "../cpk_event_fallback.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -196,6 +197,35 @@ static void host_path(char* out, size_t cap, const char* guest)
         if (!fw || !*fw) fw = "D:/recomp/tools/rpcs3/dev_flash";
         snprintf(out, cap, "%s/%s", fw, guest + 11);
         for (char* p = out; *p; p++) if (*p == '\\') *p = '/';
+        return;
+    }
+
+    if (strncmp(guest, "/app_home/event", 15) == 0 &&
+        (guest[15] == '\0' || guest[15] == '/')) {
+        snprintf(out, cap, "%s/event%s", ppu_vfs_root, guest + 15);
+        for (char* p = out; *p; p++) if (*p == '\\') *p = '/';
+        fprintf(stderr, "[fs] normalized event-editor path '%s' -> '%s'\n", guest, out);
+        return;
+    }
+
+    if (strncmp(guest, "/app_home/event", 15) == 0 && guest[15] != '\0' && guest[15] != '/') {
+        if (ps3recomp_resolve_event_editor_path(ppu_vfs_root, guest, out, cap)) {
+            fprintf(stderr, "[fs] repaired concatenated event-editor path '%s' -> '%s'\n", guest, out);
+            return;
+        }
+    }
+
+    if (strncmp(guest, "event", 5) == 0 && guest[5] != '\0' && guest[5] != '/') {
+        if (ps3recomp_resolve_event_editor_path(ppu_vfs_root, guest, out, cap)) {
+            fprintf(stderr, "[fs] repaired relative event-editor path '%s' -> '%s'\n", guest, out);
+            return;
+        }
+    }
+
+    if (strncmp(guest, "/app_homeevent/", 15) == 0) {
+        snprintf(out, cap, "%s/event/%s", ppu_vfs_root, guest + 15);
+        for (char* p = out; *p; p++) if (*p == '\\') *p = '/';
+        fprintf(stderr, "[fs] normalized event-editor path '%s' -> '%s'\n", guest, out);
         return;
     }
 
@@ -767,6 +797,8 @@ static void cellFsOpendir(ppu_context* ctx)
     char gpath[1024], hpath[1100];
     guest_strcpy(gpath, (uint32_t)ctx->gpr[3], sizeof gpath);
     uint32_t fd_ptr = (uint32_t)ctx->gpr[4];
+    if (strcmp(gpath, "/app_home/event") == 0 || strcmp(gpath, "/app_home/event/") == 0)
+        ps3recomp_materialize_cpk_event_folder(ppu_vfs_root);
     host_path(hpath, sizeof hpath, gpath);
     DIR* d = opendir(hpath);
     if (getenv("PS3_FSLOG")) fprintf(stderr, "[fs] opendir '%s' -> %s\n", gpath, d ? "OK" : "ENOENT");
@@ -792,11 +824,20 @@ static void cellFsReaddir(ppu_context* ctx)
     DIR* d = fd_dir(fd);
     if (!d) { ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_EIO; return; }
     struct dirent* e = readdir(d);
-    if (!e) { if (nread_ptr) vm_write64(nread_ptr, 0); ctx->gpr[3] = CELL_OK; return; }
+    if (!e) {
+        if (getenv("PS3_FSLOG") && strstr(g_dir_path[fd], "USRDIR"))
+            fprintf(stderr, "[fs] readdir end '%s'\n", g_dir_path[fd]);
+        if (nread_ptr) vm_write64(nread_ptr, 0); ctx->gpr[3] = CELL_OK; return;
+    }
     char full[1300]; struct stat st;
     snprintf(full, sizeof full, "%s/%s", g_dir_path[fd], e->d_name);
     uint8_t type = (stat(full, &st) == 0 && (st.st_mode & S_IFDIR))
                    ? CELL_FS_TYPE_DIR : CELL_FS_TYPE_REG;
+    if (getenv("PS3_FSLOG") && strstr(g_dir_path[fd], "USRDIR")) {
+        static std::atomic<unsigned> trace_count{0};
+        if (trace_count.fetch_add(1, std::memory_order_relaxed) < 64)
+            fprintf(stderr, "[fs] readdir '%s' -> '%s' type=%u\n", g_dir_path[fd], e->d_name, type);
+    }
     size_t nl = strlen(e->d_name); if (nl > 255) nl = 255;
     vm_base[dirent + 0] = type;
     vm_base[dirent + 1] = (uint8_t)nl;
@@ -825,6 +866,9 @@ static void cellFsGetDirectoryEntries(ppu_context* ctx)
         ctx->gpr[3] = 0x8001002Au;
         return;
     }
+    const bool trace_dir = getenv("PS3_FSLOG") && strstr(g_dir_path[fd], "USRDIR");
+    if (trace_dir)
+        fprintf(stderr, "[fs] getdir begin '%s' bytes=%u\n", g_dir_path[fd], bytes);
     uint32_t count = 0;
     ctx->gpr[3] = CELL_OK;
     for (; count < bytes / 312; ++count) {
@@ -856,6 +900,9 @@ static void cellFsGetDirectoryEntries(ppu_context* ctx)
         memcpy(vm_base + out + 54, entry->d_name, length);
     }
     vm_write32(count_ptr, count);
+    if (trace_dir)
+        fprintf(stderr, "[fs] getdir end '%s' entries=%u result=0x%llX\n",
+                g_dir_path[fd], count, (unsigned long long)ctx->gpr[3]);
 }
 
 static void cellFsClosedir(ppu_context* ctx)

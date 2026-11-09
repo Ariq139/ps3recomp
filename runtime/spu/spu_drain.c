@@ -7,6 +7,8 @@
  * place -- later milestones only replace the bodies. */
 #include "spu_context.h"
 #include "spu_lockstep.h"
+#include "spu_kernel_capture.h"
+#include "spu_kernel_capture_api.h"
 #include <setjmp.h>
 /* setjmp/longjmp also save and restore the signal mask on POSIX: one
  * sigprocmask system call per halt, stack reset or task resume. These frames
@@ -86,14 +88,15 @@ static int spu_task_launch_diagnostics(void)
     static int s_on = -1;
     if (s_on < 0)
         s_on = getenv("SPU_NO_LS0_END") || getenv("SPU_EXITTRACE") ||
-               getenv("SPU_STEPTRACE") || getenv("SPU_JOBDRAIN");
+               getenv("SPU_STEPTRACE") || getenv("SPU_JOBDRAIN") ||
+               getenv("SPU_KERNEL_CAPTURE_PREFIX");
     return s_on;
 }
 
 /* A drain may resolve the history TLS address once for its owning frame.
  * Keep checkpoint order: stack reset can unwind before steps increment, and
  * guest calls can change PM-flow, PC and steps before the next hop. */
-SPU_DRAIN_INLINE void spu_task_launch_check_inline(spu_context* ctx, void* fn,
+SPU_DRAIN_INLINE spu_kernel_fn spu_task_launch_check_inline(spu_context* ctx, void* fn,
                                                   spu_recent_history* recent)
 {
     recent->pc[recent->n++ & 31] = (uint32_t)ctx->pc & SPU_LS_MASK;
@@ -103,9 +106,13 @@ SPU_DRAIN_INLINE void spu_task_launch_check_inline(spu_context* ctx, void* fn,
     if (!spu_task_launch_diagnostics() && !g_pm_flow_ctx &&
         (!ctx->steps || (ctx->pc & SPU_LS_MASK))) {
         ctx->steps++;
-        return;
+        return (spu_kernel_fn)fn;
     }
     spu_task_launch_slow(ctx);
+    /* Resolver calls can include other runtime work. Capture only a concrete
+     * lifted function reached through a trampoline, before its continuation. */
+    return fn == (void*)spu_indirect_branch ? (spu_kernel_fn)fn :
+        spu_kernel_capture_select(ctx->image_id, ctx->pc & SPU_LS_MASK, (spu_kernel_fn)fn);
 }
 
 /* Preserve the public checkpoint for generated and independent callers. */
@@ -120,7 +127,7 @@ void spu_direct_init(void)
     if (g_spu_direct >= 0) return;
     static const char* const diag[] = {
         "SPU_LOCKSTEP", "SPU_TAILRET", "SPU_PCHIST", "SPU_NO_LS0_END", "SPU_EXITTRACE",
-        "SPU_STEPTRACE", "SPU_JOBDRAIN", "SPURS_PM_FLOW",
+        "SPU_STEPTRACE", "SPU_JOBDRAIN", "SPURS_PM_FLOW", "SPU_KERNEL_CAPTURE_PREFIX",
     };
     const char* e = getenv("PS3_SPU_DIRECT");
     int on = !(e && e[0] == '0' && !e[1]);
@@ -149,18 +156,27 @@ void spu_task_launch_check(spu_context* ctx, void* fn)
     spu_task_launch_check_inline(ctx, fn, &t_recent);
 }
 
-SPU_DRAIN_INLINE void spu_drain_hop_inline(spu_context* ctx,
+SPU_DRAIN_INLINE spu_kernel_fn spu_drain_hop_inline(spu_context* ctx,
     void (*fn)(spu_context*), spu_recent_history* recent)
 {
     /* Read the live gate each hop. -1 still takes the original initialization
      * path; a callee can enable lockstep before the next checkpoint. */
     if (g_yz_lockstep_on != 0) yz_lockstep_tick(ctx);
-    spu_task_launch_check_inline(ctx, (void*)fn, recent);
+    return spu_task_launch_check_inline(ctx, (void*)fn, recent);
 }
 
 void spu_drain_hop(spu_context* ctx, void (*fn)(spu_context*))
 {
     spu_drain_hop_inline(ctx, fn, &t_recent);
+}
+void spu_kernel_capture_invoke(spu_context* ctx, uint32_t logical_pc,
+                               void (*fn)(spu_context*))
+{
+    spu_kernel_capture_select_scoped(ctx->image_id, logical_pc, fn, 1)(ctx);
+}
+spu_kernel_fn spu_drain_hop_select(spu_context* ctx, spu_kernel_fn fn)
+{
+    return spu_drain_hop_inline(ctx, fn, &t_recent);
 }
 
 static void spu_task_launch_slow(spu_context* ctx)
@@ -412,7 +428,7 @@ void spu_irqwait_diag(spu_context* ctx)
     }
     fprintf(stderr, "[irq-wait] img=%d pc=0x%05X dispatches=%llu status=0x%X mask=0x%X "
             "list_stall_mask=0x%X list_stall_stat=0x%X%s\n",
-            ctx->image_id, (unsigned)(ctx->pc & SPU_LS_MASK), s_n, ctx->event_status,
+            ctx->image_id, (unsigned)(ctx->pc & SPU_LS_MASK), s_n, spu_event_load(ctx),
             ctx->event_mask, ctx->list_stall_mask, ctx->list_stall_stat, extra);
     fflush(stderr);
 }
@@ -439,7 +455,7 @@ void (*spu_take_interrupt(spu_context* ctx,
         if (PS3_LOG_FIRST(_w, 4))
             fprintf(stderr, "[spu-int] pending (st=0x%X mask=0x%X) but LS0 word "
                     "0x%08X is no branch -- not taken\n",
-                    ctx->event_status, ctx->event_mask, w);
+                    spu_event_load(ctx), ctx->event_mask, w);
         return tf;
     }
     ctx->srr0 = ctx->pc;             /* resume point for iret */
@@ -462,7 +478,7 @@ void (*spu_take_interrupt(spu_context* ctx,
           fprintf(stderr, "[spu-int] TAKEN img=%d events=0x%X&0x%X vector->0x%05X "
                   "(srr0=0x%05X) stallstat=0x%X parked=0x%X loadJobState@12A0=%02X%02X%02X%02X "
                   "%02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X\n", ctx->image_id,
-                  ctx->event_status, ctx->event_mask, ctx->pc, ctx->srr0,
+                  spu_event_load(ctx), ctx->event_mask, ctx->pc, ctx->srr0,
                   ctx->list_stall_stat, ctx->list_stall_mask,
                   js[0],js[1],js[2],js[3], js[4],js[5],js[6],js[7],
                   js[8],js[9],js[10],js[11], js[12],js[13],js[14],js[15]); } }
@@ -574,8 +590,8 @@ void spu_drain_call(spu_context* ctx, uint32_t return_pc)
             void (*fn)(spu_context*) = *tramp;
             *tramp = 0;
             ctx->drain_ret_pc = return_pc & SPU_LS_MASK;   /* re-set: a nested drain changed it */
-            spu_drain_hop_inline(ctx, fn, recent);
-            if (ctx->int_enable && (ctx->event_status & ctx->event_mask)) {
+            fn = spu_drain_hop_inline(ctx, fn, recent);
+            if (ctx->int_enable && (spu_event_load(ctx) & ctx->event_mask)) {
                 void (*vf)(spu_context*) = spu_take_interrupt(ctx, fn);
                 if (!ctx->int_enable) {   /* taken (a take clears the enable; a deferral leaves it) */
                     /* Interrupt taken here: this loop is the frame the iret

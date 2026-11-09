@@ -1421,8 +1421,14 @@ static u32 eng_texture_slot(u32 location, u32 offset, u32 fmt, u32 w, u32 h,
              * small texture, or after a write the engine saw. */
             int readable = 0;
             u64 hash = e->content_hash;
-            const u64 sparse = eng_texture_sparse_hash(location, offset, span,
-                                                       &readable);
+            u64 sparse;
+            if (span <= ENG_TEXHASH_SMALL) {
+                hash = eng_texture_content_hash(location, offset, span, &readable);
+                sparse = hash;
+                e->last_full_frame = g.frames;
+            } else {
+                sparse = eng_texture_sparse_hash(location, offset, span, &readable);
+            }
             /* The engine just stored a surface or depth target over these
              * bytes: they are new, so upload without hashing them all. The
              * stored hash becomes unknown and the next ordinary check
@@ -1430,7 +1436,8 @@ static u32 eng_texture_slot(u32 location, u32 offset, u32 fmt, u32 w, u32 h,
             if (e->rewritten && readable) {
                 hash = ~e->content_hash;
                 e->rewritten = 0;
-            } else if (readable && (sparse != e->sparse_hash ||
+            } else if (readable && span > ENG_TEXHASH_SMALL &&
+                            (sparse != e->sparse_hash ||
                              eng_texture_full_rehash(span, e->last_full_frame))) {
                 hash = eng_texture_content_hash(location, offset, span, &readable);
                 e->last_full_frame = g.frames;
@@ -3128,9 +3135,8 @@ static void pd_present(u32 presented)
 
 /* The guest scissor intersected with a w x h target, as out[x, y, w, h] in
  * the target's sample grid. The nv40 reset is a full 4096x4096 window and a
- * never-written register reads 0 here, which the w == 0 test treats as no
- * scissor, so only a real game scissor narrows anything
- * (rsx_live_draw.c:6180-6197). */
+ * dispatcher initializes unwritten scissor registers to that reset value.
+ * A guest-written zero extent clips every pixel. */
 static void eng_scissor_rect(const rsx_dsp_surface* sf, u32 w, u32 h, u32 out[4])
 {
     u32 sx = 0, sy = 0, sw = w, sh = h;
@@ -3139,7 +3145,7 @@ static void eng_scissor_rect(const rsx_dsp_surface* sf, u32 w, u32 h, u32 out[4]
     /* The scissor is in pixels: scale it to the sample grid. */
     const u32 gx = (hr & 0xFFFFu) * sf->aa_sx, gw = (hr >> 16) * sf->aa_sx;
     const u32 gy = (vr & 0xFFFFu) * sf->aa_sy, gh = (vr >> 16) * sf->aa_sy;
-    if (gw > 0 && gh > 0) {
+    {
         u32 right = sx + sw, bottom = sy + sh;
         if (gx > sx) sx = gx;
         if (gy > sy) sy = gy;

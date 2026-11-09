@@ -81,6 +81,25 @@ int main(void)
     cellMouse_syncPosition(0, 0, 0);
     assert(list(&x, &y) == 1 && x == 50 && y == 60);
 
+    /* A tap completed before polling must reach the game as down, then up. */
+    cellMouse_buttonEvent(0, CELL_MOUSE_BUTTON_1, 1);
+    cellMouse_buttonEvent(0, CELL_MOUSE_BUTTON_1, 0);
+    assert(list(&x, &y) == 1 && guest[5] == CELL_MOUSE_BUTTON_1);
+    assert(list(&x, &y) == 1 && guest[5] == 0);
+    assert(list(&x, &y) == 0);
+    for (unsigned i = 0; i < 2; ++i) {
+        cellMouse_buttonEvent(0, CELL_MOUSE_BUTTON_1, 1);
+        cellMouse_buttonEvent(0, CELL_MOUSE_BUTTON_1, 0);
+    }
+    for (unsigned i = 0; i < 4; ++i)
+        assert(list(&x, &y) == 1 && guest[5] == ((i & 1) ? 0 : CELL_MOUSE_BUTTON_1));
+    cellMouse_buttonEvent(0, CELL_MOUSE_BUTTON_1, 1);
+    cellMouse_positionEvent(0, 350, -240);
+    cellMouse_buttonEvent(0, CELL_MOUSE_BUTTON_1, 0);
+    cellMouse_syncPosition(0, 50, 60);
+    assert(list(&x, &y) == 3 && x == 300 && y == -300 && guest[5] == CELL_MOUSE_BUTTON_1);
+    assert(list(&x, &y) == 1 && guest[5] == 0);
+
     cellMouse_buttonEvent(0, CELL_MOUSE_BUTTON_1, 1);
     assert(list(&x, &y) == 1 && guest[5] == CELL_MOUSE_BUTTON_1);
     cellMouse_buttonEvent(0, CELL_MOUSE_BUTTON_1, 0);

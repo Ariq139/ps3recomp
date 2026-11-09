@@ -337,6 +337,45 @@ if(P5_SPU_AVX2)
     endforeach()
 endif()
 
+# This image/function has been replayed against a real input/output capture.
+# Only the build-cache copy is transformed; OFF compiles the original lift.
+option(P5_SPU_NATIVE_CULL "Use the verified guarded SPU culling kernel" ON)
+if(PORT_ENABLE_SPU AND P5_SPU_NATIVE_CULL)
+    set(P5_NATIVE_CULL_SOURCE "${SPU_DIR}/spu_job_A96F7BFCEB376D57/spu_recomp.c")
+    if(EXISTS "${P5_NATIVE_CULL_SOURCE}")
+        include("${PS3RECOMP_DIR}/cmake/PS3RecompSPUKernel.cmake")
+        ps3recomp_promote_spu_kernel(${PROJECT_NAME} "${P5_NATIVE_CULL_SOURCE}"
+            p5_job_A96F7BFC_spu_func_000016A0 P5_NATIVE_CULL_TRANSFORMED)
+    endif()
+endif()
+
+# The first two pure geometry loops in the main SPU function can be tested
+# independently. CAPTURE preserves reference execution; NATIVE uses the guarded
+# register-promoted helper after its real captured state has passed replay.
+set(P5_SPU_MAIN40_LOOP_MODE "OFF" CACHE STRING "Main SPU geometry loop: OFF, CAPTURE, NATIVE")
+set_property(CACHE P5_SPU_MAIN40_LOOP_MODE PROPERTY STRINGS OFF CAPTURE NATIVE)
+set(P5_SPU_MAIN40_LOOP2_MODE "OFF" CACHE STRING "Second main SPU geometry loop: OFF, CAPTURE, NATIVE")
+set_property(CACHE P5_SPU_MAIN40_LOOP2_MODE PROPERTY STRINGS OFF CAPTURE NATIVE)
+if(PORT_ENABLE_SPU AND (NOT P5_SPU_MAIN40_LOOP_MODE STREQUAL "OFF" OR
+                        NOT P5_SPU_MAIN40_LOOP2_MODE STREQUAL "OFF"))
+    set(P5_MAIN40_INPUT "${SPU_DIR}/spu_job_A96F7BFCEB376D57/spu_recomp.c")
+    if(P5_NATIVE_CULL_TRANSFORMED)
+        set(P5_MAIN40_INPUT "${P5_NATIVE_CULL_TRANSFORMED}")
+    endif()
+    include("${PS3RECOMP_DIR}/cmake/PS3RecompSPUKernel.cmake")
+    if(NOT P5_SPU_MAIN40_LOOP_MODE STREQUAL "OFF")
+        ps3recomp_outline_spu_loop(${PROJECT_NAME} "${P5_MAIN40_INPUT}"
+            p5_job_A96F7BFC_spu_func_00000040 0x654 0x658 0x1324
+            "${P5_SPU_MAIN40_LOOP_MODE}" P5_MAIN40_LOOP1_OUTLINED)
+        set(P5_MAIN40_INPUT "${P5_MAIN40_LOOP1_OUTLINED}")
+    endif()
+    if(NOT P5_SPU_MAIN40_LOOP2_MODE STREQUAL "OFF")
+        ps3recomp_outline_spu_loop(${PROJECT_NAME} "${P5_MAIN40_INPUT}"
+            p5_job_A96F7BFC_spu_func_00000040 0x2DFC 0x2E00 0x3AD0
+            "${P5_SPU_MAIN40_LOOP2_MODE}")
+    endif()
+endif()
+
 # app.rc carries the icon, the version block and the manifest, and needs a
 # resource compiler. Listing it as a source on a host that has none is not a
 # link error, it is a "no rule to make" for a file nothing can consume.

@@ -1849,7 +1849,7 @@ loc_00276178:
         ctx->gpr[4] = (int64_t)(int32_t)ctx->gpr[4];
         { uint64_t _a = ctx->gpr[3]; uint64_t _r = _a + (uint64_t)(int64_t)(-3664); ctx->gpr[3] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
         june_evt_trace_point(ctx, 0x00276118, 0x00824CF8, 0);
-        ctx->lr = 0x00276198;
+        ctx->lr = 0x00276198; june_evt_func_00824CF8(ctx); DRAIN_TRAMPOLINE(ctx);
         june_evt_trace_point(ctx, 0x00276118, 0x00824CF8, 1);
         /* nop */;
         ctx->gpr[4] = vm_read32(ctx->gpr[31] + 0x4);
@@ -4179,17 +4179,174 @@ loc_00277E28:
 
 void june_evt_func_00279450(ppu_context* ctx) {
     PPU_MM_SNAP
-        { g_trampoline_fn = (void(*)(void*))june_evt_func_002794E8; return; }
+        ctx->gpr[4] = ctx->gpr[3] | 0x0;
+        ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0x28 << 16);
+        { int64_t a = (int32_t)ctx->gpr[4]; int64_t b = (int64_t)2; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 24)) | (cr_val << 24); }
+        { int64_t a = (int32_t)ctx->gpr[4]; int64_t b = (int64_t)1; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 4)) | (cr_val << 4); }
+        ctx->gpr[3] = ctx->gpr[3] + (int64_t)(-27584);
+        { int64_t a = (int32_t)ctx->gpr[4]; int64_t b = (int64_t)-1; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 0)) | (cr_val << 0); }
+        { int64_t a = (int32_t)ctx->gpr[4]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+        if ((((ctx->cr >> 30) & 1) == 1)) goto loc_00279478;
+        if ((((ctx->cr >> 2) & 1) == 0)) goto loc_0027949C;
+        goto loc_00279484;
+loc_00279478:
+        if ((((ctx->cr >> 6) & 1) == 0)) goto loc_0027948C;
+        if ((((ctx->cr >> 26) & 1) == 0)) goto loc_00279494;
+        goto loc_0027949C;
+loc_00279484:
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x0); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        goto loc_002794A0;
+loc_0027948C:
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x4); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        goto loc_002794A0;
+loc_00279494:
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x8); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+        goto loc_002794A0;
+loc_0027949C:
+        { uint32_t tmp = vm_read32(ctx->gpr[3] + 0x4); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[1] = ftmp; }
+loc_002794A0:
+        return;
 }
 
 void june_evt_func_002794E8(ppu_context* ctx) {
     PPU_MM_SNAP
-        { g_trampoline_fn = (void(*)(void*))june_evt_func_002795D0; return; }
+    ctx->gpr[5] = (int64_t)(int32_t)(0x20);
+    { uint32_t v[4]; for(int i=0;i<4;i++) v[i]=(uint32_t)(int32_t)-1; ppu_vstu4(&ctx->vr[5],v); }
+    ctx->gpr[6] = (int64_t)(int32_t)(0x30);
+    { uint64_t ea = (ctx->gpr[4]) & ~0xFULL; vm_raw_ld16(&ctx->vr[2], ea); }
+    ctx->gpr[7] = (int64_t)(int32_t)(0x10);
+    ctx->gpr[8] = (int64_t)(int32_t)((uint32_t)0x28 << 16);
+    vmx_vslw(&ctx->vr[5], &ctx->vr[5], &ctx->vr[5]);
+    { uint64_t ea = ((ctx->gpr[5] + ctx->gpr[4])) & ~0xFULL; vm_raw_ld16(&ctx->vr[3], ea); }
+    { uint64_t ea = ((ctx->gpr[6] + ctx->gpr[4])) & ~0xFULL; vm_raw_ld16(&ctx->vr[4], ea); }
+    ctx->gpr[8] = ctx->gpr[8] + (int64_t)(-27472);
+    { uint32_t* d=(uint32_t*)&ctx->vr[7]; uint32_t* a=(uint32_t*)&ctx->vr[2]; uint32_t* b=(uint32_t*)&ctx->vr[3]; uint32_t t[4]; t[0]=a[0]; t[1]=b[0]; t[2]=a[1]; t[3]=b[1]; memcpy(d, t, 16); }
+    { uint64_t* d = (uint64_t*)&ctx->vr[4]; uint64_t* a = (uint64_t*)&ctx->vr[4]; uint64_t* b = (uint64_t*)&ctx->vr[5]; d[0] = a[0] ^ b[0]; d[1] = a[1] ^ b[1]; }
+    { uint64_t ea = ((ctx->gpr[7] + ctx->gpr[4])) & ~0xFULL; vm_raw_ld16(&ctx->vr[6], ea); }
+    ctx->gpr[9] = (int64_t)(int32_t)(0x30);
+    { uint32_t v[4]; for(int i=0;i<4;i++) v[i]=(uint32_t)(int32_t)0; ppu_vstu4(&ctx->vr[5],v); }
+    ctx->gpr[4] = (int64_t)(int32_t)(0x10);
+    { uint32_t* d=(uint32_t*)&ctx->vr[8]; uint32_t* a=(uint32_t*)&ctx->vr[7]; uint32_t* b=(uint32_t*)&ctx->vr[6]; uint32_t t[4]; t[0]=a[0]; t[1]=b[0]; t[2]=a[1]; t[3]=b[1]; memcpy(d, t, 16); }
+    { uint32_t* d = (uint32_t*)&ctx->vr[10]; uint32_t val = ((uint32_t*)&ctx->vr[4])[0]; d[0] = d[1] = d[2] = d[3] = val; }
+    { uint64_t ea = (ctx->gpr[8]) & ~0xFULL; vm_raw_ld16(&ctx->vr[9], ea); }
+    { uint32_t* d=(uint32_t*)&ctx->vr[2]; uint32_t* a=(uint32_t*)&ctx->vr[2]; uint32_t* b=(uint32_t*)&ctx->vr[3]; uint32_t t[4]; t[0]=a[2]; t[1]=b[2]; t[2]=a[3]; t[3]=b[3]; memcpy(d, t, 16); }
+    { uint8_t* a = (uint8_t*)&ctx->vr[7]; uint8_t* b = (uint8_t*)&ctx->vr[6]; uint8_t* c = (uint8_t*)&ctx->vr[9]; uint8_t* d = (uint8_t*)&ctx->vr[7]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+    vmx_vmaddfp(&ctx->vr[9], &ctx->vr[8], &ctx->vr[5], &ctx->vr[10], ctx->vscr);
+    { uint32_t* d = (uint32_t*)&ctx->vr[3]; uint32_t val = ((uint32_t*)&ctx->vr[4])[1]; d[0] = d[1] = d[2] = d[3] = val; }
+    { uint64_t ea = ((ctx->gpr[4] + ctx->gpr[8])) & ~0xFULL; vm_raw_ld16(&ctx->vr[10], ea); }
+    ctx->gpr[4] = (int64_t)(int32_t)(0x20);
+    { uint32_t* d = (uint32_t*)&ctx->vr[4]; uint32_t val = ((uint32_t*)&ctx->vr[4])[2]; d[0] = d[1] = d[2] = d[3] = val; }
+    { uint8_t* a = (uint8_t*)&ctx->vr[2]; uint8_t* b = (uint8_t*)&ctx->vr[6]; uint8_t* c = (uint8_t*)&ctx->vr[10]; uint8_t* d = (uint8_t*)&ctx->vr[2]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+    { uint64_t ea = ((ctx->gpr[4] + ctx->gpr[8])) & ~0xFULL; vm_raw_ld16(&ctx->vr[6], ea); }
+    { uint8_t* a = (uint8_t*)&ctx->vr[8]; uint8_t* b = (uint8_t*)&ctx->vr[5]; uint8_t* c = (uint8_t*)&ctx->vr[6]; uint8_t* d = (uint8_t*)&ctx->vr[8]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+    { uint8_t* a = (uint8_t*)&ctx->vr[7]; uint8_t* b = (uint8_t*)&ctx->vr[5]; uint8_t* c = (uint8_t*)&ctx->vr[6]; uint8_t* d = (uint8_t*)&ctx->vr[10]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+    vmx_vmaddfp(&ctx->vr[3], &ctx->vr[7], &ctx->vr[9], &ctx->vr[3], ctx->vscr);
+    { uint8_t* a = (uint8_t*)&ctx->vr[2]; uint8_t* b = (uint8_t*)&ctx->vr[5]; uint8_t* c = (uint8_t*)&ctx->vr[6]; uint8_t* d = (uint8_t*)&ctx->vr[5]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+    { uint64_t ea = (ctx->gpr[3]) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[8]); }
+    { uint64_t ea = ((ctx->gpr[7] + ctx->gpr[3])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[10]); }
+    { uint64_t ea = ((ctx->gpr[5] + ctx->gpr[3])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[5]); }
+    { uint64_t ea = (ctx->gpr[9] + ctx->gpr[8]); uint32_t sh = (uint32_t)(ea & 0xF); uint8_t* m = vm_base + (uint32_t)(ea & ~0xFULL); uint8_t* d = (uint8_t*)&ctx->vr[5]; for (int i = 0; i < 16; i++) d[i] = (sh + (uint32_t)i < 16) ? m[sh + i] : 0; }
+    { uint32_t* d = (uint32_t*)&ctx->vr[5]; uint32_t val = ((uint32_t*)&ctx->vr[5])[0]; d[0] = d[1] = d[2] = d[3] = val; }
+    vmx_vmaddfp(&ctx->vr[2], &ctx->vr[2], &ctx->vr[3], &ctx->vr[4], ctx->vscr);
+    { uint8_t* a = (uint8_t*)&ctx->vr[2]; uint8_t* b = (uint8_t*)&ctx->vr[5]; uint8_t* c = (uint8_t*)&ctx->vr[6]; uint8_t* d = (uint8_t*)&ctx->vr[2]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+    { uint64_t ea = ((ctx->gpr[6] + ctx->gpr[3])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[2]); }
+    return;
 }
 
 void june_evt_func_002795D0(ppu_context* ctx) {
     PPU_MM_SNAP
-        { g_trampoline_fn = (void(*)(void*))june_evt_func_002797C0; return; }
+    vm_write64(ctx->gpr[1] + -0xB0, ctx->gpr[1]); ctx->gpr[1] += -0xB0;
+    ctx->gpr[0] = ctx->lr;
+    vm_write64(ctx->gpr[1] + 0xC0, ctx->gpr[0]);
+    { uint32_t v[4]; for(int i=0;i<4;i++) v[i]=(uint32_t)(int32_t)0; ppu_vstu4(&ctx->vr[3],v); }
+    { uint64_t ea = (ctx->gpr[6]) & ~0xFULL; vm_raw_ld16(&ctx->vr[2], ea); }
+    { uint64_t ea = (ctx->gpr[4]) & ~0xFULL; vm_raw_ld16(&ctx->vr[4], ea); }
+    { uint64_t ea = (ctx->gpr[5]) & ~0xFULL; vm_raw_ld16(&ctx->vr[5], ea); }
+    vmx_vmaddfp(&ctx->vr[6], &ctx->vr[2], &ctx->vr[3], &ctx->vr[2], ctx->vscr);
+    vmx_vsubfp(&ctx->vr[5], &ctx->vr[4], &ctx->vr[5], ctx->vscr);
+    { uint8_t tmp[32]; memcpy(tmp, &ctx->vr[2], 16); memcpy(tmp+16, &ctx->vr[2], 16); memcpy(&ctx->vr[7], tmp + 4, 16); }
+    { uint8_t tmp[32]; memcpy(tmp, &ctx->vr[2], 16); memcpy(tmp+16, &ctx->vr[2], 16); memcpy(&ctx->vr[8], tmp + 8, 16); }
+    ctx->gpr[4] = (int64_t)(int32_t)((uint32_t)0x28 << 16);
+    { uint64_t* d = (uint64_t*)&ctx->vr[9]; uint64_t* a = (uint64_t*)&ctx->vr[3]; uint64_t* b = (uint64_t*)&ctx->vr[3]; d[0] = a[0] ^ b[0]; d[1] = a[1] ^ b[1]; }
+    ctx->gpr[5] = (int64_t)(int32_t)(4);
+    ctx->gpr[4] = ctx->gpr[4] + (int64_t)(-27248);
+    ctx->gpr[6] = (int64_t)(int32_t)(0x20);
+    { uint64_t ea = ctx->gpr[4]; uint32_t sh = (uint32_t)(ea & 0xF); uint8_t* m = vm_base + (uint32_t)(ea & ~0xFULL); uint8_t* d = (uint8_t*)&ctx->vr[12]; for (int i = 0; i < 16; i++) d[i] = (sh + (uint32_t)i < 16) ? m[sh + i] : 0; }
+    vmx_vmaddfp(&ctx->vr[6], &ctx->vr[7], &ctx->vr[6], &ctx->vr[7], ctx->vscr);
+    vmx_vmaddfp(&ctx->vr[7], &ctx->vr[5], &ctx->vr[3], &ctx->vr[5], ctx->vscr);
+    { uint8_t tmp[32]; memcpy(tmp, &ctx->vr[5], 16); memcpy(tmp+16, &ctx->vr[5], 16); memcpy(&ctx->vr[10], tmp + 4, 16); }
+    { uint8_t tmp[32]; memcpy(tmp, &ctx->vr[5], 16); memcpy(tmp+16, &ctx->vr[5], 16); memcpy(&ctx->vr[11], tmp + 8, 16); }
+    ctx->gpr[7] = (int64_t)(int32_t)(0x90);
+    ctx->gpr[8] = (int64_t)(int32_t)(0xA0);
+    vmx_vmaddfp(&ctx->vr[6], &ctx->vr[8], &ctx->vr[6], &ctx->vr[8], ctx->vscr);
+    vmx_vmaddfp(&ctx->vr[7], &ctx->vr[10], &ctx->vr[7], &ctx->vr[10], ctx->vscr);
+    { uint32_t* d = (uint32_t*)&ctx->vr[10]; uint32_t val = ((uint32_t*)&ctx->vr[12])[0]; d[0] = d[1] = d[2] = d[3] = val; }
+    { uint64_t ea = (ctx->gpr[5] + ctx->gpr[4]); uint32_t sh = (uint32_t)(ea & 0xF); uint8_t* m = vm_base + (uint32_t)(ea & ~0xFULL); uint8_t* d = (uint8_t*)&ctx->vr[8]; for (int i = 0; i < 16; i++) d[i] = (sh + (uint32_t)i < 16) ? m[sh + i] : 0; }
+    { uint32_t* d = (uint32_t*)&ctx->vr[8]; uint32_t val = ((uint32_t*)&ctx->vr[8])[0]; d[0] = d[1] = d[2] = d[3] = val; }
+    ctx->gpr[5] = (int64_t)(int32_t)(0x10);
+    { uint32_t* d = (uint32_t*)&ctx->vr[6]; uint32_t val = ((uint32_t*)&ctx->vr[6])[0]; d[0] = d[1] = d[2] = d[3] = val; }
+    vmx_vmaddfp(&ctx->vr[7], &ctx->vr[11], &ctx->vr[7], &ctx->vr[11], ctx->vscr);
+    vmx_vrsqrtefp(&ctx->vr[11], &ctx->vr[6], ctx->vscr);
+    { uint64_t ea = ((ctx->gpr[5] + ctx->gpr[4])) & ~0xFULL; vm_raw_ld16(&ctx->vr[1], ea); }
+    { uint64_t ea = ((ctx->gpr[6] + ctx->gpr[4])) & ~0xFULL; vm_raw_ld16(&ctx->vr[14], ea); }
+    { uint32_t* d = (uint32_t*)&ctx->vr[7]; uint32_t val = ((uint32_t*)&ctx->vr[7])[0]; d[0] = d[1] = d[2] = d[3] = val; }
+    vmx_vrsqrtefp(&ctx->vr[12], &ctx->vr[7], ctx->vscr);
+    vmx_vmaddfp(&ctx->vr[6], &ctx->vr[11], &ctx->vr[9], &ctx->vr[6], ctx->vscr);
+    vmx_vmaddfp(&ctx->vr[13], &ctx->vr[11], &ctx->vr[9], &ctx->vr[10], ctx->vscr);
+    ctx->gpr[5] = (int64_t)(int32_t)(0x30);
+    ctx->gpr[6] = (int64_t)(int32_t)(0x70);
+    vmx_vnmsubfp(&ctx->vr[6], &ctx->vr[11], &ctx->vr[8], &ctx->vr[6], ctx->vscr);
+    vmx_vmaddfp(&ctx->vr[7], &ctx->vr[12], &ctx->vr[9], &ctx->vr[7], ctx->vscr);
+    vmx_vmaddfp(&ctx->vr[0], &ctx->vr[12], &ctx->vr[9], &ctx->vr[10], ctx->vscr);
+    vmx_vmaddfp(&ctx->vr[6], &ctx->vr[6], &ctx->vr[11], &ctx->vr[13], ctx->vscr);
+    vmx_vnmsubfp(&ctx->vr[7], &ctx->vr[12], &ctx->vr[8], &ctx->vr[7], ctx->vscr);
+    (void)vmx_vcmpeqfp(&ctx->vr[13], &ctx->vr[6], &ctx->vr[6]);
+    vmx_vmaddfp(&ctx->vr[7], &ctx->vr[7], &ctx->vr[12], &ctx->vr[0], ctx->vscr);
+    { uint64_t* d=(uint64_t*)&ctx->vr[6]; uint64_t* a=(uint64_t*)&ctx->vr[11]; uint64_t* b=(uint64_t*)&ctx->vr[6]; uint64_t* c=(uint64_t*)&ctx->vr[13]; d[0]=(a[0]&~c[0])|(b[0]&c[0]); d[1]=(a[1]&~c[1])|(b[1]&c[1]); }
+    vmx_vmaddfp(&ctx->vr[2], &ctx->vr[2], &ctx->vr[3], &ctx->vr[6], ctx->vscr);
+    (void)vmx_vcmpeqfp(&ctx->vr[0], &ctx->vr[7], &ctx->vr[7]);
+    { uint64_t* d=(uint64_t*)&ctx->vr[7]; uint64_t* a=(uint64_t*)&ctx->vr[12]; uint64_t* b=(uint64_t*)&ctx->vr[7]; uint64_t* c=(uint64_t*)&ctx->vr[0]; d[0]=(a[0]&~c[0])|(b[0]&c[0]); d[1]=(a[1]&~c[1])|(b[1]&c[1]); }
+    { uint8_t* a = (uint8_t*)&ctx->vr[2]; uint8_t* b = (uint8_t*)&ctx->vr[2]; uint8_t* c = (uint8_t*)&ctx->vr[1]; uint8_t* d = (uint8_t*)&ctx->vr[6]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+    vmx_vmaddfp(&ctx->vr[5], &ctx->vr[5], &ctx->vr[3], &ctx->vr[7], ctx->vscr);
+    { uint8_t* a = (uint8_t*)&ctx->vr[2]; uint8_t* b = (uint8_t*)&ctx->vr[2]; uint8_t* c = (uint8_t*)&ctx->vr[14]; uint8_t* d = (uint8_t*)&ctx->vr[2]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+    { uint8_t* a = (uint8_t*)&ctx->vr[5]; uint8_t* b = (uint8_t*)&ctx->vr[5]; uint8_t* c = (uint8_t*)&ctx->vr[14]; uint8_t* d = (uint8_t*)&ctx->vr[7]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+    { uint8_t* a = (uint8_t*)&ctx->vr[5]; uint8_t* b = (uint8_t*)&ctx->vr[5]; uint8_t* c = (uint8_t*)&ctx->vr[1]; uint8_t* d = (uint8_t*)&ctx->vr[11]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+    vmx_vmaddfp(&ctx->vr[6], &ctx->vr[6], &ctx->vr[3], &ctx->vr[7], ctx->vscr);
+    vmx_vnmsubfp(&ctx->vr[2], &ctx->vr[2], &ctx->vr[6], &ctx->vr[11], ctx->vscr);
+    vmx_vmaddfp(&ctx->vr[6], &ctx->vr[2], &ctx->vr[3], &ctx->vr[2], ctx->vscr);
+    { uint8_t tmp[32]; memcpy(tmp, &ctx->vr[2], 16); memcpy(tmp+16, &ctx->vr[2], 16); memcpy(&ctx->vr[12], tmp + 4, 16); }
+    { uint8_t tmp[32]; memcpy(tmp, &ctx->vr[2], 16); memcpy(tmp+16, &ctx->vr[2], 16); memcpy(&ctx->vr[13], tmp + 8, 16); }
+    vmx_vmaddfp(&ctx->vr[6], &ctx->vr[12], &ctx->vr[6], &ctx->vr[12], ctx->vscr);
+    vmx_vmaddfp(&ctx->vr[6], &ctx->vr[13], &ctx->vr[6], &ctx->vr[13], ctx->vscr);
+    { uint32_t* d = (uint32_t*)&ctx->vr[6]; uint32_t val = ((uint32_t*)&ctx->vr[6])[0]; d[0] = d[1] = d[2] = d[3] = val; }
+    vmx_vrsqrtefp(&ctx->vr[12], &ctx->vr[6], ctx->vscr);
+    vmx_vmaddfp(&ctx->vr[6], &ctx->vr[12], &ctx->vr[9], &ctx->vr[6], ctx->vscr);
+    vmx_vmaddfp(&ctx->vr[9], &ctx->vr[12], &ctx->vr[9], &ctx->vr[10], ctx->vscr);
+    { uint64_t ea = ((ctx->gpr[5] + ctx->gpr[4])) & ~0xFULL; vm_raw_ld16(&ctx->vr[10], ea); }
+    { uint8_t* a = (uint8_t*)&ctx->vr[4]; uint8_t* b = (uint8_t*)&ctx->vr[8]; uint8_t* c = (uint8_t*)&ctx->vr[10]; uint8_t* d = (uint8_t*)&ctx->vr[4]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+    { uint8_t* a = (uint8_t*)&ctx->vr[5]; uint8_t* b = (uint8_t*)&ctx->vr[3]; uint8_t* c = (uint8_t*)&ctx->vr[10]; uint8_t* d = (uint8_t*)&ctx->vr[5]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+    ctx->gpr[5] = (int64_t)(int32_t)(0x80);
+    { uint64_t _a = ctx->gpr[1]; uint64_t _r = _a + (uint64_t)(int64_t)(0x70); ctx->gpr[4] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+    vmx_vnmsubfp(&ctx->vr[6], &ctx->vr[12], &ctx->vr[8], &ctx->vr[6], ctx->vscr);
+    { uint64_t ea = ((ctx->gpr[7] + ctx->gpr[1])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[5]); }
+    { uint64_t ea = ((ctx->gpr[8] + ctx->gpr[1])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[4]); }
+    vmx_vmaddfp(&ctx->vr[6], &ctx->vr[6], &ctx->vr[12], &ctx->vr[9], ctx->vscr);
+    (void)vmx_vcmpeqfp(&ctx->vr[8], &ctx->vr[6], &ctx->vr[6]);
+    { uint64_t* d=(uint64_t*)&ctx->vr[6]; uint64_t* a=(uint64_t*)&ctx->vr[12]; uint64_t* b=(uint64_t*)&ctx->vr[6]; uint64_t* c=(uint64_t*)&ctx->vr[8]; d[0]=(a[0]&~c[0])|(b[0]&c[0]); d[1]=(a[1]&~c[1])|(b[1]&c[1]); }
+    vmx_vmaddfp(&ctx->vr[2], &ctx->vr[2], &ctx->vr[3], &ctx->vr[6], ctx->vscr);
+    { uint8_t* a = (uint8_t*)&ctx->vr[2]; uint8_t* b = (uint8_t*)&ctx->vr[2]; uint8_t* c = (uint8_t*)&ctx->vr[14]; uint8_t* d = (uint8_t*)&ctx->vr[4]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+    { uint8_t* a = (uint8_t*)&ctx->vr[2]; uint8_t* b = (uint8_t*)&ctx->vr[2]; uint8_t* c = (uint8_t*)&ctx->vr[1]; uint8_t* d = (uint8_t*)&ctx->vr[5]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+    { uint8_t* a = (uint8_t*)&ctx->vr[2]; uint8_t* b = (uint8_t*)&ctx->vr[3]; uint8_t* c = (uint8_t*)&ctx->vr[10]; uint8_t* d = (uint8_t*)&ctx->vr[2]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+    vmx_vmaddfp(&ctx->vr[4], &ctx->vr[11], &ctx->vr[3], &ctx->vr[4], ctx->vscr);
+    { uint64_t ea = ((ctx->gpr[6] + ctx->gpr[1])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[2]); }
+    vmx_vnmsubfp(&ctx->vr[2], &ctx->vr[7], &ctx->vr[4], &ctx->vr[5], ctx->vscr);
+    { uint8_t* a = (uint8_t*)&ctx->vr[2]; uint8_t* b = (uint8_t*)&ctx->vr[3]; uint8_t* c = (uint8_t*)&ctx->vr[10]; uint8_t* d = (uint8_t*)&ctx->vr[2]; uint8_t tmp[16]; for (int i = 0; i < 16; i++) { uint8_t sel = c[i] & 0x1F; tmp[i] = (sel < 16) ? a[sel] : b[sel - 16]; } memcpy(d, tmp, 16); }
+    { uint64_t ea = ((ctx->gpr[5] + ctx->gpr[1])) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[2]); }
+    ctx->lr = 0x00279730; june_evt_func_002794E8(ctx); DRAIN_TRAMPOLINE(ctx);
+    ctx->gpr[0] = vm_read64(ctx->gpr[1] + 0xC0);
+    ctx->lr = ctx->gpr[0];
+    ctx->gpr[1] = ctx->gpr[1] + (int64_t)(0xB0);
+    return;
 }
 
 void june_evt_func_002797C0(ppu_context* ctx) {
@@ -28005,7 +28162,56 @@ loc_00514E80:
 
 void june_evt_func_00514ED0(ppu_context* ctx) {
     PPU_MM_SNAP
-        { g_trampoline_fn = (void(*)(void*))june_evt_func_00514FFC; return; }
+    uint64_t _cs_30 = ctx->gpr[30];
+    uint64_t _cs_31 = ctx->gpr[31];
+    vm_write64(ctx->gpr[1] + -0x80, ctx->gpr[1]); ctx->gpr[1] += -0x80;
+    ctx->gpr[0] = ctx->lr;
+    vm_write64(ctx->gpr[1] + 0x90, ctx->gpr[0]);
+    vm_write64(ctx->gpr[1] + 0x78, ctx->gpr[31]);
+    vm_write64(ctx->gpr[1] + 0x70, ctx->gpr[30]);
+    ctx->gpr[31] = ctx->gpr[3] | 0x0;
+    ctx->gpr[30] = vm_read32(ctx->gpr[31] + 0x74);
+    { int64_t a = (int32_t)ctx->gpr[30]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+    if ((((ctx->cr >> 29) & 1) == 1)) goto loc_00514F18;
+    ctx->gpr[3] = vm_read32(ctx->gpr[31] + 0x70);
+    ctx->gpr[4] = ctx->gpr[30] | 0x0;
+    ctx->lr = 0x00514F00; june_evt_func_008C00FC(ctx); DRAIN_TRAMPOLINE(ctx);
+    ;
+    ctx->gpr[3] = ctx->gpr[30] | 0x0;
+    ctx->lr = 0x00514F0C; june_evt_func_008E049C(ctx); DRAIN_TRAMPOLINE(ctx);
+    ;
+    ctx->gpr[3] = (int64_t)(int32_t)(0);
+    vm_write32(ctx->gpr[31] + 0x74, ctx->gpr[3]);
+loc_00514F18:
+    ctx->gpr[3] = vm_read8(ctx->gpr[31] + 0xC0);
+    { int64_t a = (int32_t)ctx->gpr[3]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+    if ((((ctx->cr >> 29) & 1) == 0)) goto loc_00514F54;
+    ctx->gpr[30] = vm_read32(ctx->gpr[31] + 0xF4);
+    { int64_t a = (int32_t)ctx->gpr[30]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }
+    if ((((ctx->cr >> 29) & 1) == 1)) goto loc_00514F54;
+    ctx->gpr[3] = vm_read32(ctx->gpr[31] + 0xF0);
+    ctx->gpr[4] = ctx->gpr[30] | 0x0;
+    ctx->lr = 0x00514F3C; june_evt_func_008C00FC(ctx); DRAIN_TRAMPOLINE(ctx);
+    ;
+    ctx->gpr[3] = ctx->gpr[30] | 0x0;
+    ctx->lr = 0x00514F48; june_evt_func_008E049C(ctx); DRAIN_TRAMPOLINE(ctx);
+    ;
+    ctx->gpr[3] = (int64_t)(int32_t)(0);
+    vm_write32(ctx->gpr[31] + 0xF4, ctx->gpr[3]);
+loc_00514F54:
+    ctx->gpr[4] = vm_read32(ctx->gpr[31] + 0x8);
+    ctx->gpr[3] = (int64_t)(int32_t)((uint32_t)0xE6 << 16);
+    ctx->gpr[4] = ctx->gpr[4] | ((uint64_t)0x4000 << 16);
+    { uint64_t _a = ctx->gpr[3]; uint64_t _r = _a + (uint64_t)(int64_t)(-4500); ctx->gpr[3] = _r; ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }
+    vm_write32(ctx->gpr[31] + 0x8, ctx->gpr[4]);
+    ctx->lr = 0x00514F6C; june_evt_func_00824CF8(ctx); DRAIN_TRAMPOLINE(ctx);
+    ;
+    ctx->gpr[0] = vm_read64(ctx->gpr[1] + 0x90);
+    ctx->lr = ctx->gpr[0];
+    ctx->gpr[30] = _cs_30;
+    ctx->gpr[31] = _cs_31;
+    ctx->gpr[1] = ctx->gpr[1] + (int64_t)(0x80);
+    return;
 }
 
 void june_evt_func_00514FFC(ppu_context* ctx) {

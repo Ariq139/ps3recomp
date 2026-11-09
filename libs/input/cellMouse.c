@@ -14,6 +14,7 @@
 
 #include "cellMouse.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
 #include "../../runtime/platform/win32_compat.h"
@@ -28,25 +29,41 @@ extern void vm_write32(unsigned long long a, unsigned int   v);
  * Internal state
  * -----------------------------------------------------------------------*/
 
+#define MOUSE_PENDING_CAPACITY 64u
+
 typedef struct {
-    int  connected;
-    u32  mode;          /* relative or absolute */
-    u8   buttons;       /* current button state */
-    /* Accumulated delta since last GetData */
-    s32  acc_dx;
-    s32  acc_dy;
-    s32  acc_wheel;
-    s32  acc_tilt;
-    int  updated;
-    int  position_valid;
-    s32  position_x;
-    s32  position_y;
+    u8 buttons;
+    s32 acc_dx;
+    s32 acc_dy;
+    s32 acc_wheel;
+    s32 acc_tilt;
+    int updated;
+} MousePending;
+
+typedef struct {
+    int connected;
+    u32 mode;
+    MousePending pending;
+    MousePending queue[MOUSE_PENDING_CAPACITY];
+    u32 queue_head;
+    u32 queue_count;
+    u8 reported_buttons;
+    int position_valid;
+    s32 position_x;
+    s32 position_y;
 } MousePortState;
 
 static int            s_mouse_initialized = 0;
 static u32            s_mouse_max_connect = 0;
 static MousePortState s_mouse_ports[CELL_MOUSE_MAX_MICE];
 static SRWLOCK        s_mouse_lock = SRWLOCK_INIT;
+static unsigned       s_mouse_trace_poll_count;
+
+static int mouse_trace_enabled(void)
+{
+    const char* value = getenv("PS3_MOUSE_TRACE");
+    return value && value[0] && value[0] != '0';
+}
 
 #define MOUSE_UNLOCK_RETURN(value) do { ReleaseSRWLockExclusive(&s_mouse_lock); return (value); } while (0)
 #define MOUSE_UNLOCK_VOID()        do { ReleaseSRWLockExclusive(&s_mouse_lock); return; } while (0)
@@ -64,10 +81,30 @@ void cellMouse_moveEvent(u32 port, s32 dx, s32 dy)
     MousePortState* ms = &s_mouse_ports[port];
     if (!ms->connected) ms->connected = 1;
 
-    ms->acc_dx += dx;
-    ms->acc_dy += dy;
-    ms->updated = 1;
+    ms->pending.acc_dx += dx;
+    ms->pending.acc_dy += dy;
+    ms->pending.updated = 1;
     ReleaseSRWLockExclusive(&s_mouse_lock);
+}
+
+static void mouse_queue_pending(MousePortState* ms)
+{
+    if (!ms->pending.updated) return;
+    if (ms->queue_count == MOUSE_PENDING_CAPACITY) {
+        MousePending old = ms->queue[ms->queue_head];
+        ms->queue_head = (ms->queue_head + 1u) % MOUSE_PENDING_CAPACITY;
+        --ms->queue_count;
+        MousePending* next = &ms->queue[ms->queue_head];
+        next->acc_dx += old.acc_dx;
+        next->acc_dy += old.acc_dy;
+        next->acc_wheel += old.acc_wheel;
+        next->acc_tilt += old.acc_tilt;
+    }
+    ms->queue[(ms->queue_head + ms->queue_count) % MOUSE_PENDING_CAPACITY] = ms->pending;
+    ++ms->queue_count;
+    u8 buttons = ms->pending.buttons;
+    memset(&ms->pending, 0, sizeof(ms->pending));
+    ms->pending.buttons = buttons;
 }
 
 void cellMouse_buttonEvent(u32 port, u8 button_mask, int pressed)
@@ -79,11 +116,21 @@ void cellMouse_buttonEvent(u32 port, u8 button_mask, int pressed)
     MousePortState* ms = &s_mouse_ports[port];
     if (!ms->connected) ms->connected = 1;
 
+    u8 next_buttons = pressed ? (ms->pending.buttons | button_mask)
+                              : (ms->pending.buttons & (u8)~button_mask);
+    if (next_buttons != ms->pending.buttons)
+        mouse_queue_pending(ms);
     if (pressed)
-        ms->buttons |= button_mask;
+        ms->pending.buttons |= button_mask;
     else
-        ms->buttons &= ~button_mask;
-    ms->updated = 1;
+        ms->pending.buttons &= ~button_mask;
+    ms->pending.updated = 1;
+    if (mouse_trace_enabled()) {
+        s_mouse_trace_poll_count = 0;
+        fprintf(stderr, "[mouse-trace] host button port=%u mask=0x%02X pressed=%d state=0x%02X pos=%d,%d\n",
+                port, button_mask, pressed, ms->pending.buttons,
+                ms->position_x, ms->position_y);
+    }
     ReleaseSRWLockExclusive(&s_mouse_lock);
 }
 
@@ -96,8 +143,8 @@ void cellMouse_wheelEvent(u32 port, s32 wheel)
     MousePortState* ms = &s_mouse_ports[port];
     if (!ms->connected) ms->connected = 1;
 
-    ms->acc_wheel += wheel;
-    ms->updated = 1;
+    ms->pending.acc_wheel += wheel;
+    ms->pending.updated = 1;
     ReleaseSRWLockExclusive(&s_mouse_lock);
 }
 
@@ -110,8 +157,8 @@ void cellMouse_tiltEvent(u32 port, s32 tilt)
     MousePortState* ms = &s_mouse_ports[port];
     if (!ms->connected) ms->connected = 1;
 
-    ms->acc_tilt += tilt;
-    ms->updated = 1;
+    ms->pending.acc_tilt += tilt;
+    ms->pending.updated = 1;
     ReleaseSRWLockExclusive(&s_mouse_lock);
 }
 
@@ -130,12 +177,12 @@ void cellMouse_positionEvent(u32 port, s32 x, s32 y)
         MOUSE_UNLOCK_VOID();
     MousePortState* ms = &s_mouse_ports[port];
     ms->connected = 1;
-    ms->acc_dx += x - ms->position_x;
-    ms->acc_dy += y - ms->position_y;
+    ms->pending.acc_dx += x - ms->position_x;
+    ms->pending.acc_dy += y - ms->position_y;
     ms->position_x = x;
     ms->position_y = y;
     ms->position_valid = 1;
-    ms->updated = 1;
+    ms->pending.updated = 1;
     ReleaseSRWLockExclusive(&s_mouse_lock);
 }
 
@@ -146,9 +193,15 @@ void cellMouse_syncPosition(u32 port, s32 x, s32 y)
         MOUSE_UNLOCK_VOID();
     MousePortState* ms = &s_mouse_ports[port];
     if (ms->position_valid) {
-        ms->acc_dx = ms->position_x - x;
-        ms->acc_dy = ms->position_y - y;
-        if (ms->acc_dx || ms->acc_dy) ms->updated = 1;
+        s32 queued_dx = 0, queued_dy = 0;
+        for (u32 i = 0; i < ms->queue_count; ++i) {
+            const MousePending* sample = &ms->queue[(ms->queue_head + i) % MOUSE_PENDING_CAPACITY];
+            queued_dx += sample->acc_dx;
+            queued_dy += sample->acc_dy;
+        }
+        ms->pending.acc_dx = ms->position_x - x - queued_dx;
+        ms->pending.acc_dy = ms->position_y - y - queued_dy;
+        if (ms->pending.acc_dx || ms->pending.acc_dy) ms->pending.updated = 1;
     }
     ReleaseSRWLockExclusive(&s_mouse_lock);
 }
@@ -166,21 +219,27 @@ static s8 mouse_take_axis(s32* pending)
 
 static CellMouseData mouse_take_data(MousePortState* ms, int buffered)
 {
+    MousePending* sample = ms->queue_count ? &ms->queue[ms->queue_head] : &ms->pending;
     CellMouseData d;
-    d.update  = ms->updated ? 1 : 0;
-    d.buttons = ms->buttons;
+    d.update  = sample->updated ? 1 : 0;
+    d.buttons = sample->buttons;
 
-    d.x_axis = mouse_take_axis(&ms->acc_dx);
-    d.y_axis = mouse_take_axis(&ms->acc_dy);
+    d.x_axis = mouse_take_axis(&sample->acc_dx);
+    d.y_axis = mouse_take_axis(&sample->acc_dy);
     /* A software cursor sums X/Y across a list but reads its last wheel
      * sample. Keep wheel input on the final movement fragment. */
-    if (buffered && (ms->acc_dx || ms->acc_dy)) {
+    if (buffered && (sample->acc_dx || sample->acc_dy)) {
         d.wheel = d.tilt = 0;
     } else {
-        d.wheel = mouse_take_axis(&ms->acc_wheel);
-        d.tilt  = mouse_take_axis(&ms->acc_tilt);
+        d.wheel = mouse_take_axis(&sample->acc_wheel);
+        d.tilt  = mouse_take_axis(&sample->acc_tilt);
     }
-    ms->updated = ms->acc_dx || ms->acc_dy || ms->acc_wheel || ms->acc_tilt;
+    sample->updated = sample->acc_dx || sample->acc_dy || sample->acc_wheel || sample->acc_tilt;
+    if (ms->queue_count && !sample->updated) {
+        ms->queue_head = (ms->queue_head + 1u) % MOUSE_PENDING_CAPACITY;
+        --ms->queue_count;
+    }
+    ms->reported_buttons = d.buttons;
     return d;
 }
 
@@ -261,6 +320,11 @@ s32 cellMouseGetData(u32 port_no, CellMouseData* data)
     CellMouseData d = mouse_take_data(ms, 0);
     mouse_write_data(ea, d.update, d.buttons,
                      d.x_axis, d.y_axis, d.wheel, d.tilt);
+    if (mouse_trace_enabled() && (d.buttons || s_mouse_trace_poll_count < 100))
+        fprintf(stderr, "[mouse-trace] guest data port=%u ea=0x%08X update=%u buttons=0x%02X delta=%d,%d\n",
+                port_no, (unsigned)ea, d.update, d.buttons, d.x_axis, d.y_axis);
+    if (mouse_trace_enabled() && s_mouse_trace_poll_count < 100)
+        s_mouse_trace_poll_count++;
 
     MOUSE_UNLOCK_RETURN(CELL_OK);
 }
@@ -285,10 +349,23 @@ s32 cellMouseGetDataList(u32 port_no, CellMouseDataList* data)
     }
 
     u32 count = 0;
-    while (ms->updated && count < CELL_MOUSE_MAX_DATA_LIST_NUM) {
+    int transition_reported = 0;
+    while ((ms->queue_count || ms->pending.updated) && count < CELL_MOUSE_MAX_DATA_LIST_NUM) {
+        const MousePending* next = ms->queue_count ? &ms->queue[ms->queue_head] : &ms->pending;
+        /* GFD consumes the last button state in a list. Keep a second edge
+         * for the next poll so a complete tap cannot cancel itself. */
+        if (transition_reported && next->buttons != ms->reported_buttons) break;
+        u8 previous_buttons = ms->reported_buttons;
         CellMouseData d = mouse_take_data(ms, 1);
+        if (d.buttons != previous_buttons) transition_reported = 1;
         mouse_write_data(ea + 0x04 + count * sizeof(CellMouseData),
                          d.update, d.buttons, d.x_axis, d.y_axis, d.wheel, d.tilt);
+        if (mouse_trace_enabled() && (d.buttons || s_mouse_trace_poll_count < 100))
+            fprintf(stderr, "[mouse-trace] guest list port=%u ea=0x%08X index=%u update=%u buttons=0x%02X delta=%d,%d\n",
+                    port_no, (unsigned)ea, count, d.update, d.buttons,
+                    d.x_axis, d.y_axis);
+        if (mouse_trace_enabled() && s_mouse_trace_poll_count < 100)
+            s_mouse_trace_poll_count++;
         count++;
     }
     vm_write32(ea, count);
@@ -378,11 +455,13 @@ s32 cellMouseClearBuf(u32 port_no)
         MOUSE_UNLOCK_RETURN(CELL_MOUSE_ERROR_INVALID_PARAMETER);
 
     MousePortState* ms = &s_mouse_ports[port_no];
-    ms->acc_dx = 0;
-    ms->acc_dy = 0;
-    ms->acc_wheel = 0;
-    ms->acc_tilt = 0;
-    ms->updated = 0;
+    ms->queue_count = ms->queue_head = 0;
+    ms->reported_buttons = ms->pending.buttons;
+    ms->pending.acc_dx = 0;
+    ms->pending.acc_dy = 0;
+    ms->pending.acc_wheel = 0;
+    ms->pending.acc_tilt = 0;
+    ms->pending.updated = 0;
 
     MOUSE_UNLOCK_RETURN(CELL_OK);
 }

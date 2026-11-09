@@ -214,6 +214,7 @@ typedef u32  (*CellGcmGuestAlloc)(u32 size, u32 align);
 typedef void (*CellGcmGuestWrite32)(u32 guest_addr, u32 value);
 u32 cellGcmSetupContext(u32 ctx_out_addr, u32 cmdSize, u32 ioSize, u32 ioAddress,
                         CellGcmGuestAlloc galloc, CellGcmGuestWrite32 gwrite32);
+u32 cellGcmGetCurrentContextDataEA(void);
 
 s32 cellGcmGetConfiguration(CellGcmConfig* config);
 

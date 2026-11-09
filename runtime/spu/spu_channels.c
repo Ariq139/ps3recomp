@@ -1160,7 +1160,7 @@ static int spu_ch_ready(spu_context* ctx, uint32_t channel)
     case SPU_RdInMbox:      return ctx->rcv_evt_n != 0 || ctx->ch_in_mbox.count != 0;
     case SPU_RdSigNotify1:  return ctx->ch_sig_notify[0].count != 0;
     case SPU_RdSigNotify2:  return ctx->ch_sig_notify[1].count != 0;
-    case SPU_RdEventStat:   return (ctx->event_status & ctx->event_mask) != 0;
+    case SPU_RdEventStat:   return (spu_event_load(ctx) & ctx->event_mask) != 0;
     default:                return 1;   /* non-blocking channels: always ready */
     }
 }
@@ -1203,7 +1203,7 @@ static void spu_ch_wait(spu_context* ctx, uint32_t channel, const char* op)
       if (n <= 50 || (n % 512) == 0)
         fprintf(stderr, "[ch-block] spu=%X pc=0x%05X op=%s ch=%u evstat=0x%X evmask=0x%X\n",
                 ctx->spu_id, ctx->pc & SPU_LS_MASK, op, channel,
-                ctx->event_status, ctx->event_mask); }
+                spu_event_load(ctx), ctx->event_mask); }
 
     ctx->status = SPU_STATUS_WAITING_CHANNEL;
     yz_lockstep_block_begin(ctx);          /* release the run token before the OS wait */
@@ -1223,7 +1223,7 @@ static void spu_ch_wait(spu_context* ctx, uint32_t channel, const char* op)
             if (waited >= next_hb) {
                 fprintf(stderr, "[ch-wait] spu=%X pc=0x%05X ch=%u waited=%llums evstat=0x%X evmask=0x%X resv[valid=%d ea=0x%08X]\n",
                         ctx->spu_id, ctx->pc & SPU_LS_MASK, channel, waited,
-                        ctx->event_status, ctx->event_mask,
+                        spu_event_load(ctx), ctx->event_mask,
                         ctx->resv_valid, ctx->resv_ea);
                 fflush(stderr);
                 next_hb = ((waited / 2000) + 1) * 2000;
@@ -1316,7 +1316,7 @@ u128 spu_rdch(spu_context* ctx, uint32_t channel)
         break;
     }
     case SPU_RdEventMask:   v = ctx->event_mask;                        break;
-    case SPU_RdEventStat:   spu_resv_lost_poll(ctx); v = ctx->event_status; break;
+    case SPU_RdEventStat:   spu_resv_lost_poll(ctx); v = spu_event_load(ctx); break;
     /* CBEA 9.8: numeric bit 0 is interrupt-enable, independent of run status.
      * This runtime models nonisolated SPUs, so the isolation bit stays clear. */
     case SPU_RdMachStat:    v = ctx->int_enable & 1u; break;
@@ -1356,7 +1356,7 @@ uint32_t spu_rchcnt(spu_context* ctx, uint32_t channel)
           const unsigned sp = (unsigned)(ctx->spu_id & 7u);
           if (channel < 40u) c[sp][channel]++;
           lastpc[sp] = (uint32_t)ctx->pc & SPU_LS_MASK;
-          lastst[sp] = ctx->event_status; lastmask[sp] = ctx->event_mask;
+          lastst[sp] = spu_event_load(ctx); lastmask[sp] = ctx->event_mask;
           lastsig[sp][0] = ctx->ch_sig_notify[0].count;
           lastsig[sp][1] = ctx->ch_sig_notify[1].count;
           lastmb[sp] = ctx->ch_in_mbox.count;
@@ -1513,7 +1513,7 @@ uint32_t spu_rchcnt(spu_context* ctx, uint32_t channel)
      * lost-reservation poll, so the two now agree by construction. */
     case SPU_RdEventStat:
         spu_resv_lost_poll(ctx);
-        return (ctx->event_status & ctx->event_mask) != 0;
+        return (spu_event_load(ctx) & ctx->event_mask) != 0;
     case MFC_RdTagStat:      return 1;  /* synchronous: status always ready */
     /* Stall-and-notify status is a single-value channel: count is 1 while a
      * newly-stalled tag is pending to be read, else 0. The wwsjob interrupt
@@ -2512,7 +2512,7 @@ static int spu_smc_microstep(spu_context* ctx)
         if (op11 == 0x1A8 || op11 == 0x1A9 || op11 == 0x1AA || op11 == 0x1AB) {
             /* bi / bisl / iret / bisled (+E/D interrupt bits) */
             if (op11 == 0x1AB &&                       /* bisled: only on event */
-                (ctx->event_status & ctx->event_mask) == 0) { pc += 4; continue; }
+                (spu_event_load(ctx) & ctx->event_mask) == 0) { pc += 4; continue; }
             if (w & 0x40000) ctx->int_enable = 1;
             else if (w & 0x80000) ctx->int_enable = 0;
             uint32_t tgt = (op11 == 0x1AA) ? ctx->srr0
@@ -2724,6 +2724,13 @@ void spu_indirect_branch(spu_context* ctx)
             /* cellSpursModulePoll: report "no contention — keep running".
              * (The host scheduler admits bounded workers; this service does not preempt.) */
             unsigned n = ++g_spurs_pm_polls;
+            if ((n & 63u) == 0) {
+#ifdef _WIN32
+                SwitchToThread();
+#else
+                sched_yield();
+#endif
+            }
             /* The count restarts with every policy-module run, and a job
              * manager runs dozens of times a second, so these lines follow the
              * RUN/END trace: SPURS_PM_TRACE=1 (#521) -- and even with the

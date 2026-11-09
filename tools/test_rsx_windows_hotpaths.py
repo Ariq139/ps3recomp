@@ -48,10 +48,18 @@ with tempfile.TemporaryDirectory(prefix="ps3recomp-rsx-tests-") as folder:
         "{(void)s;(void)m;(void)d;return 0;}\n")
     cases = [
         ("vertex_decode_cache", [], []),
+        ("constant_snapshot_cache", [], []),
+        ("raw_upload_cache", [], []),
+        ("vertex_raw_gpu", ["libs/video/rsx_vertex_fetch.c",
+            "libs/video/rsx_vp_decompiler.c"], ["-ld3d12", "-ldxgi", "-ld3dcompiler"]),
+        ("vertex_fetch_prepared", ["libs/video/rsx_vertex_fetch.c"], []),
         ("d3d12_srv_cache", [], []),
         ("d3d12_srv_cache_gpu", [], ["-ld3d12", "-ldxgi"]),
+        ("d3d12_retire_gpu", [], ["-ld3d12", "-ldxgi"]),
         ("fp_runtime_analysis", ["libs/video/rsx_fp_decompiler.c"], []),
         ("gcm_nop_runs", [], ["-luser32"]),
+        ("gcm_ordering", [], ["-luser32"]),
+        ("gcm_vblank_clock", [], ["-luser32"]),
         ("vertex_fetch_plan", ["libs/video/rsx_vertex_compact.c",
             "libs/video/rsx_dispatch.c", str(report_stub)], []),
         ("gcm_fifo_user_command", [str(fifo_stubs)], ["-luser32"]),
@@ -64,7 +72,13 @@ with tempfile.TemporaryDirectory(prefix="ps3recomp-rsx-tests-") as folder:
             *sources, "-o", str(binary), *libraries])
         output = run([str(binary)])
         print(f"{name}: {output.splitlines()[-1]}")
-        if name == "gcm_nop_runs":
+        if name == "vertex_raw_gpu":
+            output = run([str(binary), "--indexed"])
+            print(f"{name} indexed: {output.splitlines()[-1]}")
+        if name in ("gcm_nop_runs", "gcm_ordering"):
             output = run([str(binary)], env={**os.environ, "GCM_WORD_STATS": "60"})
             print(f"{name} diagnostic path: {output.splitlines()[-1]}")
-    print(f"{len(cases) + 1} RSX Windows regressions passed")
+        if name == "gcm_ordering":
+            output = run([str(binary), "--bypass"])
+            print(f"{name} bypass: {output.splitlines()[-1]}")
+    print(f"{len(cases) + 4} RSX Windows regressions passed")

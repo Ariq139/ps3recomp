@@ -7,6 +7,7 @@
  * spu_workload_dispatch(); the registry is populated by the title's lifted set.
  */
 #include "spu_workload.h"
+#include "spu_job_profile.h"
 #include "spu_image_fingerprint_cache.h"
 #include "spu_lifted_job.h"   /* spu_run_lifted_job */
 #include "../ps3_log.h"      /* ps3_log_verbose */
@@ -677,58 +678,16 @@ size_t spu_elf_image_size(const uint8_t* image, size_t max_avail)
 
 /* ---- dispatch ---------------------------------------------------------- */
 
-/* Dispatch fingerprints the whole image on the calling PPU thread, one byte at
- * a time, for every task it starts: about a millisecond per task start, and
- * a retail title starts two or three a frame. Remember recent results by
- * address and size, and reuse one only while a word-wise content hash --
- * several times faster than the byte-serial fingerprint -- still matches the
- * bytes. */
-static uint64_t spu_workload_content_hash(const uint8_t* p, size_t n)
-{
-    uint64_t h[4] = { 0x9E3779B97F4A7C15ull, 0xC2B2AE3D27D4EB4Full, 0x165667B19E3779F9ull, 0x27D4EB2F165667C5ull };
-    size_t i = 0;
-    for (; i + 32 <= n; i += 32)
-        for (int k = 0; k < 4; ++k) {
-            uint64_t w;
-            memcpy(&w, p + i + 8 * k, 8);
-            h[k] = (h[k] ^ w) * 0x100000001B3ull;
-            h[k] ^= h[k] >> 29;
-        }
-    uint64_t r = h[0] ^ (h[1] * 3) ^ (h[2] * 5) ^ (h[3] * 7) ^ n;
-    for (; i < n; ++i) r = (r ^ p[i]) * 0x100000001B3ull;
-    return r;
-}
+/* Each dispatch thread retains image snapshots and reuses fingerprints only
+ * after a complete byte comparison. Guest address reuse cannot validate a hit. */
 static uint64_t spu_workload_fingerprint_cached(const uint8_t* image, size_t n)
 {
-    enum { SLOTS = 8 };
-    static struct { const uint8_t* image; size_t n; uint64_t content, fp; } s_fp[SLOTS];
-    static unsigned s_next;
 #ifdef _WIN32
-    static SRWLOCK s_fp_lock = SRWLOCK_INIT;
-#define FP_LOCK()   AcquireSRWLockExclusive(&s_fp_lock)
-#define FP_UNLOCK() ReleaseSRWLockExclusive(&s_fp_lock)
+    static __declspec(thread) spu_image_fingerprint_cache cache;
 #else
-    static pthread_mutex_t s_fp_lock = PTHREAD_MUTEX_INITIALIZER;
-#define FP_LOCK()   pthread_mutex_lock(&s_fp_lock)
-#define FP_UNLOCK() pthread_mutex_unlock(&s_fp_lock)
+    static _Thread_local spu_image_fingerprint_cache cache;
 #endif
-    const uint64_t content = spu_workload_content_hash(image, n);
-    FP_LOCK();
-    for (unsigned i = 0; i < SLOTS; ++i)
-        if (s_fp[i].image == image && s_fp[i].n == n && s_fp[i].content == content) {
-            const uint64_t fp = s_fp[i].fp;
-            FP_UNLOCK();
-            return fp;
-        }
-    FP_UNLOCK();
-    const uint64_t fp = spu_workload_fingerprint(image, n);
-    FP_LOCK();
-    const unsigned slot = s_next++ % SLOTS;
-    s_fp[slot].image = image; s_fp[slot].n = n; s_fp[slot].content = content; s_fp[slot].fp = fp;
-    FP_UNLOCK();
-#undef FP_LOCK
-#undef FP_UNLOCK
-    return fp;
+    return spu_image_fingerprint_cached(&cache, image, n, spu_workload_fingerprint);
 }
 
 
@@ -1057,7 +1016,8 @@ static void spu_taskset_task_exited(uint32_t taskset_ea, uint32_t done_task)
         fprintf(stderr, "[taskset] start task %u of taskset 0x%08X elf=0x%08X "
                         "(after task %u exited)\n", start_t[i], taskset_ea, start_elf[i], done_task);
         g_ydkj_real_taskset_ea = taskset_ea; g_ydkj_real_taskid = start_t[i];
-        spu_workload_dispatch_async(vm_base + start_elf[i], (uint32_t)start_sz[i], start_ctx[i]);
+        spu_workload_dispatch_task_async(vm_base + start_elf[i], (uint32_t)start_sz[i],
+                                         start_ctx[i], taskset_ea, start_t[i]);
     }
     s_ts_held = 0; ts_unlock();
 }
@@ -1130,9 +1090,9 @@ static void spu_async_run(spu_async_job* j)
                  * ptr (LS[0x1C0]) was a hardcoded 0x40009D00 that mismatched the game's
                  * real 0x40009F00 -> policy DMA'd garbage -> null branches. */
                 extern uint64_t spurs_pm_build_context(uint8_t*, uint32_t, uint32_t, uint32_t, uint32_t);
-                extern uint32_t g_ydkj_real_spurs_ea, g_ydkj_real_taskset_ea, g_ydkj_real_taskid;
-                if (g_ydkj_real_taskset_ea)
-                    spurs_pm_build_context(ls, g_ydkj_real_taskset_ea, g_ydkj_real_taskid, 0, 0);
+                extern uint32_t g_ydkj_real_spurs_ea;
+                if (j->taskset_ea)
+                    spurs_pm_build_context(ls, j->taskset_ea, j->taskid, 0, 0);
                 uint32_t inst = g_ydkj_real_spurs_ea ? g_ydkj_real_spurs_ea : 0x40009D00u;
                 uint8_t* p = ls + 0x1C0;
                 p[0]=0; p[1]=0; p[2]=0; p[3]=0;                 /* hi32 of u64 */
@@ -1160,13 +1120,12 @@ static void spu_async_run(spu_async_job* j)
              * Gate: default on for image 22 unless YDKJ_NO_CRI_CTX. */
             if (j->image_id == 22 && !getenv("YDKJ_NO_CRI_CTX")) {
                 extern uint64_t spurs_pm_build_context(uint8_t*, uint32_t, uint32_t, uint32_t, uint32_t);
-                extern uint32_t g_ydkj_real_taskset_ea, g_ydkj_real_taskid;
                 #define LSBE32(o,v) do{uint32_t _v=(v);ls[(o)+0]=(uint8_t)(_v>>24);ls[(o)+1]=(uint8_t)(_v>>16);ls[(o)+2]=(uint8_t)(_v>>8);ls[(o)+3]=(uint8_t)_v;}while(0)
-                if (g_ydkj_real_taskset_ea && !getenv("YDKJ_MINIMAL_CTX")) {
+                if (j->taskset_ea && !getenv("YDKJ_MINIMAL_CTX")) {
                     /* REAL taskset context: build the SpursTasksetContext at LS 0x2700
                      * from the actual BE CellSpursTaskset (spurs ptr, args, TaskInfo)
                      * so the cri leaf reads valid data instead of my planted guesses. */
-                    uint64_t elf = spurs_pm_build_context(ls, g_ydkj_real_taskset_ea, g_ydkj_real_taskid, 0, 0);
+                    uint64_t elf = spurs_pm_build_context(ls, j->taskset_ea, j->taskid, 0, 0);
                     /* --- Golden-reference context fields for the CRI task, recovered from a
                      * WORKING RPCS3 SPU-LS snapshot via caner's rpcs3-guest-memory-dumper fork
                      * (github.com/canersaka/rpcs3-guest-memory-dumper): YDKJ BLUS30569, SPU0
@@ -1202,7 +1161,7 @@ static void spu_async_run(spu_async_job* j)
                       if ((_e=getenv("YDKJ_G1_CTX")))   { uint32_t v=(uint32_t)strtoul(_e,0,0);
                           LSBE32(0x2798,v); LSBE32(0x279C,v); } }
                     fprintf(stderr, "[cri] REAL SpursTasksetContext built from taskset 0x%08X task %u (elf=0x%llX)\n",
-                            g_ydkj_real_taskset_ea, g_ydkj_real_taskid, (unsigned long long)elf);
+                            j->taskset_ea, j->taskid, (unsigned long long)elf);
                 } else {
                     LSBE32(0x27C0, 0x100);     /* kernelMgmtAddr -> SPURS kernel ctx @LS 0x100 */
                     LSBE32(0x27C4, 0xA70);     /* syscallAddr -> HLE PM syscall trampoline (0xA70) */
@@ -1454,6 +1413,8 @@ typedef struct {
     int image_id;
     uint64_t dispatches, lookup_misses, failed_runs;
     double total_seconds, max_seconds;
+    uint64_t phase_runs;
+    spu_job_phase_times phases;
 } spu_job_profile_entry;
 
 static spu_job_profile_entry s_job_profiles[SPU_JOB_PROFILE_SLOTS];
@@ -1477,7 +1438,19 @@ static int spu_job_profile_period_seconds(void)
     return atomic_load_explicit(&s_job_profile_period, memory_order_acquire);
 }
 
-static double spu_job_profile_now(void)
+/* Phase instrumentation is opt-in even when coarse job profiling is on. */
+static int spu_job_phase_enabled(void)
+{
+    static atomic_int setting = ATOMIC_VAR_INIT(-1);
+    int value = atomic_load_explicit(&setting, memory_order_acquire);
+    if (value >= 0) return value;
+    const char* env = getenv("SPU_JOBPHASE");
+    value = env && env[0] == '1' && env[1] == '\0';
+    atomic_store_explicit(&setting, value, memory_order_release);
+    return value;
+}
+
+double spu_job_profile_now(void)
 {
 #ifdef _WIN32
     static LARGE_INTEGER frequency;
@@ -1505,7 +1478,8 @@ static double spu_job_profile_now(void)
 
 static void spu_job_profile_record(uint64_t fingerprint, uint32_t image_size,
                                    int image_id, int matched, int completed,
-                                   double elapsed, int report_period)
+                                   double elapsed, int report_period,
+                                   const spu_job_phase_times* phases)
 {
     spu_job_profile_entry report[SPU_JOB_PROFILE_SLOTS];
     unsigned report_overflow = 0;
@@ -1540,6 +1514,14 @@ static void spu_job_profile_record(uint64_t fingerprint, uint32_t image_size,
     } else {
         entry->dispatches++;
         if (!completed) entry->failed_runs++;
+        if (phases) {
+            entry->phase_runs++;
+            entry->phases.lookup += phases->lookup;
+            entry->phases.reset += phases->reset;
+            entry->phases.stage += phases->stage;
+            entry->phases.execute += phases->execute;
+            entry->phases.teardown += phases->teardown;
+        }
         if (elapsed > 0.0) {
             entry->total_seconds += elapsed;
             if (elapsed > entry->max_seconds) entry->max_seconds = elapsed;
@@ -1557,6 +1539,8 @@ static void spu_job_profile_record(uint64_t fingerprint, uint32_t image_size,
             s_job_profiles[i].failed_runs = 0;
             s_job_profiles[i].total_seconds = 0.0;
             s_job_profiles[i].max_seconds = 0.0;
+            s_job_profiles[i].phase_runs = 0;
+            memset(&s_job_profiles[i].phases, 0, sizeof(s_job_profiles[i].phases));
         }
         report_overflow = s_job_profile_overflow;
         s_job_profile_overflow = 0;
@@ -1579,6 +1563,14 @@ static void spu_job_profile_record(uint64_t fingerprint, uint32_t image_size,
                 (unsigned long long)item->lookup_misses,
                 (unsigned long long)item->failed_runs, item->total_seconds,
                 average_ms, item->max_seconds * 1e3);
+        if (item->phase_runs)
+            fprintf(stderr,
+                    "[jobphase] image=%d fp=%016llX runs=%llu lookup=%.3fms "
+                    "reset=%.3fms stage=%.3fms execute=%.3fms teardown=%.3fms\n",
+                    item->image_id, (unsigned long long)item->fingerprint,
+                    (unsigned long long)item->phase_runs, item->phases.lookup * 1e3,
+                    item->phases.reset * 1e3, item->phases.stage * 1e3,
+                    item->phases.execute * 1e3, item->phases.teardown * 1e3);
     }
     if (report_overflow)
         fprintf(stderr, "[jobprof] profile table full; omitted=%u\n",
@@ -1632,7 +1624,7 @@ static int spu_workload_dispatch_job_internal(const uint8_t* image,
         if (profile_period)
             spu_job_profile_record(fp, image_size, -1, 0, 0,
                                    spu_job_profile_now() - profile_start,
-                                   profile_period);
+                                   profile_period, NULL);
         spu_job_audit(fp, image_size, 0, 0);
         /* Capped: an unlifted job a title dispatches every frame (Tornado
          * Outbreak's Wwise audio jobs) wrote 2 GB of these in three minutes,
@@ -1666,15 +1658,22 @@ static int spu_workload_dispatch_job_internal(const uint8_t* image,
                 (unsigned long long)fp, image_id, job_ea);
         fflush(stderr);
     }
-    int rc = desc_copy
+    spu_job_phase_times phases;
+    const int phase_enabled = profile_period && spu_job_phase_enabled();
+    const double phase_dispatch_end = phase_enabled ? spu_job_profile_now() : 0.0;
+    int rc = phase_enabled
+        ? spu_run_spurs_job_profiled(fn, image_id, job_ea, job_desc_size,
+                                     &job_abi, desc_copy ? image : NULL, desc_copy, &phases)
+        : desc_copy
         ? spu_run_spurs_job_with_abi_snapshot(
             fn, image_id, job_ea, job_desc_size, &job_abi, image, desc_copy)
         : spu_run_spurs_job_with_abi(
             fn, image_id, job_ea, job_desc_size, &job_abi);
+    if (phase_enabled) phases.lookup = phase_dispatch_end - profile_start;
     if (profile_period)
         spu_job_profile_record(fp, image_size, image_id, 1, rc == 0,
                                spu_job_profile_now() - profile_start,
-                               profile_period);
+                               profile_period, phase_enabled ? &phases : NULL);
     spu_job_audit(fp, image_size, image_id, rc == 0 ? 1 : -1);
     if (verbose) {
         fprintf(stderr, "[spurs-job] job 0x%08X RETURNED rc=%d\n", job_ea, rc);
@@ -2084,8 +2083,20 @@ int spu_taskset_wait_signal(uint32_t taskset_ea, uint32_t taskId)
     return 0;
 }
 
+/* Legacy diagnostic dispatch uses the last-created task. Production taskset
+ * callers pass identity explicitly, since another PPU can create a task while
+ * a scan is handing an older task to its host worker. */
 int spu_workload_dispatch_async(const uint8_t* image, uint32_t image_size,
                                 uint32_t args_ea)
+{
+    extern uint32_t g_ydkj_real_taskset_ea, g_ydkj_real_taskid;
+    return spu_workload_dispatch_task_async(image, image_size, args_ea,
+                                            g_ydkj_real_taskset_ea, g_ydkj_real_taskid);
+}
+
+int spu_workload_dispatch_task_async(const uint8_t* image, uint32_t image_size,
+                                    uint32_t args_ea, uint32_t taskset_ea,
+                                    uint32_t taskid)
 {
     if (!image || image_size == 0) return 0;
 
@@ -2115,12 +2126,10 @@ int spu_workload_dispatch_async(const uint8_t* image, uint32_t image_size,
     if (!j) return 0;
     j->image = image; j->image_size = image_size; j->args_ea = args_ea;
     j->fn = fn; j->image_id = image_id;
-    /* Capture the taskset+taskid NOW (PPU thread, right after cellSpursCreateTask
-     * set the globals for THIS task). Reading them later in the async thread races
-     * the next CreateTask overwriting the single-slot globals -- with two audio
-     * tasks that made both run task 1's descriptor. */
-    { extern uint32_t g_ydkj_real_taskset_ea, g_ydkj_real_taskid;
-      j->taskset_ea = g_ydkj_real_taskset_ea; j->taskid = g_ydkj_real_taskid; }
+    /* Task ownership belongs to this submission, including delayed execution
+     * and CRI context construction. Never re-read the last-created globals. */
+    j->taskset_ea = taskset_ea;
+    j->taskid = taskid;
     /* Mark the task running NOW, not when its thread starts: in that gap another
      * task's exit saw it ready-but-not-running and started it a second time
      * (Twisted Metal's level-load inflate tasks each ran twice, concurrently). */

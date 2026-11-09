@@ -16,6 +16,11 @@
 #include "../../runtime/ppu/ppu_memory.h"   /* GUEST_PTR, vm_write*: guest EA -> host */
 #include "ps3emu/log_first.h"
 
+extern int ps3recomp_resolve_event_editor_path(const char* game_root,
+                                               const char* guest_path,
+                                               char* host_path,
+                                               size_t host_path_capacity);
+
 /* glibc's <sys/stat.h> exposes st_atime/st_mtime/st_ctime as macros that expand
  * to st_atim.tv_sec etc.  They collide with the identically named members of the
  * PS3 CellFsStat struct, so undefine them here; host times are read via the
@@ -136,6 +141,28 @@ static int translate_path(const char* ps3_path, char* host_buf, size_t buf_size)
 
     if (!ps3_path || !host_buf || buf_size == 0)
         return -1;
+
+    /* The June event editor also reaches the generic cellFs implementation.
+     * Its lifted path builder omits separators between event folders and the
+     * selected filename, so resolve that spelling before the normal mount map. */
+    char event_path[CELL_FS_MAX_FS_PATH_LENGTH];
+    if (ps3recomp_resolve_event_editor_path(s_root_path, ps3_path,
+                                            event_path, sizeof(event_path))) {
+#ifdef _WIN32
+        for (char* p = event_path; *p; ++p) if (*p == '/') *p = '\\';
+#else
+        for (char* p = event_path; *p; ++p) if (*p == '\\') *p = '/';
+#endif
+        const size_t event_path_size = strlen(event_path) + 1;
+        if (event_path_size > buf_size) {
+            host_buf[0] = '\0';
+            return -1;
+        }
+        memcpy(host_buf, event_path, event_path_size);
+        fprintf(stderr, "[cellFs] repaired event-editor path '%s' -> '%s'\n",
+                ps3_path, host_buf);
+        return 0;
+    }
 
     /* Find longest matching prefix */
     int best = -1;

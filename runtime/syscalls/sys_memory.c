@@ -97,9 +97,12 @@ static uint64_t align_up_u64(uint64_t value, uint32_t alignment)
 /* First-fit across the primary sys_memory window and the non-overlapping
  * spill arena. Active mmapper reservations participate too, so no allocation
  * path can hand out an address already owned by another path. */
-static int find_guest_range(uint32_t size, uint32_t alignment, uint32_t* out_addr)
+static int find_guest_range(uint32_t size, uint32_t alignment,
+                            int spill_only, uint32_t* out_addr)
 {
-    for (size_t r = 0; r < sizeof(s_alloc_ranges) / sizeof(s_alloc_ranges[0]); r++) {
+    const size_t range_count = sizeof(s_alloc_ranges) / sizeof(s_alloc_ranges[0]);
+    const size_t first_range = spill_only ? 1u : 0u;
+    for (size_t r = first_range; r < range_count; r++) {
         uint64_t candidate = align_up_u64(s_alloc_ranges[r].base, alignment);
         const uint64_t range_end = s_alloc_ranges[r].end;
 
@@ -157,7 +160,8 @@ static int range_was_freed(uint32_t addr, uint32_t size)
 
 static int32_t allocate_guest_range(uint32_t size, uint32_t alignment,
                                     uint32_t page_size, uint32_t kind,
-                                    int account_user_memory, uint32_t* out_addr)
+                                    int account_user_memory, int spill_only,
+                                    uint32_t* out_addr)
 {
     if (!size || !is_power_of_two(alignment) ||
         size > UINT32_MAX - (alignment - 1u))
@@ -187,7 +191,7 @@ static int32_t allocate_guest_range(uint32_t size, uint32_t alignment,
     }
 
     uint32_t addr = 0;
-    if (find_guest_range(size, alignment, &addr) != 0) {
+    if (find_guest_range(size, alignment, spill_only, &addr) != 0) {
         bump_unlock();
         return CELL_ENOMEM;
     }
@@ -244,7 +248,15 @@ int32_t ps3_guest_memory_alloc(uint32_t size, uint32_t alignment,
 {
     if (!out_addr) return CELL_EINVAL;
     return allocate_guest_range(size, alignment, VM_PAGE_SIZE,
-                                SYS_MEM_ALLOC_KIND_MEMORY, 1, out_addr);
+                                SYS_MEM_ALLOC_KIND_MEMORY, 1, 0, out_addr);
+}
+
+int32_t ps3_guest_memory_alloc_spill(uint32_t size, uint32_t alignment,
+                                     uint32_t* out_addr)
+{
+    if (!out_addr) return CELL_EINVAL;
+    return allocate_guest_range(size, alignment, VM_PAGE_SIZE,
+                                SYS_MEM_ALLOC_KIND_MEMORY, 1, 1, out_addr);
 }
 
 int32_t ps3_guest_memory_free(uint32_t addr)
@@ -283,7 +295,7 @@ int64_t sys_memory_allocate(ppu_context* ctx)
     uint32_t size = (uint32_t)rounded;
     uint32_t addr = 0;
     const int32_t result = allocate_guest_range(size, alignment, alignment,
-        SYS_MEM_ALLOC_KIND_MEMORY, 1, &addr);
+        SYS_MEM_ALLOC_KIND_MEMORY, 1, 0, &addr);
     if (result != CELL_OK) return (int64_t)result;
     fprintf(stderr, "[sys_memory] allocate(size=0x%X, flags=0x%X) -> 0x%08X\n", size, flags, addr);
     if (addr_out) write_be32(addr_out, addr);

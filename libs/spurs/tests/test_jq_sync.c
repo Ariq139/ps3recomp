@@ -25,12 +25,19 @@ static LONG dispatch_calls;
 int spu_workload_dispatch_job(const uint8_t* image, uint32_t image_size,
                              uint32_t job_ea, uint32_t descriptor_size)
 {
-    assert(image == guest + 0x1800 && image_size == 16);
+    assert(image && image_size == 16);
     assert(job_ea == 0x1400 && descriptor_size == 128);
     InterlockedIncrement(&dispatch_calls);
     SetEvent(job_entered);
     assert(WaitForSingleObject(release_job, 2000) == WAIT_OBJECT_0);
     return 1;
+}
+int32_t ps3_guest_memory_alloc(uint32_t size,uint32_t alignment,uint32_t* out) {(void)size;(void)alignment;*out=0;return -1;}
+int32_t ps3_guest_memory_free(uint32_t ea) {(void)ea;return 0;}
+void spurs_job_set_spu_num(uint32_t n) {(void)n;}
+void spu_workload_job_cache_thread_cleanup(void) {}
+int spu_workload_dispatch_job_snapshot(const uint8_t* image,uint32_t size,uint32_t ea,uint32_t ds,const uint8_t* descriptor) {
+ (void)descriptor;return spu_workload_dispatch_job(image,size,ea,ds);
 }
 static DWORD WINAPI submit(void* unused)
 {
@@ -73,6 +80,7 @@ int main(void)
     assert(WaitForSingleObject(waiter, 1000) == WAIT_OBJECT_0);
     assert(dispatch_calls == 1 && vm_read32(0x1600) == 0xA5A5A5A5);
     assert(s_queues[0].submitCount == 1 && s_queues[0].completeCount == 1);
+    assert(cellSpursShutdownJobQueue()==0);
     CloseHandle(producer); CloseHandle(waiter);
     CloseHandle(job_entered); CloseHandle(release_job); CloseHandle(sync_done);
     puts("job queue sync: tag mask ABI, completion ordering, no extra job/writes PASS");

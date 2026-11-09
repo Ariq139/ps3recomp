@@ -33,7 +33,8 @@ float rsx_rd_half_be(const u8* p)
     float o; memcpy(&o, &f, 4); return o;
 }
 
-void rsx_fetch_attrib(const rsx_state* st, int idx, u32 vi, float out[4])
+static void rsx_fetch_attrib_internal(const rsx_state* st, int idx, u32 vi, float out[4],
+                                      const rsx_vertex_fetch_prepared* prepared)
 {
     /* A disabled attribute array feeds the CONSTANT vertex attribute register
      * (NV4097_SET_VERTEX_DATA4F_M), not zero -- same rule as glColor4f with
@@ -86,7 +87,10 @@ void rsx_fetch_attrib(const rsx_state* st, int idx, u32 vi, float out[4])
     u32 off = (st->vertex_data_base_offset + (a->offset & 0x7FFFFFFFu))
               & 0x0FFFFFFFu;
     off += ei * a->stride;
-    const u8* p = vm_base + ((a->offset & 0x80000000u)
+    const u8* p = prepared && prepared->local_base[idx] && (u64)off >= (u64)ei * a->stride &&
+        (u64)(prepared->local_base[idx] - vm_base) + (u64)ei * a->stride <= 0xFFFFFFFFull
+        ? prepared->local_base[idx] + (u32)(ei * a->stride)
+        : vm_base + ((a->offset & 0x80000000u)
         ? cellGcmResolveLocated(0, off)   /* MAIN:  IO offset table          */
         : cellGcmResolveLocated(1, off)); /* LOCAL: VRAM, never the IO table */
 
@@ -140,4 +144,25 @@ void rsx_fetch_attrib(const rsx_state* st, int idx, u32 vi, float out[4])
         for (u32 k = 0; k < n; k++) out[k] = rsx_rd_bef(p + k * 4);
         break;
     }
+}
+
+void rsx_vertex_fetch_prepare(rsx_vertex_fetch_prepared* plan, const rsx_state* state)
+{
+    memset(plan, 0, sizeof(*plan));
+    plan->state = state;
+    if (!state || !vm_base) return;
+    for (u32 i = 0; i < 16; ++i) {
+        const rsx_vertex_attrib* a = &state->vertex_attribs[i];
+        if (!a->enabled || (a->offset & 0x80000000u)) continue;
+        const u32 offset = (state->vertex_data_base_offset + (a->offset & 0x7FFFFFFFu)) & 0x0FFFFFFFu;
+        plan->local_base[i] = vm_base + cellGcmResolveLocated(1, offset);
+    }
+}
+void rsx_fetch_attrib_prepared(const rsx_vertex_fetch_prepared* plan, int idx, u32 vi, float out[4])
+{
+    rsx_fetch_attrib_internal(plan->state, idx, vi, out, plan);
+}
+void rsx_fetch_attrib(const rsx_state* st, int idx, u32 vi, float out[4])
+{
+    rsx_fetch_attrib_internal(st, idx, vi, out, NULL);
 }

@@ -6,9 +6,6 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-if os.name == 'nt':
-    print('SKIP: fixture currently requires a POSIX C compiler')
-    raise SystemExit(0)
 root = Path(__file__).resolve().parents[1]
 source = (root / 'runtime/spu/spu_workload.c').read_text()
 
@@ -37,6 +34,6 @@ with tempfile.TemporaryDirectory(prefix='spu-taskset-elf-flags-') as tmp:
     c = Path(tmp) / 'test.c'
     binary = Path(tmp) / 'test'
     c.write_text(fixture)
-    subprocess.run([os.environ.get('CC', 'cc'), '-std=gnu17', '-O1', '-UNDEBUG',
+    subprocess.run([os.environ.get('CC', 'clang' if os.name == 'nt' else 'cc'), '-std=gnu17', '-O1', '-UNDEBUG',
                     '-Wall', '-Wextra', str(c), '-o', str(binary)], check=True)
     subprocess.run([str(binary)], check=True, timeout=5, env=env, cwd=tmp)
