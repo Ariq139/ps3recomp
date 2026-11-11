@@ -235,8 +235,8 @@ static DWORD WINAPI frame_clock(LPVOID)
     const unsigned frame_limit = ps3_guest_frame_limit();
     ps3_frame_pacer_init(&g_guest_frame_pacer, frame_limit);
     printf("[frame-clock] guest frame limit: %u FPS; vblank: 60 Hz\n", frame_limit);
-    if (frame_limit != 30)
-        fprintf(stderr, "[frame-clock] PS3_FPS_LIMIT=%u is a diagnostic override; game logic may accelerate\n", frame_limit);
+    if (frame_limit)
+        fprintf(stderr, "[frame-clock] PS3_FPS_LIMIT=%u adds a host cap; game logic may slow down\n", frame_limit);
     HANDLE clock_thread = CreateThread(NULL, 0, guest_vblank_clock, NULL, 0, NULL);
     if (!clock_thread) { fprintf(stderr, "[frame-clock] cannot start vblank clock\n"); abort(); }
     CloseHandle(clock_thread);

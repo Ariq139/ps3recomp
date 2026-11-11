@@ -7,7 +7,7 @@
     "D:\\Other\\Project\\P5 Symbols Beta 2015.elf.gzf",
     "D:\\Other\\Project\\P5_2016_Beta.ELF.gzf"
   ],
-  "batch_size": 8,
+  "batch_size": 20,
   "worker_timeout": 900,
   "apply_verified": true
 }

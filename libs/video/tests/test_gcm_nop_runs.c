@@ -12,8 +12,12 @@
  *   (clang on macOS: -Wl,-dead_strip)
  */
 #include "../cellGcmSys.c"
+#include "../rsx_tiling.c"
 #include <stdio.h>
 #include <stdlib.h>
+/* GCM_REPORT_SPU_HOLD_MS asks the SPU task layer whether a task round is
+ * running; there are no SPU tasks here. */
+int spu_taskset_round_busy(uint32_t* ts, uint32_t* tid) { (void)ts; (void)tid; return 0; }
 uint8_t* vm_base;
 uint32_t ppu_vm_size;
 int g_resv_store_active;
@@ -126,6 +130,17 @@ static u32 put_probe(u32 io, u32 arg)
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
+    {
+        u32 target = 0;
+        check(gcm_fifo_jump_target(0x20001234u, &target) && target == 0x1234u,
+              "old JUMP decodes its target");
+        check(gcm_fifo_jump_target(0x00123451u, &target) && target == 0x00123450u,
+              "new JUMP decodes its target");
+        check(!gcm_fifo_jump_target(0x3ED916DEu, &target),
+              "CALL with address bit 28 set is not a JUMP");
+        check(!gcm_fifo_jump_target(0x20001236u, &target),
+              "CALL with old JUMP high bits is not a JUMP");
+    }
     const uint32_t vm_size = ppu_hle_inject_base + 0x10000u;
     vm_base = (uint8_t*)calloc(1, vm_size);
     if (!vm_base) { puts("FAIL: guest VM alloc"); return 1; }

@@ -302,6 +302,9 @@ s32 sceNpGetMyLanguages(SceNpMyLanguages* langs)
  * Imported by most online-capable titles.
  * -----------------------------------------------------------------------*/
 
+/* No purchased content is provisioned by the local NP implementation.
+ * The API returns the number of IDs, so an empty list requires no guest write.
+ * In particular, (NULL, 0) is a valid count query. */
 static SceNpManagerCallback s_npmgr_cb = NULL;
 static void*                s_npmgr_cb_arg = NULL;
 

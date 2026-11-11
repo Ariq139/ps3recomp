@@ -64,6 +64,8 @@ static const GUID s_iid_d3d12_device1 =
 static const GUID s_iid_d3d12_pipeline_library =
     {0xc64226a8, 0x9201, 0x46af, {0xb4, 0xcc, 0x53, 0xfb, 0x9f, 0xf7, 0x41, 0x4f}};
 
+#include "rsx_d3d12_device.h"
+
 /* Link libraries */
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -450,6 +452,8 @@ typedef struct {
     u64          next_fence_value;
     u64          last_fence_value;
     u32          frame_index;
+    u32          present_buffer_id;   /* buffer the current flip names (for
+                                       * the CPU-blit scanout fallback) */
 
     /* Pipeline */
     ID3D12RootSignature*  root_signature;
@@ -1051,7 +1055,7 @@ static int init_d3d12(u32 width, u32 height)
 #ifdef NDEBUG
         getenv("D3D12_DBG")
 #else
-        1
+        !getenv("D3D12_NO_DBG") /* D3D12_NO_DBG=1 disables the debug layer in debug builds */
 #endif
     ) {
         ID3D12Debug* debug_controller = NULL;
@@ -5001,8 +5005,32 @@ static void vp_tex_upload_fail(const char* reason, u32 off, u32 w, u32 h,
     }
 }
 
-static int vp_upload_tex_slot(u32 off, u32 w, u32 h, u32 fmt,
-                              u32 row_pitch, int cube, u32 mips)
+
+/* The DXGI format a guest texture is uploaded as -- the DECODED image's, which
+ * is not always the guest's: the packed 16-bit colour formats arrive unpacked
+ * to RGBA8, and DEPTH24_D8 as a float. rsx_texture_layout.h says which class
+ * each format byte lands in. The SRV over the upload must name the same one. */
+static DXGI_FORMAT vp_tex_dxgi(u32 fmt)
+{
+    rsx_tex_layout tl;
+    rsx_texture_layout(fmt, 4, 4, &tl);
+    switch (tl.fmt) {
+    case RSX_TEXFMT_R8G8B8A8:      return DXGI_FORMAT_R8G8B8A8_UNORM;
+    case RSX_TEXFMT_R8G8:          return DXGI_FORMAT_R8G8_UNORM;
+    case RSX_TEXFMT_BC1:           return DXGI_FORMAT_BC1_UNORM;
+    case RSX_TEXFMT_BC2:           return DXGI_FORMAT_BC2_UNORM;
+    case RSX_TEXFMT_BC3:           return DXGI_FORMAT_BC3_UNORM;
+    case RSX_TEXFMT_R16:           return DXGI_FORMAT_R16_UNORM;
+    case RSX_TEXFMT_R16G16:        return DXGI_FORMAT_R16G16_UNORM;
+    case RSX_TEXFMT_R16G16F:       return DXGI_FORMAT_R16G16_FLOAT;
+    case RSX_TEXFMT_R16G16B16A16F: return DXGI_FORMAT_R16G16B16A16_FLOAT;
+    case RSX_TEXFMT_R32F:          return DXGI_FORMAT_R32_FLOAT;
+    case RSX_TEXFMT_R32G32B32A32F: return DXGI_FORMAT_R32G32B32A32_FLOAT;
+    default:                       return DXGI_FORMAT_R8_UNORM;
+    }
+}
+
+static int vp_upload_tex_slot(u32 off, u32 w, u32 h, u32 fmt, u32 row_pitch, int cube, u32 mips)
 {
     /* TEX_BUDGET=<n>: cap texture uploads per frame. Off by default -- it was
      * tried against the TDR and does not help, because PERF shows the upload
@@ -5044,18 +5072,7 @@ static int vp_upload_tex_slot(u32 off, u32 w, u32 h, u32 fmt,
     /* The DECODED image's format, which is not always the guest's: the packed
      * 16-bit colour formats arrive here unpacked to RGBA8, and DEPTH24_D8 as a
      * float. rsx_texture_layout.h says which class each format byte lands in. */
-    DXGI_FORMAT dxfmt = (tl.fmt == RSX_TEXFMT_R8G8B8A8) ? DXGI_FORMAT_R8G8B8A8_UNORM
-                      : (tl.fmt == RSX_TEXFMT_R8G8)     ? DXGI_FORMAT_R8G8_UNORM
-                      : (tl.fmt == RSX_TEXFMT_BC1)      ? DXGI_FORMAT_BC1_UNORM
-                      : (tl.fmt == RSX_TEXFMT_BC2)      ? DXGI_FORMAT_BC2_UNORM
-                      : (tl.fmt == RSX_TEXFMT_BC3)      ? DXGI_FORMAT_BC3_UNORM
-                      : (tl.fmt == RSX_TEXFMT_R16)      ? DXGI_FORMAT_R16_UNORM
-                      : (tl.fmt == RSX_TEXFMT_R16G16)   ? DXGI_FORMAT_R16G16_UNORM
-                      : (tl.fmt == RSX_TEXFMT_R16G16F)  ? DXGI_FORMAT_R16G16_FLOAT
-                      : (tl.fmt == RSX_TEXFMT_R16G16B16A16F) ? DXGI_FORMAT_R16G16B16A16_FLOAT
-                      : (tl.fmt == RSX_TEXFMT_R32F)     ? DXGI_FORMAT_R32_FLOAT
-                      : (tl.fmt == RSX_TEXFMT_R32G32B32A32F) ? DXGI_FORMAT_R32G32B32A32_FLOAT
-                      : DXGI_FORMAT_R8_UNORM;
+    DXGI_FORMAT dxfmt = vp_tex_dxgi(fmt);
     /* DXT data is stored as linear 4x4 block rows (compressed formats are
      * never Morton-swizzled on RSX). Row of blocks = (w/4)*blocksize. */
     u32 blkrow  = dxt ? tl.row_bytes : 0;
@@ -6910,6 +6927,106 @@ static void guest_fb_present(u32 fi)
     s_d3d.cmd_list->lpVtbl->ResourceBarrier(s_d3d.cmd_list, 1, &gb);
 }
 
+/* SCANOUT_FB=0 disables. Automatic CPU-blit scanout fallback: when the frame
+ * recorded no RSX work at all (s_dbg_last_draws == 0) but the flip names a
+ * registered VRAM display buffer, the title renders on the CPU and writes its
+ * display buffer straight into guest VRAM (TanakaDOOM-cGcm: software 320x200
+ * renderer, zero RSX commands, ever). The normal path presents a never-rendered
+ * surface = black. Copy the guest bytes to the backbuffer instead,
+ * A,R,G,B -> R,G,B,A (the guest is big-endian; its 32-bit pixels land as
+ * A,R,G,B bytes -- verified against RPCS3 on TanakaDOOM: byte-as-is reads
+ * alpha as red, R/B swap reads blue as red). Skipped when
+ * GCM_GUEST_FB is set (that debug path pins its own fixed offset). */
+static void scanout_auto_present(u32 fi)
+{
+    static int on = -1;
+    if (on < 0) {
+        const char* e = getenv("SCANOUT_FB");
+        on = !(e && e[0] == '0') && !getenv("GCM_GUEST_FB");
+    }
+    if (!on || s_dbg_last_draws != 0) return;
+    /* The display-buffer registry that matters is cellGcmSys's own: the
+     * ticker-driven backend path never brings the draw engine up, so the
+     * engine's table stays empty. cellGcm tracks the buffer the current flip
+     * names (updated on every SetFlip path). */
+    extern int cellGcm_current_scanout(u32*, u32*, u32*, u32*);
+    u32 off = 0, gpitch = 0, gw = 0, gh = 0;
+    const int got = cellGcm_current_scanout(&off, &gpitch, &gw, &gh);
+    { static int dbg = -1;
+      if (dbg < 0) dbg = getenv("SCANOUT_FB_DBG") ? 1 : 0;
+      if (dbg) { static int n = 0;
+                 if (n < 12) { n++;
+                     fprintf(stderr, "[scanout-fb] last_draws=%u got=%d "
+                                     "off=0x%X pitch=%u %ux%u\n",
+                             s_dbg_last_draws, got, off, gpitch, gw, gh); } } }
+    if (!got || !gpitch || !gw || !gh)
+        return;
+    extern u8* vm_base;
+    if (!vm_base) return;
+    const u32 up_pitch = (gw * 4u + 255u) & ~255u;   /* 256-byte rows */
+    static ID3D12Resource* up = NULL;
+    static u32 up_w = 0, up_h = 0;
+    if (!up || up_w != gw || up_h != gh) {
+        if (up) { up->lpVtbl->Release(up); up = NULL; }
+        D3D12_HEAP_PROPERTIES hp = {0}; hp.Type = D3D12_HEAP_TYPE_UPLOAD;
+        D3D12_RESOURCE_DESC bd = {0};
+        bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        bd.Width  = (u64)up_pitch * gh; bd.Height = 1;
+        bd.DepthOrArraySize = 1; bd.MipLevels = 1;
+        bd.Format = DXGI_FORMAT_UNKNOWN; bd.SampleDesc.Count = 1;
+        bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        if (FAILED(s_d3d.device->lpVtbl->CreateCommittedResource(
+                s_d3d.device, &hp, D3D12_HEAP_FLAG_NONE, &bd,
+                D3D12_RESOURCE_STATE_GENERIC_READ, NULL,
+                &IID_ID3D12Resource, (void**)&up)))
+            return;
+        up_w = gw; up_h = gh;
+    }
+    /* RSX local memory is mapped at guest 0xC0000000. The guest is a
+     * big-endian PPC title: its 32-bit pixels land as A,R,G,B bytes, so
+     * route R,G,B to the backbuffer and force alpha (verified against
+     * RPCS3: byte-as-is copy reads alpha as red; a R/B swap reads blue
+     * as red -- TanakaDOOM title screen). */
+    { const u8* srow = vm_base + 0xC0000000u + off;
+      void* m = NULL; D3D12_RANGE nr = {0, 0};
+      if (FAILED(up->lpVtbl->Map(up, 0, &nr, &m)) || !m) return;
+      for (u32 y = 0; y < gh; y++) {
+          const u8* s = srow + (size_t)y * gpitch;
+          u8* dp = (u8*)m + (size_t)y * up_pitch;
+          for (u32 x = 0; x < gw; x++) {
+              dp[x*4+0] = s[x*4+1];
+              dp[x*4+1] = s[x*4+2];
+              dp[x*4+2] = s[x*4+3];
+              dp[x*4+3] = 0xFF;
+          }
+      }
+      D3D12_RANGE wr = {0, (SIZE_T)up_pitch * gh};
+      up->lpVtbl->Unmap(up, 0, &wr); }
+
+    D3D12_RESOURCE_BARRIER gb = {0};
+    gb.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    gb.Transition.pResource   = s_d3d.render_targets[fi];
+    gb.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    gb.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    gb.Transition.StateAfter  = D3D12_RESOURCE_STATE_COPY_DEST;
+    s_d3d.cmd_list->lpVtbl->ResourceBarrier(s_d3d.cmd_list, 1, &gb);
+
+    D3D12_TEXTURE_COPY_LOCATION dl = {0}, sl = {0};
+    dl.pResource = s_d3d.render_targets[fi];
+    dl.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX; dl.SubresourceIndex = 0;
+    sl.pResource = up; sl.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    sl.PlacedFootprint.Offset = 0;
+    sl.PlacedFootprint.Footprint.Format   = DXGI_FORMAT_R8G8B8A8_UNORM;
+    sl.PlacedFootprint.Footprint.Width    = gw;
+    sl.PlacedFootprint.Footprint.Height   = gh;
+    sl.PlacedFootprint.Footprint.Depth    = 1;
+    sl.PlacedFootprint.Footprint.RowPitch = up_pitch;
+    s_d3d.cmd_list->lpVtbl->CopyTextureRegion(s_d3d.cmd_list, &dl, 0, 0, 0, &sl, NULL);
+
+    gb.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    gb.Transition.StateAfter  = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    s_d3d.cmd_list->lpVtbl->ResourceBarrier(s_d3d.cmd_list, 1, &gb);
+}
 
 static void render_frame_impl(void)
 {
@@ -8380,6 +8497,17 @@ static void render_frame_impl(void)
     if (s_d3d.dump_skip_left > 0 && s_d3d.dump_frames_left > 0) s_d3d.dump_skip_left--;
 skip_dump_consider: ;
     guest_fb_present(fi);
+    /* A guest frame may be drained across several offscreen batches. Only
+     * fall back to CPU scanout on a real flip, after checking all batches in
+     * that frame rather than just the final (often empty) batch. */
+    {
+        static u64 draws_since_present = 0;
+        draws_since_present += s_dbg_last_draws;
+        if (s_present_this_frame) {
+            if (!draws_since_present) scanout_auto_present(fi);
+            draws_since_present = 0;
+        }
+    }
     composite_present(fi);
     /* The guest display surface persists across flips. An empty guest flip
      * still selects the same buffer, but the swapchain rotates to a different
@@ -8840,9 +8968,10 @@ static void d3d12_present(void* ud, u32 buffer_id)
     /* FPS tracking */
     ULONGLONG now = GetTickCount64();
     if (now - s_d3d.last_fps_time >= 1000) {
-        s_d3d.fps = (u32)s_d3d.frame_count; /* rough estimate */
+        static u64 s_last_fps_frame = 0;
+        s_d3d.fps = (u32)(s_d3d.frame_count - s_last_fps_frame);
+        s_last_fps_frame = s_d3d.frame_count;
         s_d3d.last_fps_time = now;
-        s_d3d.frame_count = 0;
     }
 }
 
@@ -9864,6 +9993,37 @@ static u32 upload_strip_vp(const rsx_state* state, u32 first, u32 count, int fan
     return o;
 }
 
+static u32 upload_quad_strip_vp(const rsx_state* state, u32 first, u32 count)
+{
+    extern uint8_t* vm_base;
+    if (!state || !vm_base || !s_d3d.vp_vb_mapped) return 0;
+    if (!state->vertex_attribs[0].enabled) return 0;
+    if (count < 4) return 0;
+    u32 quads = (count - 2) / 2;
+    u32 maxv = (MAX_VERTICES * VP_VERT_STRIDE - s_d3d.vp_vb_offset) / VP_VERT_STRIDE;
+    if (quads * 6 > maxv) quads = maxv / 6;
+    VPSlot* out = (VPSlot*)((u8*)s_d3d.vp_vb_mapped
+        + (u64)s_d3d.vp_parity * MAX_VERTICES * VP_VERT_STRIDE + s_d3d.vp_vb_offset);
+    u32 o = 0;
+    for (u32 q = 0; q < quads; q++) {
+        u32 b = first + q * 2;
+        VPSlot v0[16], v1[16], v2[16], v3[16];
+        read_vp_vertex(state, b + 0, v0);
+        read_vp_vertex(state, b + 1, v1);
+        read_vp_vertex(state, b + 2, v2);
+        read_vp_vertex(state, b + 3, v3);
+        memcpy(&out[(o + 0)*16], v0, sizeof(v0));
+        memcpy(&out[(o + 1)*16], v1, sizeof(v1));
+        memcpy(&out[(o + 2)*16], v3, sizeof(v3));
+        memcpy(&out[(o + 3)*16], v0, sizeof(v0));
+        memcpy(&out[(o + 4)*16], v3, sizeof(v3));
+        memcpy(&out[(o + 5)*16], v2, sizeof(v2));
+        o += 6;
+    }
+    s_d3d.vp_vb_offset += o * VP_VERT_STRIDE;
+    return o;
+}
+
 /* Fetch index k from the guest index array (SET_INDEX_ARRAY_ADDRESS/_DMA:
  * dma [3:0] = location (0 local, 1 main), [7:4] = type (0 u32, 1 u16)).
  * Indices are big-endian in guest memory. */
@@ -10515,7 +10675,8 @@ static void d3d12_draw_arrays(void* ud, u32 primitive, u32 first, u32 count)
      * Geometry already in clip space with no VP -- flOw's injected scene -- must
      * go down the fixed-function passthrough below instead. */
     if ((primitive == RSX_PRIMITIVE_TRIANGLES || primitive == RSX_PRIMITIVE_TRIANGLE_STRIP
-         || primitive == RSX_PRIMITIVE_TRIANGLE_FAN) &&
+         || primitive == RSX_PRIMITIVE_TRIANGLE_FAN || primitive == RSX_PRIMITIVE_POLYGON
+         || primitive == RSX_PRIMITIVE_QUAD_STRIP) &&
         s_d3d.vp_vb_mapped && s_d3d.vp_root_sig &&
         s_d3d.current_rsx_state && s_d3d.current_rsx_state->vp_ucode_bytes >= 16) {
         const int vp_vs_idx = vp_get_vs(s_d3d.current_rsx_state);
@@ -10835,6 +10996,21 @@ static void d3d12_bind_texture(void* ud, u32 unit, const rsx_texture_state* tex)
     u32 height = tex->image_rect & 0xFFFF;
     u32 format = (tex->format >> 8) & 0xFF;
     u32 offset = tex->offset;
+    /* TEXFMT_ALL=1: every distinct texture a draw binds, whatever its format.
+     * TEXFMTDBG logs only the formats this backend binds; a format it drops
+     * (the draw then samples nothing) never shows up there. */
+    { static int ta = -1;
+      if (ta < 0) ta = getenv("TEXFMT_ALL") ? 1 : 0;
+      if (ta) {
+          static u32 seen[256]; static int ns = 0; int known = 0;
+          const u32 key = offset ^ (format << 24) ^ unit;
+          for (int k = 0; k < ns; k++) if (seen[k] == key) known = 1;
+          if (!known && ns < 256) { seen[ns++] = key;
+              fprintf(stderr, "[TEXFMT_ALL] unit=%u fmt=0x%02X %ux%u pitch=%u off=0x%08X "
+                              "remap=0x%08X ctrl0=0x%08X filter=0x%08X%c",
+                      unit, format, (tex->image_rect >> 16) & 0xFFFF, tex->image_rect & 0xFFFF,
+                      tex->control3 & 0xFFFFF, offset, tex->control1, tex->control0, tex->filter, 10); }
+      } }
     /* CUBEDBG=1: NV4097_SET_TEXTURE_FORMAT bit 2 is the cubemap flag, and the
      * line above throws it away with the rest of the low byte. Nothing in this
      * backend handles cube textures, so a cubemap bound for an environment

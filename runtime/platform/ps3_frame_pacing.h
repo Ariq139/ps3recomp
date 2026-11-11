@@ -36,12 +36,14 @@ static inline void ps3_frame_deadline_advance(ps3_frame_deadline* c, uint64_t no
 static inline unsigned ps3_guest_frame_limit(void)
 {
     const char* e = getenv("PS3_FPS_LIMIT");
-    if (!e || !*e) return 30;
+    /* The guest already paces against the 60 Hz vblank clock. A second
+     * 30 Hz cap delays flip completion and halves normal game speed. */
+    if (!e || !*e) return 0;
     char* end = NULL;
     unsigned long value = strtoul(e, &end, 10);
     if (end == e || *end || value > 240) {
-        fprintf(stderr, "[frame-clock] invalid PS3_FPS_LIMIT; using 30 FPS\n");
-        return 30;
+        fprintf(stderr, "[frame-clock] invalid PS3_FPS_LIMIT; using guest pacing\n");
+        return 0;
     }
     return (unsigned)value;
 }

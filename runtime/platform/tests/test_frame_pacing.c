@@ -35,15 +35,15 @@ int main(void)
 #else
 #define SET_LIMIT(v) setenv("PS3_FPS_LIMIT", v, 1)
 #endif
-    SET_LIMIT(""); assert(ps3_guest_frame_limit() == 30);
+    SET_LIMIT(""); assert(ps3_guest_frame_limit() == 0);
     SET_LIMIT("0"); assert(ps3_guest_frame_limit() == 0);
     SET_LIMIT("30"); assert(ps3_guest_frame_limit() == 30);
     SET_LIMIT("60"); assert(ps3_guest_frame_limit() == 60);
     SET_LIMIT("120"); assert(ps3_guest_frame_limit() == 120);
     SET_LIMIT("240"); assert(ps3_guest_frame_limit() == 240);
-    SET_LIMIT("241"); assert(ps3_guest_frame_limit() == 30);
-    SET_LIMIT("-1"); assert(ps3_guest_frame_limit() == 30);
-    SET_LIMIT("30junk"); assert(ps3_guest_frame_limit() == 30);
+    SET_LIMIT("241"); assert(ps3_guest_frame_limit() == 0);
+    SET_LIMIT("-1"); assert(ps3_guest_frame_limit() == 0);
+    SET_LIMIT("30junk"); assert(ps3_guest_frame_limit() == 0);
     puts("frame deadline math: 30/60/120 Hz, jitter, stalls, limit parsing, uncapped PASS");
     return 0;
 }

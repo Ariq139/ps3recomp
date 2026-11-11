@@ -678,16 +678,20 @@ Listed in `requirements.txt` (repository root):
 
 | Package | Purpose |
 |---------|---------|
-| `pyelftools` | ELF binary parsing |
-| `capstone` | Disassembly engine (used alongside custom decoders) |
-| `pycryptodome` | Optional fast AES path in `pkg_extract.py`; `unfself.py` does not decrypt retail SELF files |
-| `toml` | TOML configuration file parsing |
-| `networkx` | Dependency graph construction (optional) |
+| `pycryptodome` | AES/SHA for SELF decryption |
+| `capstone` | PowerPC disassembly |
+| `construct` | Structured binary parsing |
+| `tabulate` | CLI tables |
+| `tomli` | TOML parsing on Python versions before 3.11 |
+| `tqdm` | Progress bars |
 
 ### Installation
 
+Create and activate the virtual environment described in
+[Getting Started](GETTING_STARTED.md#2-create-a-python-environment), then run:
+
 ```bash
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
 ### Python Version

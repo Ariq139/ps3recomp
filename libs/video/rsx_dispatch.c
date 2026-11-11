@@ -211,6 +211,11 @@ void rsx_dispatch_init(rsx_dispatch* rsx, const rsx_dispatch_sink* sink)
 
     /* NV40 reset shade mode is smooth. */
     rsx->regs[M_SHADE_MODE >> 2] = CELL_GCM_SMOOTH;
+    /* NV40 reset ZMIN_MAX_CONTROL (0x1D78) is 1: clip at the near and far
+     * planes, no depth clamp (RPCS3 rsx_methods.cpp; the GCM default of
+     * cellGcmSetZMinMaxControl(TRUE, FALSE, FALSE)). Seeded so a raw 0 means
+     * a title that turned clipping off. */
+    rsx->regs[0x1D78 >> 2] = 0x00000001u;
 
     /* Execution methods */
     mark_class(rsx, M_VERTEX_BEGIN_END,  1, RSX_DSP_CLASS_EXEC);

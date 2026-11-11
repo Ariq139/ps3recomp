@@ -222,291 +222,29 @@ static void pad_rumble_levels(u8 small_on, u8 large, u16* lo, u16* hi)
     *hi = small_on ? 0xFFFFu : 0u;
 }
 
-/* ---------------------------------------------------------------------------
- * XInput backend
- * -----------------------------------------------------------------------*/
-
-#if PAD_BACKEND_XINPUT
-
-/* RPCS3_PROVENANCE_REVIEW_REQUIRED: these optional ScpToolkit-compatible
- * extension layouts were transcribed from RPCS3 xinput_pad_handler.h. They
- * expose analog DualShock pressure buttons and motion sensors that ordinary
- * XInput omits; see the license audit before redistribution. */
-typedef struct {
-    float up, right, down, left;
-    float lx, ly;
-    float l1, l2, l3;
-    float rx, ry;
-    float r1, r2, r3;
-    float triangle, circle, cross, square;
-    float select, start, ps;
-} PadScpExtendedState;
-
-typedef struct {
-    WORD x, z, y, gyro;
-} PadScpAccel;
-
-typedef DWORD (WINAPI *PadXInputGetStateFn)(DWORD, XINPUT_STATE*);
-typedef DWORD (WINAPI *PadXInputSetStateFn)(DWORD, XINPUT_VIBRATION*);
-typedef DWORD (WINAPI *PadXInputGetExtendedFn)(DWORD, PadScpExtendedState*);
-typedef DWORD (WINAPI *PadXInputGetCustomDataFn)(DWORD, DWORD, void*);
-
-static HMODULE s_xinput_library;
-static PadXInputGetStateFn s_xinput_get_state;
-static PadXInputSetStateFn s_xinput_set_state;
-static PadXInputGetExtendedFn s_xinput_get_extended;
-static PadXInputGetCustomDataFn s_xinput_get_custom_data;
-
-/* Deadzone for analog sticks (same as XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE) */
-#define PAD_LEFT_STICK_DEADZONE  XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE
-#define PAD_RIGHT_STICK_DEADZONE XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE
-#define PAD_TRIGGER_THRESHOLD 30
-#define PAD_XINPUT_GUIDE_BUTTON 0x0400
-
-/* XInput is resolved at run time. Only XInputGetState and XInputSetState are
- * called, and XInput9_1_0.dll exports both, so any of the three DLLs serves.
- * Loaded once, from System32 only (not the exe folder, the working directory
- * or PATH), and kept loaded until exit. No DLL, or one without the two entry
- * points, means every slot reads as unplugged. */
-typedef DWORD (WINAPI *pad_xi_get_state_fn)(DWORD, XINPUT_STATE*);
-typedef DWORD (WINAPI *pad_xi_set_state_fn)(DWORD, XINPUT_VIBRATION*);
-static pad_xi_get_state_fn p_xi_get_state;
-static pad_xi_set_state_fn p_xi_set_state;
-static int s_xi_tried;
-
-static int pad_xinput_load(void)
-{
-    static const wchar_t* const names[] = { L"XInput1_4.dll", L"XInput1_3.dll", L"XInput9_1_0.dll" };
-    if (s_xi_tried) return p_xi_get_state != NULL;
-    s_xi_tried = 1;
-    for (size_t k = 0; k < sizeof(names) / sizeof(names[0]); k++) {
-        HMODULE m = LoadLibraryExW(names[k], NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
-        pad_xi_get_state_fn g;
-        pad_xi_set_state_fn st;
-        if (!m) continue;
-        g  = (pad_xi_get_state_fn)(void (*)(void))GetProcAddress(m, "XInputGetState");
-        st = (pad_xi_set_state_fn)(void (*)(void))GetProcAddress(m, "XInputSetState");
-        if (!g || !st) { FreeLibrary(m); continue; }
-        p_xi_get_state = g;
-        p_xi_set_state = st;
-        printf("[cellPad] XInput from %ls\n", names[k]);
-        return 1;
-    }
-    printf("[cellPad] no XInput DLL (XInput1_4, XInput1_3, XInput9_1_0): no XInput pads\n");
-    return 0;
-}
-
-static u8 pad_xinput_stick_to_u8(short raw, short deadzone)
-{
-    float normalized;
-    if (raw > deadzone)
-        normalized = (float)(raw - deadzone) / (float)(32767 - deadzone);
-    else if (raw < -deadzone)
-        normalized = (float)(raw + deadzone) / (float)(32767 - deadzone);
-    else
-        normalized = 0.0f;
-
-    /* Map -1.0..1.0 to 0..255 with center at 128 */
-    int val = (int)(normalized * 127.0f) + 128;
-    if (val < 0) val = 0;
-    if (val > 255) val = 255;
-    return (u8)val;
-}
-
-static u8 pad_scp_pressure_to_u8(float value)
-{
-    if (!(value > 0.0f)) return 0; /* also maps NaN to zero */
-    if (value >= 1.0f) return 255;
-    return (u8)(value * 255.0f + 0.5f);
-}
-
-static u8 pad_scp_axis_to_u8(float value, int invert)
-{
-    if (!(value == value)) value = 0.0f; /* NaN -> stick center */
-    if (value < -1.0f) value = -1.0f;
-    if (value > 1.0f) value = 1.0f;
-    if (invert) value = -value;
-    int result = (int)((value + 1.0f) * 127.5f + 0.5f);
-    if (result < 0) result = 0;
-    if (result > 255) result = 255;
-    return (u8)result;
-}
-
-static void pad_poll_scp_extended(PadHostState* hs, const PadScpExtendedState* scp)
-{
-    const u8 up = pad_scp_pressure_to_u8(scp->up);
-    const u8 right = pad_scp_pressure_to_u8(scp->right);
-    const u8 down = pad_scp_pressure_to_u8(scp->down);
-    const u8 left = pad_scp_pressure_to_u8(scp->left);
-    const u8 l1 = pad_scp_pressure_to_u8(scp->l1);
-    const u8 l2 = pad_scp_pressure_to_u8(scp->l2);
-    const u8 l3 = pad_scp_pressure_to_u8(scp->l3);
-    const u8 r1 = pad_scp_pressure_to_u8(scp->r1);
-    const u8 r2 = pad_scp_pressure_to_u8(scp->r2);
-    const u8 r3 = pad_scp_pressure_to_u8(scp->r3);
-    const u8 triangle = pad_scp_pressure_to_u8(scp->triangle);
-    const u8 circle = pad_scp_pressure_to_u8(scp->circle);
-    const u8 cross = pad_scp_pressure_to_u8(scp->cross);
-    const u8 square = pad_scp_pressure_to_u8(scp->square);
-    const u8 select = pad_scp_pressure_to_u8(scp->select);
-    const u8 start = pad_scp_pressure_to_u8(scp->start);
-
-    hs->buttons = 0;
-    if (select > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_SELECT;
-    if (l3 > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_L3;
-    if (r3 > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_R3;
-    if (start > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_START;
-    if (up > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_UP;
-    if (right > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_RIGHT;
-    if (down > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_DOWN;
-    if (left > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_LEFT;
-    if (l2 > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_L2;
-    if (r2 > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_R2;
-    if (l1 > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_L1;
-    if (r1 > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_R1;
-    if (triangle > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_TRIANGLE;
-    if (circle > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_CIRCLE;
-    if (cross > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_CROSS;
-    if (square > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_SQUARE;
-    hs->ps_button = pad_scp_pressure_to_u8(scp->ps) > PAD_TRIGGER_THRESHOLD;
-
-    hs->analog_lx = pad_scp_axis_to_u8(scp->lx, 0);
-    hs->analog_ly = pad_scp_axis_to_u8(scp->ly, 1);
-    hs->analog_rx = pad_scp_axis_to_u8(scp->rx, 0);
-    hs->analog_ry = pad_scp_axis_to_u8(scp->ry, 1);
-    hs->trigger_l2 = l2;
-    hs->trigger_r2 = r2;
-    hs->press_up = up;
-    hs->press_right = right;
-    hs->press_down = down;
-    hs->press_left = left;
-    hs->press_l1 = l1;
-    hs->press_r1 = r1;
-    hs->press_triangle = triangle;
-    hs->press_circle = circle;
-    hs->press_cross = cross;
-    hs->press_square = square;
-}
-
-#endif /* PAD_BACKEND_XINPUT */
-
-/* Keyboard fallback is used on port 0 only when no host controller is
- * connected. Bindings use SDL-style key names in PAD_KEY_<ACTION>, for example
- * PAD_KEY_CROSS=SDLK_z. Set PAD_NO_KEYBOARD=1 to disable the fallback. */
-#ifdef _WIN32
-static const struct {
-    const char* name;
-    const char* default_key;
-    u16 button;
-} s_pad_keyboard_bindings[] = {
-    { "UP", "Up", CELL_PAD_CTRL_UP },
-    { "RIGHT", "Right", CELL_PAD_CTRL_RIGHT },
-    { "DOWN", "Down", CELL_PAD_CTRL_DOWN },
-    { "LEFT", "Left", CELL_PAD_CTRL_LEFT },
-    { "L2", "1", CELL_PAD_CTRL_L2 },
-    { "R2", "2", CELL_PAD_CTRL_R2 },
-    { "L1", "q", CELL_PAD_CTRL_L1 },
-    { "R1", "w", CELL_PAD_CTRL_R1 },
-    { "TRIANGLE", "s", CELL_PAD_CTRL_TRIANGLE },
-    { "CIRCLE", "x", CELL_PAD_CTRL_CIRCLE },
-    { "CROSS", "z", CELL_PAD_CTRL_CROSS },
-    { "SQUARE", "a", CELL_PAD_CTRL_SQUARE },
-    { "SELECT", "Tab", CELL_PAD_CTRL_SELECT },
-    { "L3", "none", CELL_PAD_CTRL_L3 },
-    { "R3", "none", CELL_PAD_CTRL_R3 },
-    { "START", "Return", CELL_PAD_CTRL_START },
-};
-
-static int s_pad_keyboard_keys[sizeof s_pad_keyboard_bindings / sizeof s_pad_keyboard_bindings[0]];
-static int s_pad_keyboard_keys_initialized;
-
-static int pad_ascii_equal_ci(const char* a, const char* b)
-{
-    if (!a || !b) return 0;
-    while (*a && *b) {
-        unsigned char ca = (unsigned char)*a++;
-        unsigned char cb = (unsigned char)*b++;
-        if (ca >= 'A' && ca <= 'Z') ca = (unsigned char)(ca + ('a' - 'A'));
-        if (cb >= 'A' && cb <= 'Z') cb = (unsigned char)(cb + ('a' - 'A'));
-        if (ca != cb) return 0;
-    }
-    return *a == *b;
-}
-
-static int pad_ascii_starts_with_ci(const char* value, const char* prefix)
-{
-    if (!value || !prefix) return 0;
-    while (*prefix) {
-        unsigned char a = (unsigned char)*value++;
-        unsigned char b = (unsigned char)*prefix++;
-        if (a >= 'A' && a <= 'Z') a = (unsigned char)(a + ('a' - 'A'));
-        if (b >= 'A' && b <= 'Z') b = (unsigned char)(b + ('a' - 'A'));
-        if (a != b) return 0;
-    }
-    return 1;
-}
-
-static int pad_keyboard_virtual_key(const char* name)
-{
-    if (!name || !*name || pad_ascii_equal_ci(name, "none")) return 0;
-    if (pad_ascii_starts_with_ci(name, "SDLK_")) name += 5;
-
-    const size_t length = strlen(name);
-    if (length == 1) {
-        unsigned char ch = (unsigned char)name[0];
-        if (ch >= 'a' && ch <= 'z') return ch - ('a' - 'A');
-        if ((ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9')) return ch;
-    }
-
-    if (length == 4 && pad_ascii_equal_ci(name, "KP_0")) return VK_NUMPAD0;
-    if (length == 4 && pad_ascii_equal_ci(name, "KP_1")) return VK_NUMPAD1;
-    if (length == 4 && pad_ascii_equal_ci(name, "KP_2")) return VK_NUMPAD2;
-    if (length == 4 && pad_ascii_equal_ci(name, "KP_3")) return VK_NUMPAD3;
-    if (length == 4 && pad_ascii_equal_ci(name, "KP_4")) return VK_NUMPAD4;
-    if (length == 4 && pad_ascii_equal_ci(name, "KP_5")) return VK_NUMPAD5;
-    if (length == 4 && pad_ascii_equal_ci(name, "KP_6")) return VK_NUMPAD6;
-    if (length == 4 && pad_ascii_equal_ci(name, "KP_7")) return VK_NUMPAD7;
-    if (length == 4 && pad_ascii_equal_ci(name, "KP_8")) return VK_NUMPAD8;
-    if (length == 4 && pad_ascii_equal_ci(name, "KP_9")) return VK_NUMPAD9;
-    if (length >= 2 && (name[0] == 'F' || name[0] == 'f')) {
-        char* end = NULL;
-        long function_number = strtol(name + 1, &end, 10);
-        if (end != name + 1 && *end == '\0' && function_number >= 1 && function_number <= 24)
-            return VK_F1 + (int)function_number - 1;
-    }
-
-    static const struct { const char* name; int key; } named_keys[] = {
-        { "up", VK_UP }, { "uparrow", VK_UP },
-        { "right", VK_RIGHT }, { "rightarrow", VK_RIGHT },
-        { "down", VK_DOWN }, { "downarrow", VK_DOWN },
-        { "left", VK_LEFT }, { "leftarrow", VK_LEFT },
-        { "return", VK_RETURN }, { "enter", VK_RETURN },
-        { "escape", VK_ESCAPE }, { "esc", VK_ESCAPE },
-        { "tab", VK_TAB }, { "space", VK_SPACE },
-        { "backspace", VK_BACK }, { "delete", VK_DELETE },
-        { "insert", VK_INSERT }, { "home", VK_HOME }, { "end", VK_END },
-        { "pageup", VK_PRIOR }, { "pagedown", VK_NEXT },
-        { "capslock", VK_CAPITAL }, { "numlockclear", VK_NUMLOCK },
-        { "scrolllock", VK_SCROLL }, { "printscreen", VK_SNAPSHOT }, { "pause", VK_PAUSE },
-        { "leftshift", VK_LSHIFT }, { "rightshift", VK_RSHIFT }, { "shift", VK_SHIFT },
-        { "leftctrl", VK_LCONTROL }, { "rightctrl", VK_RCONTROL }, { "ctrl", VK_CONTROL },
-        { "leftalt", VK_LMENU }, { "rightalt", VK_RMENU }, { "alt", VK_MENU },
-        { "minus", VK_OEM_MINUS }, { "equals", VK_OEM_PLUS },
-        { "leftbracket", VK_OEM_4 }, { "rightbracket", VK_OEM_6 },
-        { "backslash", VK_OEM_5 }, { "semicolon", VK_OEM_1 },
-        { "apostrophe", VK_OEM_7 }, { "quote", VK_OEM_7 },
-        { "comma", VK_OEM_COMMA }, { "period", VK_OEM_PERIOD },
-        { "slash", VK_OEM_2 }, { "grave", VK_OEM_3 },
-        { "-", VK_OEM_MINUS }, { "=", VK_OEM_PLUS },
-        { "[", VK_OEM_4 }, { "]", VK_OEM_6 }, { "\\", VK_OEM_5 },
-        { ";", VK_OEM_1 }, { "'", VK_OEM_7 }, { ",", VK_OEM_COMMA },
-        { ".", VK_OEM_PERIOD }, { "/", VK_OEM_2 }, { "`", VK_OEM_3 },
-    };
-    for (unsigned i = 0; i < sizeof named_keys / sizeof named_keys[0]; ++i)
-        if (pad_ascii_equal_ci(name, named_keys[i].name)) return named_keys[i].key;
-    return 0;
-}
-
+/* Keyboard fallback for port 0.
+ *
+ * On a machine with no controller plugged in a title gets a pad that is reported
+ * present and never presses anything -- it can be watched but not played. That is
+ * what The Simpsons Arcade Game hit: it reached its attract loop and no input
+ * existed to start a game.
+ *
+ * Only fills in for port 0, only when the backend found no controller there, so a
+ * real controller always wins and nothing changes for a port that has one. Keys
+ * are read only while a window of THIS process is in the foreground, so typing in
+ * another application does not drive the game. Set PAD_NO_KEYBOARD=1 to
+ * disable it entirely.
+ *
+ * Arrows = d-pad, Z/X/A/S = cross/circle/square/triangle, Q/W = L1/R1,
+ * 1/2 = L2/R2, Enter = START, Tab = SELECT. The left stick mirrors the d-pad
+ * so a title that reads the stick instead is playable too.
+ *
+ * Where the keys come from: GetAsyncKeyState with the XInput backend; on macOS
+ * CGEventSourceKeyState, which needs no event tap and no window; elsewhere SDL's
+ * keyboard state, which is kept current by whoever pumps SDL's events (in
+ * practice the window of the video backend). PS3RECOMP_PAD_KEYBOARD_SDL selects
+ * the SDL source on macOS too, which is how the keyboard test is built. */
+#if defined(_WIN32) && !defined(PS3RECOMP_PAD_KEYBOARD_SDL)
 static int pad_host_window_focused(void)
 {
     HWND fg = GetForegroundWindow();
@@ -515,47 +253,118 @@ static int pad_host_window_focused(void)
     GetWindowThreadProcessId(fg, &pid);
     return pid == GetCurrentProcessId();
 }
+static int pad_key_down(int key) { return (GetAsyncKeyState(key) & 0x8000) != 0; }
+#define PADKEY_UP VK_UP
+#define PADKEY_DOWN VK_DOWN
+#define PADKEY_LEFT VK_LEFT
+#define PADKEY_RIGHT VK_RIGHT
+#define PADKEY_Z 'Z'
+#define PADKEY_X 'X'
+#define PADKEY_A 'A'
+#define PADKEY_S 'S'
+#define PADKEY_Q 'Q'
+#define PADKEY_W 'W'
+#define PADKEY_1 '1'
+#define PADKEY_2 '2'
+#define PADKEY_RETURN VK_RETURN
+#define PADKEY_TAB VK_TAB
+#elif defined(__APPLE__) && !defined(PS3RECOMP_PAD_KEYBOARD_SDL)
+/* macOS: virtual key codes (Carbon HIToolbox/Events.h kVK_*), polled with CGEventSourceKeyState,
+ * which needs no event tap and no window. "Focused" is NSApplication.isActive of this process,
+ * queried through the Objective-C runtime so this file stays plain C. */
+/* The system headers are not included on purpose: ApplicationServices / objc.h clash with this
+ * project's own `bool` and GetCurrentThread/GetCurrentProcess names, so the three entry points
+ * are declared by hand (CGKeyCode is uint16_t, kCGEventSourceStateCombinedSessionState is 0). */
+extern unsigned char CGEventSourceKeyState(int stateID, unsigned short key);
+extern void* objc_getClass(const char* name);
+extern void* sel_registerName(const char* name);
+extern void objc_msgSend(void);
+static int pad_host_window_focused(void)
+{
+    void* cls = objc_getClass("NSApplication");
+    if (!cls) return 0;
+    void* app = ((void* (*)(void*, void*))objc_msgSend)(cls, sel_registerName("sharedApplication"));
+    return app && ((signed char (*)(void*, void*))objc_msgSend)(app, sel_registerName("isActive"));
+}
+static int pad_key_down(int key)
+{
+    return CGEventSourceKeyState(0, (unsigned short)key) != 0;
+}
+#define PADKEY_UP 126
+#define PADKEY_DOWN 125
+#define PADKEY_LEFT 123
+#define PADKEY_RIGHT 124
+#define PADKEY_Z 6
+#define PADKEY_X 7
+#define PADKEY_A 0
+#define PADKEY_S 1
+#define PADKEY_Q 12
+#define PADKEY_W 13
+#define PADKEY_1 18
+#define PADKEY_2 19
+#define PADKEY_RETURN 36
+#define PADKEY_TAB 48
+#elif PAD_BACKEND_SDL2
+/* Everywhere else the keyboard is SDL's: scancodes are physical keys, like the macOS codes above. The state is kept
+ * current by whoever pumps SDL's events (the window of the RSX backend); without a video subsystem nothing is ever
+ * pressed. "Focused" is that some window of this process has the keyboard focus. */
+static int pad_host_window_focused(void)
+{
+    return SDL_GetKeyboardFocus() != NULL;
+}
+static int pad_key_down(int key)
+{
+    return SDL_GetKeyboardState(NULL)[key] != 0;
+}
+#define PADKEY_UP SDL_SCANCODE_UP
+#define PADKEY_DOWN SDL_SCANCODE_DOWN
+#define PADKEY_LEFT SDL_SCANCODE_LEFT
+#define PADKEY_RIGHT SDL_SCANCODE_RIGHT
+#define PADKEY_Z SDL_SCANCODE_Z
+#define PADKEY_X SDL_SCANCODE_X
+#define PADKEY_A SDL_SCANCODE_A
+#define PADKEY_S SDL_SCANCODE_S
+#define PADKEY_Q SDL_SCANCODE_Q
+#define PADKEY_W SDL_SCANCODE_W
+#define PADKEY_1 SDL_SCANCODE_1
+#define PADKEY_2 SDL_SCANCODE_2
+#define PADKEY_RETURN SDL_SCANCODE_RETURN
+#define PADKEY_TAB SDL_SCANCODE_TAB
+#endif
 
 static void pad_poll_keyboard(void)
 {
     static int off = -1;
-    if (off < 0) {
-        const char* disabled = getenv("PAD_NO_KEYBOARD");
-        off = disabled && *disabled && strcmp(disabled, "0") != 0 &&
-              !pad_ascii_equal_ci(disabled, "false") && !pad_ascii_equal_ci(disabled, "off")
-            ? 1 : 0;
-    }
+    if (off < 0) off = getenv("PAD_NO_KEYBOARD") ? 1 : 0;
     if (off) return;
-
-    if (!s_pad_keyboard_keys_initialized) {
-        for (unsigned i = 0; i < sizeof s_pad_keyboard_bindings / sizeof s_pad_keyboard_bindings[0]; ++i) {
-            char variable[40];
-            snprintf(variable, sizeof variable, "PAD_KEY_%s", s_pad_keyboard_bindings[i].name);
-            const char* key_name = getenv(variable);
-            if (!key_name || !*key_name) key_name = s_pad_keyboard_bindings[i].default_key;
-            s_pad_keyboard_keys[i] = pad_keyboard_virtual_key(key_name);
-        }
-        s_pad_keyboard_keys_initialized = 1;
-    }
 
     PadHostState* hs = &s_host_state[0];
     if (!pad_host_window_focused()) {
         /* Release everything on focus loss, or a key held while alt-tabbing
          * would stay down forever. */
-        pad_reset_host_state(hs);
+        hs->buttons = 0;
+        hs->analog_lx = hs->analog_ly = 128;
+        hs->analog_rx = hs->analog_ry = 128;
         hs->connected = 1;
         return;
     }
 
+    static const struct { int vk; u16 btn; } map[] = {
+        { PADKEY_UP,     CELL_PAD_CTRL_UP },      { PADKEY_DOWN,  CELL_PAD_CTRL_DOWN },
+        { PADKEY_LEFT,   CELL_PAD_CTRL_LEFT },    { PADKEY_RIGHT, CELL_PAD_CTRL_RIGHT },
+        { PADKEY_Z,      CELL_PAD_CTRL_CROSS },   { PADKEY_X,     CELL_PAD_CTRL_CIRCLE },
+        { PADKEY_A,      CELL_PAD_CTRL_SQUARE },  { PADKEY_S,     CELL_PAD_CTRL_TRIANGLE },
+        { PADKEY_Q,      CELL_PAD_CTRL_L1 },      { PADKEY_W,     CELL_PAD_CTRL_R1 },
+        { PADKEY_1,      CELL_PAD_CTRL_L2 },      { PADKEY_2,     CELL_PAD_CTRL_R2 },
+        { PADKEY_RETURN, CELL_PAD_CTRL_START },   { PADKEY_TAB,   CELL_PAD_CTRL_SELECT },
+    };
+
     u16 btns = 0;
-    for (unsigned i = 0; i < sizeof s_pad_keyboard_bindings / sizeof s_pad_keyboard_bindings[0]; ++i)
-        if (s_pad_keyboard_keys[i] && (GetAsyncKeyState(s_pad_keyboard_keys[i]) & 0x8000))
-            btns |= s_pad_keyboard_bindings[i].button;
+    for (unsigned i = 0; i < sizeof map / sizeof map[0]; i++)
+        if (pad_key_down(map[i].vk)) btns |= map[i].btn;
 
     hs->buttons   = btns;
-    hs->ps_button = 0;
     hs->connected = 1;
-    hs->keyboard_fallback = 1;
     hs->analog_lx = (u8)((btns & CELL_PAD_CTRL_LEFT) ? 0 :
                          (btns & CELL_PAD_CTRL_RIGHT) ? 255 : 128);
     hs->analog_ly = (u8)((btns & CELL_PAD_CTRL_UP) ? 0 :
@@ -563,29 +372,17 @@ static void pad_poll_keyboard(void)
     hs->analog_rx = hs->analog_ry = 128;
     hs->trigger_l2 = (u8)((btns & CELL_PAD_CTRL_L2) ? 255 : 0);
     hs->trigger_r2 = (u8)((btns & CELL_PAD_CTRL_R2) ? 255 : 0);
-    hs->press_up = (u8)((btns & CELL_PAD_CTRL_UP) ? 255 : 0);
-    hs->press_right = (u8)((btns & CELL_PAD_CTRL_RIGHT) ? 255 : 0);
-    hs->press_down = (u8)((btns & CELL_PAD_CTRL_DOWN) ? 255 : 0);
-    hs->press_left = (u8)((btns & CELL_PAD_CTRL_LEFT) ? 255 : 0);
-    hs->press_l1 = (u8)((btns & CELL_PAD_CTRL_L1) ? 255 : 0);
-    hs->press_r1 = (u8)((btns & CELL_PAD_CTRL_R1) ? 255 : 0);
-    hs->press_triangle = (u8)((btns & CELL_PAD_CTRL_TRIANGLE) ? 255 : 0);
-    hs->press_circle = (u8)((btns & CELL_PAD_CTRL_CIRCLE) ? 255 : 0);
-    hs->press_cross = (u8)((btns & CELL_PAD_CTRL_CROSS) ? 255 : 0);
-    hs->press_square = (u8)((btns & CELL_PAD_CTRL_SQUARE) ? 255 : 0);
 
     { static int said = 0;
       if (!said && btns) { said = 1;
-          printf("[cellPad] keyboard fallback active on port 0 (no XInput device)\n");
+          printf("[cellPad] keyboard fallback active on port 0 (no controller)\n");
           fflush(stdout); } }
 }
-#endif
 
-/* Controller button remapping is applied after a backend has normalized its
- * layout to PS3 actions. A means Cross on Xbox and DualSense, B means Circle,
- * X means Square, and Y means Triangle. SDL GameController uses that same
- * standard layout for supported devices. PAD_MAP_CROSS=B, for example, makes
- * the physical B/Circle button send PS3 Cross. */
+/* ---------------------------------------------------------------------------
+ * XInput backend
+ * -----------------------------------------------------------------------*/
+
 static const struct {
     const char* name;
     u16 button;
@@ -734,6 +531,171 @@ static void pad_apply_controller_mapping(PadHostState* hs)
 
 #if PAD_BACKEND_XINPUT
 
+/* RPCS3_PROVENANCE_REVIEW_REQUIRED: these optional ScpToolkit-compatible
+ * extension layouts were transcribed from RPCS3 xinput_pad_handler.h. They
+ * expose analog DualShock pressure buttons and motion sensors that ordinary
+ * XInput omits; see the license audit before redistribution. */
+typedef struct {
+    float up, right, down, left;
+    float lx, ly;
+    float l1, l2, l3;
+    float rx, ry;
+    float r1, r2, r3;
+    float triangle, circle, cross, square;
+    float select, start, ps;
+} PadScpExtendedState;
+
+typedef struct {
+    WORD x, z, y, gyro;
+} PadScpAccel;
+
+typedef DWORD (WINAPI *PadXInputGetStateFn)(DWORD, XINPUT_STATE*);
+typedef DWORD (WINAPI *PadXInputSetStateFn)(DWORD, XINPUT_VIBRATION*);
+typedef DWORD (WINAPI *PadXInputGetExtendedFn)(DWORD, PadScpExtendedState*);
+typedef DWORD (WINAPI *PadXInputGetCustomDataFn)(DWORD, DWORD, void*);
+
+static HMODULE s_xinput_library;
+static PadXInputGetStateFn s_xinput_get_state;
+static PadXInputSetStateFn s_xinput_set_state;
+static PadXInputGetExtendedFn s_xinput_get_extended;
+static PadXInputGetCustomDataFn s_xinput_get_custom_data;
+
+/* Deadzone for analog sticks (same as XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE) */
+#define PAD_LEFT_STICK_DEADZONE  XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE
+#define PAD_RIGHT_STICK_DEADZONE XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE
+#define PAD_TRIGGER_THRESHOLD 30
+#define PAD_XINPUT_GUIDE_BUTTON 0x0400
+
+/* XInput is resolved at run time. Only XInputGetState and XInputSetState are
+ * called, and XInput9_1_0.dll exports both, so any of the three DLLs serves.
+ * Loaded once, from System32 only (not the exe folder, the working directory
+ * or PATH), and kept loaded until exit. No DLL, or one without the two entry
+ * points, means every slot reads as unplugged. */
+typedef DWORD (WINAPI *pad_xi_get_state_fn)(DWORD, XINPUT_STATE*);
+typedef DWORD (WINAPI *pad_xi_set_state_fn)(DWORD, XINPUT_VIBRATION*);
+static pad_xi_get_state_fn p_xi_get_state;
+static pad_xi_set_state_fn p_xi_set_state;
+static int s_xi_tried;
+
+static int pad_xinput_load(void)
+{
+    static const wchar_t* const names[] = { L"XInput1_4.dll", L"XInput1_3.dll", L"XInput9_1_0.dll" };
+    if (s_xi_tried) return p_xi_get_state != NULL;
+    s_xi_tried = 1;
+    for (size_t k = 0; k < sizeof(names) / sizeof(names[0]); k++) {
+        HMODULE m = LoadLibraryExW(names[k], NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+        pad_xi_get_state_fn g;
+        pad_xi_set_state_fn st;
+        if (!m) continue;
+        g  = (pad_xi_get_state_fn)(void (*)(void))GetProcAddress(m, "XInputGetState");
+        st = (pad_xi_set_state_fn)(void (*)(void))GetProcAddress(m, "XInputSetState");
+        if (!g || !st) { FreeLibrary(m); continue; }
+        p_xi_get_state = g;
+        p_xi_set_state = st;
+        s_xinput_library = m;
+        s_xinput_get_state = g;
+        s_xinput_set_state = st;
+        s_xinput_get_extended = (PadXInputGetExtendedFn)(void (*)(void))GetProcAddress(m, "XInputGetExtended");
+        s_xinput_get_custom_data = (PadXInputGetCustomDataFn)(void (*)(void))GetProcAddress(m, "XInputGetCustomData");
+        printf("[cellPad] XInput from %ls\n", names[k]);
+        return 1;
+    }
+    printf("[cellPad] no XInput DLL (XInput1_4, XInput1_3, XInput9_1_0): no XInput pads\n");
+    return 0;
+}
+
+static u8 pad_xinput_stick_to_u8(short raw, short deadzone)
+{
+    float normalized;
+    if (raw > deadzone)
+        normalized = (float)(raw - deadzone) / (float)(32767 - deadzone);
+    else if (raw < -deadzone)
+        normalized = (float)(raw + deadzone) / (float)(32767 - deadzone);
+    else
+        normalized = 0.0f;
+
+    /* Map -1.0..1.0 to 0..255 with center at 128 */
+    int val = (int)(normalized * 127.0f) + 128;
+    if (val < 0) val = 0;
+    if (val > 255) val = 255;
+    return (u8)val;
+}
+
+static u8 pad_scp_pressure_to_u8(float value)
+{
+    if (!(value > 0.0f)) return 0; /* also maps NaN to zero */
+    if (value >= 1.0f) return 255;
+    return (u8)(value * 255.0f + 0.5f);
+}
+
+static u8 pad_scp_axis_to_u8(float value, int invert)
+{
+    if (!(value == value)) value = 0.0f; /* NaN -> stick center */
+    if (value < -1.0f) value = -1.0f;
+    if (value > 1.0f) value = 1.0f;
+    if (invert) value = -value;
+    int result = (int)((value + 1.0f) * 127.5f + 0.5f);
+    if (result < 0) result = 0;
+    if (result > 255) result = 255;
+    return (u8)result;
+}
+
+static void pad_poll_scp_extended(PadHostState* hs, const PadScpExtendedState* scp)
+{
+    const u8 up = pad_scp_pressure_to_u8(scp->up);
+    const u8 right = pad_scp_pressure_to_u8(scp->right);
+    const u8 down = pad_scp_pressure_to_u8(scp->down);
+    const u8 left = pad_scp_pressure_to_u8(scp->left);
+    const u8 l1 = pad_scp_pressure_to_u8(scp->l1);
+    const u8 l2 = pad_scp_pressure_to_u8(scp->l2);
+    const u8 l3 = pad_scp_pressure_to_u8(scp->l3);
+    const u8 r1 = pad_scp_pressure_to_u8(scp->r1);
+    const u8 r2 = pad_scp_pressure_to_u8(scp->r2);
+    const u8 r3 = pad_scp_pressure_to_u8(scp->r3);
+    const u8 triangle = pad_scp_pressure_to_u8(scp->triangle);
+    const u8 circle = pad_scp_pressure_to_u8(scp->circle);
+    const u8 cross = pad_scp_pressure_to_u8(scp->cross);
+    const u8 square = pad_scp_pressure_to_u8(scp->square);
+    const u8 select = pad_scp_pressure_to_u8(scp->select);
+    const u8 start = pad_scp_pressure_to_u8(scp->start);
+
+    hs->buttons = 0;
+    if (select > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_SELECT;
+    if (l3 > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_L3;
+    if (r3 > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_R3;
+    if (start > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_START;
+    if (up > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_UP;
+    if (right > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_RIGHT;
+    if (down > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_DOWN;
+    if (left > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_LEFT;
+    if (l2 > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_L2;
+    if (r2 > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_R2;
+    if (l1 > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_L1;
+    if (r1 > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_R1;
+    if (triangle > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_TRIANGLE;
+    if (circle > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_CIRCLE;
+    if (cross > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_CROSS;
+    if (square > PAD_TRIGGER_THRESHOLD) hs->buttons |= CELL_PAD_CTRL_SQUARE;
+    hs->ps_button = pad_scp_pressure_to_u8(scp->ps) > PAD_TRIGGER_THRESHOLD;
+
+    hs->analog_lx = pad_scp_axis_to_u8(scp->lx, 0);
+    hs->analog_ly = pad_scp_axis_to_u8(scp->ly, 1);
+    hs->analog_rx = pad_scp_axis_to_u8(scp->rx, 0);
+    hs->analog_ry = pad_scp_axis_to_u8(scp->ry, 1);
+    hs->trigger_l2 = l2;
+    hs->trigger_r2 = r2;
+    hs->press_up = up;
+    hs->press_right = right;
+    hs->press_down = down;
+    hs->press_left = left;
+    hs->press_l1 = l1;
+    hs->press_r1 = r1;
+    hs->press_triangle = triangle;
+    hs->press_circle = circle;
+    hs->press_cross = cross;
+    hs->press_square = square;
+}
+
 /* XInputGetState on a slot with nothing plugged in costs about 140 us (2 us on
  * a connected one), and the backend is polled at least once a frame: three
  * empty slots beside one pad were 0.6 ms of every frame on God of War HD's
@@ -856,6 +818,9 @@ static void pad_shutdown_backend(void)
         }
         FreeLibrary(s_xinput_library);
     }
+    p_xi_get_state = NULL;
+    p_xi_set_state = NULL;
+    s_xi_tried = 0;
     s_xinput_library = NULL;
     s_xinput_get_state = NULL;
     s_xinput_set_state = NULL;
@@ -1164,6 +1129,8 @@ static void pad_poll_backend_locked(void)
     for (int i = 0; i < PAD_MAX_HOST_PORTS; ++i)
         any_controller_connected |= s_host_state[i].connected;
     if (!any_controller_connected) pad_poll_keyboard();
+#else
+    if (!s_host_state[0].connected) pad_poll_keyboard();
 #endif
     pad_track_assign();
     pad_unlock();

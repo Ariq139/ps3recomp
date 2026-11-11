@@ -8,14 +8,20 @@ Step-by-step guide to recompiling your first PS3 game.
 
 - **CMake** 3.20 or later: [cmake.org](https://cmake.org/download/)
 - **C/C++ compiler** with C17 and C++20 support:
-  - Windows: Visual Studio 2022 with the **Desktop development with C++** workload. MSVC works; `clang-cl` is the more commonly used compiler for game projects.
-  - Linux: GCC 12+ or Clang 14+
-  - macOS: Xcode 14+ (Apple Clang)
-- **SDL2 development files** on Linux/macOS: required for the runtime's
-  controller and audio backends (`sudo apt install libsdl2-dev` on Debian or
-  Ubuntu; `brew install sdl2` on macOS).
-- **Python** 3.9+: Required for the recompiler tools
-- **Ninja** (recommended): Faster than Make/MSBuild -- `pip install ninja`
+  - Windows: Visual Studio 2022 with clang-cl. Plain `cl` builds the runtime library (see BUILDING.md), but a lifted game needs clang-cl (Step 6)
+  - Linux: GCC or Clang
+  - macOS: Xcode or the Xcode Command Line Tools (Apple Clang)
+  - CI builds with the compilers on GitHub's `windows-latest`, `ubuntu-latest` and `macos-14` runner images; no older compiler version is tested.
+- **Python** 3.10+ (CI uses 3.12): Required for the recompiler tools
+- **Ninja**: Faster than Make/MSBuild and what the commands in this guide use
+- **SDL2** on Linux and macOS: Required for the input and audio backends
+
+On macOS, Homebrew supplies every command-line dependency not included with
+Xcode:
+
+```bash
+brew install cmake ninja python@3.12 sdl2
+```
 
 Prefer not to build from source? Each [release](https://github.com/sp00nznet/ps3recomp/releases/latest) includes a prebuilt SDK bundle per platform (see the README's Downloads paragraph).
 
@@ -27,12 +33,6 @@ Prefer not to build from source? Each [release](https://github.com/sp00nznet/ps3
   - RPCS3's decrypted-ELF dump, or `tools/unfself.py` for an unencrypted
     debug/prototype fSELF (see Step 1)
 
-### Python Dependencies
-
-```bash
-pip install -r requirements.txt   # run from the repository root
-```
-
 ## Installation
 
 ### 1. Clone the Repository
@@ -42,7 +42,37 @@ git clone https://github.com/sp00nznet/ps3recomp.git
 cd ps3recomp
 ```
 
-### 2. Optional: Build the Runtime Library Separately
+### 2. Create a Python Environment
+
+macOS:
+
+```bash
+"$(brew --prefix python@3.12)/bin/python3.12" -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+```
+
+Linux:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+```
+
+Windows PowerShell:
+
+```powershell
+py -3 -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+```
+
+Keep this environment active while running the `python` commands below. It
+also avoids relying on a `python` command that a clean macOS installation does
+not provide.
+
+### 3. Build the Runtime Library
 
 ```bash
 cmake -S . -B build -G Ninja
@@ -66,7 +96,7 @@ runtime from source automatically.
 
 This builds `libps3recomp_runtime.a` (or `ps3recomp_runtime.lib` on Windows), which contains the memory manager, thread manager, and all HLE library stubs.
 
-### 3. Runtime Library Output
+### 4. Verify the Build
 
 The runtime library is under the build directory (`libps3recomp_runtime.a` on
 Linux/macOS, `ps3recomp_runtime.lib` on Windows).
@@ -455,7 +485,9 @@ the loop waits on is never written (see `[HOTREAD]` above).
 
 - The RSX command processor tracks GPU state but needs a rendering backend.
 - Start with the **null backend** (`rsx_null_backend_init()`) to verify command flow.
-- Switch to the **D3D12 backend** (`rsx_d3d12_backend_init()`) for real GPU rendering.
+- Windows uses D3D12, macOS uses Metal, and Linux's Vulkan backend is opt-in.
+- On macOS, verify Metal without a game:
+  `PS3RECOMP_METAL_HEADLESS=1 ./build/ps3recomp_host --draw`.
 - See [RSX_GRAPHICS.md](RSX_GRAPHICS.md) for the full graphics architecture.
 
 ### CMake cannot find a Windows compiler
@@ -472,11 +504,9 @@ the loop waits on is never written (see `[HOTREAD]` above).
 
 ### Audio crackling or silence
 
-The `config.toml` settings below are reference only: nothing reads that file yet.
-
-- Check that `cellAudio` is set to `"hle"` in modules config.
-- Verify the audio backend matches your OS (`wasapi` for Windows, `pulseaudio` for Linux).
-- Increase `buffer_size` to reduce crackling (at the cost of latency).
+The `config.toml` settings are reference only: nothing reads that file yet.
+Windows uses WASAPI; Linux and macOS use SDL2. Check SDL's selected device and
+driver before changing guest-side audio code.
 
 ### Recompiler fails on indirect branches
 
