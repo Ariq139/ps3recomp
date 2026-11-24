@@ -1,4 +1,4 @@
-# ps3recomp
+# ps3recomp — Persona 5 fork
 
 ### *Because the Cell processor deserves a second life*
 
@@ -7,13 +7,14 @@
 
 ## Quick start: from EBOOT to a running port
 
-**Downloads:** each [release](https://github.com/sp00nznet/ps3recomp/releases/latest)
+**Upstream SDK downloads:** each [upstream release](https://github.com/sp00nznet/ps3recomp/releases/latest)
 includes a prebuilt SDK bundle per platform (`ps3recomp-<version>-win-x64.zip`,
 `-mac-arm64.zip`, `-linux-x64.zip`) plus `SHA256SUMS.txt`. A bundle contains the
 runtime library, its headers, the Python dependency manifest and pipeline, and
 the project template with the support sources it builds. Point `PS3RECOMP_DIR`
-at the extracted bundle just as you would at a source checkout. `VERSION.txt`
-inside it says what that platform can and cannot do yet.
+at the extracted bundle just as you would at a source checkout. The Persona 5
+projects are in this fork's source tree. `VERSION.txt` inside the bundle
+says what that platform can and cannot do yet.
 
 > **Prerequisites:** Python 3.10+, CMake 3.20+, Ninja, and a C17/C++20 compiler.
 > On Windows use `clang-cl` from Visual Studio 2022; on Linux use GCC or Clang;
@@ -95,6 +96,26 @@ happens in the open. Good place to ask questions, show a port you are working
 on, or find out what people are stuck on before you duplicate the effort.
 
 ---
+
+## Persona 5 targets in this fork
+
+This is [Ariq139's fork](https://github.com/Ariq139/ps3recomp) of
+[sp00nznet/ps3recomp](https://github.com/sp00nznet/ps3recomp). It keeps the
+general-purpose recompiler and runtime, with two Persona 5 PS3 projects:
+
+| Project | PS3 build | CMake target | Window title |
+|---|---|---|---|
+| [p5_npeb02436](p5_npeb02436) | NPEB02436 release | `P5Npeb02436Recomp` | Persona 5 |
+| [p5_feb16](p5_feb16) | TEST00000 test build | `P5Feb16Recomp` | TEST00000 |
+
+These game ports are still in progress; their presence here is not a claim of
+full playability. The fork includes the projects' existing generated code, but
+does not distribute game EBOOTs or decryption keys. To generate or update a
+lift, prepare a decrypted ELF from your own game copy as described above. On
+Windows, CMake embeds an EBOOT found at the project's
+`game/EBOOT.ELF` path, so the built executable can start without an EBOOT
+command-line argument. Set `PS3_VFS_ROOT` to the directory containing
+`PS3_GAME` if the runner cannot infer the game-data root.
 
 ## What Is This?
 
@@ -368,9 +389,11 @@ We've written extensive docs covering every aspect of the project. Whether you'r
 
 Start with the [quick start at the top](#quick-start-from-eboot-to-a-running-port) to go from a decrypted EBOOT to a running port. See [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) for platform-specific details.
 
-## Game Ports Using ps3recomp
+## Other game ports using ps3recomp
 
-*Status as of 2026-10-12. Each port's own README carries the live detail and the run recipe.*
+The entries below are upstream and community ports, not additional game builds
+in this Persona 5 fork. Status and run instructions belong to each port's own
+repository.
 
 ### In game
 
