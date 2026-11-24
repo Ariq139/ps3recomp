@@ -306,7 +306,7 @@ static int64_t memory_allocate(uint64_t requested, uint32_t flags, uint32_t cid,
     uint32_t size = (uint32_t)rounded;
     uint32_t addr = 0;
     const int32_t result = allocate_guest_range(size, alignment, alignment,
-        SYS_MEM_ALLOC_KIND_MEMORY, 1, 0, cid, &addr);
+        SYS_MEM_ALLOC_KIND_MEMORY, cid == 0, 0, cid, &addr);
     if (result != CELL_OK) return (int64_t)result;
     fprintf(stderr, "[sys_memory] allocate(size=0x%X, flags=0x%X) -> 0x%08X\n", size, flags, addr);
     if (addr_out) write_be32(addr_out, addr);
@@ -351,13 +351,16 @@ int64_t sys_memory_free(ppu_context* ctx)
         if (g_sys_mem_allocs[i].active &&
             g_sys_mem_allocs[i].kind == SYS_MEM_ALLOC_KIND_MEMORY &&
             g_sys_mem_allocs[i].addr == addr) {
-            if (s_total_allocated >= g_sys_mem_allocs[i].size)
-                s_total_allocated -= g_sys_mem_allocs[i].size;
-            else
-                s_total_allocated = 0;
             const int32_t cid = g_sys_mem_allocs[i].container_id;
-            if (cid > 0 && cid <= SYS_MEMORY_CONTAINER_MAX && g_sys_mem_containers[cid - 1].used_size >= g_sys_mem_allocs[i].size)
+            const uint32_t size = g_sys_mem_allocs[i].size;
+            if (cid > 0 && cid <= SYS_MEMORY_CONTAINER_MAX &&
+                g_sys_mem_containers[cid - 1].used_size >= size) {
                 g_sys_mem_containers[cid - 1].used_size -= g_sys_mem_allocs[i].size;
+            } else if (cid == 0 && s_total_allocated >= size) {
+                s_total_allocated -= size;
+            } else if (cid == 0) {
+                s_total_allocated = 0;
+            }
             g_sys_mem_allocs[i].active = 0;
             bump_unlock(); return CELL_OK;
         }
@@ -439,23 +442,34 @@ int64_t sys_memory_get_page_attribute(ppu_context* ctx)
  *
  * r3 = pointer to receive container ID (u32*)
  * r4 = size
+ *
+ * The container's memory is taken out of the default pool here, as LV2 does:
+ * what the title reads back as the default pool's free size drops by it, and
+ * the pool answers ENOMEM when it does not have that much left.
  * -----------------------------------------------------------------------*/
 int64_t sys_memory_container_create(ppu_context* ctx)
 {
     uint32_t id_out_addr = LV2_ARG_PTR(ctx, 0);
     uint32_t size        = LV2_ARG_U32(ctx, 1);
 
+    bump_lock();
     int slot = -1;
     for (int i = 0; i < SYS_MEMORY_CONTAINER_MAX; i++) {
         if (!g_sys_mem_containers[i].active) { slot = i; break; }
     }
-    if (slot < 0)
-        return (int64_t)(int32_t)CELL_EAGAIN;
+    if (slot < 0) {
+        bump_unlock(); return (int64_t)(int32_t)CELL_EAGAIN;
+    }
+    if (size > SYS_MEM_USER_TOTAL - s_total_allocated) {
+        bump_unlock(); return (int64_t)(int32_t)CELL_ENOMEM;
+    }
 
     sys_mem_container_info* c = &g_sys_mem_containers[slot];
     c->active     = 1;
     c->total_size = size;
     c->used_size  = 0;
+    s_total_allocated += size;
+    bump_unlock();
 
     uint32_t container_id = (uint32_t)(slot + 1);
     if (id_out_addr != 0) {
@@ -469,6 +483,10 @@ int64_t sys_memory_container_create(ppu_context* ctx)
  * sys_memory_container_destroy
  *
  * r3 = container_id
+ *
+ * EBUSY while anything is still allocated in it, as on LV2: the slot would be
+ * reused, and freeing that allocation later would charge the new container.
+ * Otherwise its memory goes back to the default pool.
  * -----------------------------------------------------------------------*/
 int64_t sys_memory_container_destroy(ppu_context* ctx)
 {
@@ -477,11 +495,18 @@ int64_t sys_memory_container_destroy(ppu_context* ctx)
     if (container_id == 0 || container_id > SYS_MEMORY_CONTAINER_MAX)
         return (int64_t)(int32_t)CELL_ESRCH;
 
+    bump_lock();
     sys_mem_container_info* c = &g_sys_mem_containers[container_id - 1];
-    if (!c->active)
-        return (int64_t)(int32_t)CELL_ESRCH;
+    if (!c->active) {
+        bump_unlock(); return (int64_t)(int32_t)CELL_ESRCH;
+    }
+    if (c->used_size) {
+        bump_unlock(); return (int64_t)(int32_t)CELL_EBUSY;
+    }
 
     c->active = 0;
+    s_total_allocated -= c->total_size;
+    bump_unlock();
     return CELL_OK;
 }
 

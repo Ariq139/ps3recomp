@@ -415,6 +415,7 @@ my_game/
   config.toml             # Port settings reference
   main.cpp                # Entry point (from template)
   stubs.cpp               # Game-specific overrides
+  guest_arena.h           # 4 GB aligned POSIX guest arena (from template)
   out/                    # ppu_loader.py output (my_game/out/)
     EBOOT.functions.json
     EBOOT.imports.json
