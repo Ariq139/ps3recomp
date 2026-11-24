@@ -1,6 +1,7 @@
 /* Exercise generated NID registration and the real PPU HLE bridge. */
 #include "ppu_context.h"
 #include "ps3emu/guest_call.h"
+#include "../libs/codec/cellSail.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -47,9 +48,11 @@ static void callback(uint32_t opd,uint64_t a,uint64_t b,uint64_t c,uint64_t d,ui
 }
 static unsigned checks;
 #define CHECK(x) do { ++checks; if(!(x)) { std::fprintf(stderr,"FAIL line%d: %s\n",__LINE__,#x);return 1; } } while(0)
-static uint32_t call(uint32_t nid,uint64_t a=0,uint64_t b=0,uint64_t c=0,uint64_t d=0) {
+static uint32_t call(uint32_t nid,uint64_t a=0,uint64_t b=0,uint64_t c=0,
+                     uint64_t d=0,uint64_t e=0,uint64_t f=0) {
     ppu_context ctx{};ctx.gpr[1]=0x8000;ctx.gpr[2]=0x12345678;
     ctx.gpr[3]=a;ctx.gpr[4]=b;ctx.gpr[5]=c;ctx.gpr[6]=d;
+    ctx.gpr[7]=e;ctx.gpr[8]=f;
     ps3_hle_call(nid,&ctx);
     if(ctx.gpr[2]!=0x12345678)std::abort();
     return uint32_t(ctx.gpr[3]);
@@ -61,7 +64,7 @@ int main() {
     static uint8_t memory[0x10000];vm_base=memory;ppu_hle_register_all();g_ps3_guest_caller=callback;
     constexpr uint32_t INIT=0x23654375,BOOT=0xBDF21B0F,CLOSE=0x85BEFFCC,START=0xE535B0D3,STOP=0xEBA8D4EC,DESTROY=0x24F4E900;
     CHECK(ps3_hle_has(INIT));CHECK(ps3_hle_has(BOOT));
-    CHECK(call(INIT,0x1000,0,0x4000,0x4567)==0);
+    CHECK(call(INIT,0x1000,0x8000,0x4000,0x4567,0x8200,0x8400)==0);
     for(uint64_t param : {UINT64_C(0xFEDCBA9876543210),UINT64_C(0),UINT64_C(0x0FEF7800)}) {
         events.clear();CHECK(call(BOOT,0x1000,param)==0);CHECK(events.size()==3);
         CHECK(event_is(0,3,0,1,0));
@@ -78,12 +81,14 @@ int main() {
     }
     events.clear();CHECK(call(CLOSE,0x1000)==0);CHECK(events.size()==3);
     CHECK(event_is(0,3,0,8,0));CHECK(event_is(1,2,3,0,0));CHECK(event_is(2,3,0,2,0));
-    CHECK(call(INIT,0x2000,0,0x5000,0x9876)==0);
+    CHECK(call(INIT,0x2000,0x8000,0x5000,0x9876,0x8200,0x8400)==0);
     events.clear();CHECK(call(BOOT,0x2000,UINT64_C(0x1234567800000001))==0);CHECK(events.size()==3);
     CHECK(event_is(1,2,1,0,UINT64_C(0x1234567800000001),0x5000,0x9876));
     events.clear();CHECK(call(DESTROY,0x1000)==0);CHECK(call(BOOT,0x1000,0x1234)!=0);CHECK(events.empty());
     g_ps3_guest_caller=nullptr;CHECK(call(BOOT,0x2000,0x4321)==0);CHECK(events.empty());
-    g_ps3_guest_caller=callback;CHECK(call(INIT,0x3000,0,0,0x1111)==0);
-    CHECK(call(BOOT,0x3000,0x3333)==0);CHECK(events.empty());
+    g_ps3_guest_caller=callback;
+    CHECK(call(INIT,0x3000,0x8000,0,0x1111,0x8200,0x8400)==
+          static_cast<uint32_t>(static_cast<int32_t>(CELL_SAIL_ERROR_INVALID_ARGUMENT)));
+    CHECK(events.empty());
     std::printf("%u checks PASS\n",checks);return 0;
 }

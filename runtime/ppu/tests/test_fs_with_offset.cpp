@@ -29,6 +29,10 @@ void vm_write64(uint64_t a, uint64_t v) { uint64_t be = __builtin_bswap64(v); me
 void ppu_guest_caller(char* out, size_t n) { if (n) out[0] = 0; }
 void ps3_vfs_ps3game_fallback(char* path, size_t cap) { (void)path; (void)cap; }
 void ydkj_host_bt(const char* tag) { (void)tag; }
+bool ps3recomp_materialize_cpk_event_folder(const char* root) { (void)root; return false; }
+int ps3recomp_resolve_event_editor_path(const char* root, const char* guest,
+                                        char* out, size_t cap)
+{ (void)root; (void)guest; (void)out; (void)cap; return 0; }
 }
 /* ps3_dev_flash_path (runtime/platform), which host_path calls for /dev_flash: the real one, it needs nothing. */
 #include "../../platform/ps3_dev_flash.c"

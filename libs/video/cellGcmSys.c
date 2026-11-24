@@ -1026,7 +1026,7 @@ static void gcm_flip_adaptive_poll(void)
     const u64 now = s_flip_clock();
     FLIP_LOCK();
     const int due = !s_flip_done_any || now - s_flip_done_ns >= GCM_FLIP_PERIOD_NS;
-    const int complete = due && s_flip_status == CELL_GCM_FLIP_STATUS_WAITING && gcm_flip_executed_take();
+    const int complete = due && gcm_flip_executed_take();
     if (complete) { s_flip_tick_seq = s_flip_req_seq; s_flip_done_ns = now; s_flip_done_any = 1; }
     FLIP_UNLOCK();
     if (!complete) return;
@@ -1205,13 +1205,14 @@ void cellGcmTickVBlank(void) { gcm_vblank_count_tick(); GCM_PENDING_SET(1); }
 void cellGcmTickFlip(void)
 {
     if (gcm_flip_adaptive()) { gcm_flip_adaptive_poll(); return; }
-    /* Same rule as cellGcm_request_tick: a flip still ahead of the drain has
-     * not happened yet. */
+    /* The executed event is the completion source. Flip status is guest
+     * visible and may already be DONE while a FIFO flip is owed a callback.
+     * WAITING alone cannot complete a flip still ahead of GET. */
     FLIP_LOCK();
-    const int waiting = s_flip_status == CELL_GCM_FLIP_STATUS_WAITING && gcm_flip_executed_take();
-    if (waiting) { s_flip_tick_seq = s_flip_req_seq; s_last_flip_time = ps3_system_time_us(); }
+    const int complete = gcm_flip_executed_take();
+    if (complete) { s_flip_tick_seq = s_flip_req_seq; s_last_flip_time = ps3_system_time_us(); }
     FLIP_UNLOCK();
-    if (waiting) GCM_PENDING_SET(2);
+    if (complete) GCM_PENDING_SET(2);
 }
 
 /* Drain the game's GCM FIFO into the RSX backend. Called from the present thread

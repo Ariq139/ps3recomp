@@ -11,11 +11,21 @@
 
 /* The fixture has no guest: none of these may be reached on its paths. */
 u8* vm_base; u32 ppu_vm_size, ppu_hle_inject_base;
+u32 g_ww_lo, g_ww_hi;
+int g_resv_store_active;
 static void no_guest(const char* what) { fprintf(stderr, "FAIL fixture reached guest-side %s\n", what); exit(1); }
+void cellMouse_buttonEvent(u32 port, u8 mask, int pressed) { (void)port; (void)mask; (void)pressed; }
+void cellKb_keyEvent(u32 port, u16 keycode, int pressed) { (void)port; (void)keycode; (void)pressed; }
+void cellMouse_wheelEvent(u32 port, s32 wheel) { (void)port; (void)wheel; }
+void cellMouse_tiltEvent(u32 port, s32 tilt) { (void)port; (void)tilt; }
+int cellMouse_isInitialized(void) { return 0; }
+void cellMouse_positionEvent(u32 port, s32 x, s32 y) { (void)port; (void)x; (void)y; }
 CellGcmDisplayInfo* cellGcmGetDisplayBufferByFlipIndex(u32 index) { (void)index; no_guest("display buffers"); return NULL; }
 u32 cellGcmGetCurrentDisplayBufferId(void) { no_guest("display buffer id"); return 0; }
 unsigned cellGcm_flip_request_count(void) { no_guest("flip count"); return 0; }
 int cellGcm_current_scanout(u32* off, u32* pitch, u32* w, u32* h) { (void)off; (void)pitch; (void)w; (void)h; no_guest("scanout"); return 0; }
+s32 cellGcmDisplayBufferIdFromOffset(u32 offset) { (void)offset; no_guest("display offset lookup"); return -1; }
+int cellGcmGetReportValueAtOffset(u32 offset, u32* value) { (void)offset; (void)value; no_guest("report lookup"); return 0; }
 u32 cellGcmResolveOffset(u32 offset) { (void)offset; no_guest("offset"); return 0; }
 u32 cellGcmResolveLocated(int location, u32 offset) { (void)location; (void)offset; no_guest("located offset"); return 0; }
 u32 cellGcmResolveIO(u32 offset) { (void)offset; no_guest("IO offset"); return 0; }
@@ -24,6 +34,11 @@ u32 rsx_find_vram_upload(u32 size) { (void)size; no_guest("vram upload"); return
 void rsx_reset_upload_claims(void) { no_guest("upload claims"); }
 u32 gcm_io_offset_to_ea(u32 offset) { (void)offset; no_guest("IO map"); return 0; }
 void vm_write32(uint32_t a, uint32_t v) { (void)a; (void)v; no_guest("memory write"); }
+void ps3_ww_report_inline(uint32_t addr, uint64_t val, int width) { (void)addr; (void)val; (void)width; }
+void spu_lockline_lock(void) {}
+void spu_lockline_unlock(void) {}
+void spu_coh_notify_write(uint32_t addr) { (void)addr; }
+void ppu_resv_break_store(uint64_t ea) { (void)ea; }
 void ps3_ms(const char* key) { (void)key; }
 unsigned long long ps3_ms_now(void) { return 0; }
 

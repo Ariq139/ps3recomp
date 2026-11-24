@@ -593,6 +593,48 @@ static int is_display_target_key(u32 key);
 static int display_rt_id_from_key(u32 key);
 static u64 s_req_verts = 0, s_req_draws = 0, s_drop_draws = 0;
 static u64 s_drop_vertices = 0, s_drop_input_elements = 0, s_drop_records = 0;
+
+/* Keep the upstream opt-in drop report on this backend too. The renderer has
+ * additional local fallbacks, but early rejection reasons and flip counts are
+ * still useful when diagnosing a black frame. */
+enum { D3D12_DROP_NOT_READY, D3D12_DROP_BAD_COUNT, D3D12_DROP_NO_VP_RESOURCES,
+       D3D12_DROP_PRIM_UNWIRED, D3D12_DROP_UPLOAD_EMPTY, D3D12_DROP_RECORDS_FULL,
+       D3D12_DROP_REASONS };
+static const char* const s_d3d12_drop_names[D3D12_DROP_REASONS] = {
+    "not_ready", "bad_count", "no_vp_resources", "prim_unwired", "upload_empty", "records_full" };
+static struct {
+    u64 calls, drop[D3D12_DROP_REASONS];
+    u64 flips, flips_rendered, flips_deferred;
+    u32 last_display_offset;
+} s_d3d12_stats;
+#define D3D12_DROP(reason) do { s_d3d12_stats.drop[reason]++; return; } while (0)
+
+static void d3d12_print_stats(void)
+{
+    static long every = -1;
+    if (every < 0) {
+        const char* env = getenv("D3D12_DROP_STATS_EVERY");
+        every = env ? atol(env) : 0;
+    }
+    if (every <= 0 || s_d3d12_stats.flips % (u64)every) return;
+
+    u64 dropped = 0;
+    for (int i = 0; i < D3D12_DROP_REASONS; i++) dropped += s_d3d12_stats.drop[i];
+    if (!dropped && !s_d3d12_stats.flips_deferred) return;
+
+    printf("[D3D12 drops] flips=%llu rendered=%llu deferred=%llu last_display_offset=0x%X draw_calls=%llu",
+           (unsigned long long)s_d3d12_stats.flips,
+           (unsigned long long)s_d3d12_stats.flips_rendered,
+           (unsigned long long)s_d3d12_stats.flips_deferred,
+           s_d3d12_stats.last_display_offset,
+           (unsigned long long)s_d3d12_stats.calls);
+    for (int i = 0; i < D3D12_DROP_REASONS; i++)
+        printf(" %s=%llu", s_d3d12_drop_names[i],
+               (unsigned long long)s_d3d12_stats.drop[i]);
+    printf(" vp_guest_fp=0 vp_fallback_ps=0\n");
+    fflush(stdout);
+}
+
 static int d3d12_draw_record_available(void)
 {
     if (s_d3d.draw_count < MAX_DRAWS) {
@@ -601,6 +643,7 @@ static int d3d12_draw_record_available(void)
         return 1;
     }
     s_drop_records++;
+    s_d3d12_stats.drop[D3D12_DROP_RECORDS_FULL]++;
     { static int n = 0;
       if (PS3_LOG_FIRST(n, 8))
           fprintf(stderr, "[DRAWCAP] draw-record capacity %u exhausted; dropped=%llu%c",
@@ -8962,8 +9005,15 @@ static void d3d12_present(void* ud, u32 buffer_id)
             break;
         }
 
+    s_d3d12_stats.flips++;
+    const CellGcmDisplayInfo* display = cellGcmGetDisplayBufferByFlipIndex(buffer_id);
+    s_d3d12_stats.last_display_offset = display ? display->offset : 0;
+    if (s_d3d.initialized && flip_has_display) s_d3d12_stats.flips_rendered++;
+    else if (s_d3d.initialized && s_d3d.draw_count) s_d3d12_stats.flips_deferred++;
+
     if (s_d3d.initialized && flip_has_display)
         render_frame();
+    d3d12_print_stats();
 
     /* FPS tracking */
     ULONGLONG now = GetTickCount64();
@@ -10542,12 +10592,14 @@ static void d3d12_draw_arrays(void* ud, u32 primitive, u32 first, u32 count)
     }
     s_total++;
 
-    if (!s_d3d.pipeline_ready || !s_d3d.vb_mapped) return;
-    if (count == 0) return;
+    s_d3d12_stats.calls++;
+    if (!s_d3d.pipeline_ready || !s_d3d.vb_mapped)
+        D3D12_DROP(D3D12_DROP_NOT_READY);
+    if (count == 0) D3D12_DROP(D3D12_DROP_BAD_COUNT);
     s_req_verts += count; s_req_draws++;
     if (count > MAX_VERTICES) {
         s_drop_input_elements += count; s_drop_draws++;
-        return;
+        D3D12_DROP(D3D12_DROP_BAD_COUNT);
     }
     if (!d3d12_acquire_submission_slot()) return;
 
@@ -10843,14 +10895,16 @@ static void d3d12_draw_indexed_source(void* ud, u32 primitive, u32 first,
                immediate ? "_immediate" : "", primitive, first, count);
         log_count++;
     }
-    if (!s_d3d.pipeline_ready) return;
-    if (count == 0) return;
+    s_d3d12_stats.calls++;
+    if (!s_d3d.pipeline_ready) D3D12_DROP(D3D12_DROP_NOT_READY);
+    if (count == 0) D3D12_DROP(D3D12_DROP_BAD_COUNT);
     s_req_verts += count; s_req_draws++;
     if (count > MAX_VERTICES) {
         s_drop_input_elements += count; s_drop_draws++;
-        return;
+        D3D12_DROP(D3D12_DROP_BAD_COUNT);
     }
-    if (!s_d3d.vp_vb_mapped || !s_d3d.vp_root_sig) return;
+    if (!s_d3d.vp_vb_mapped || !s_d3d.vp_root_sig)
+        D3D12_DROP(D3D12_DROP_NO_VP_RESOURCES);
     if (!d3d12_acquire_submission_slot()) return;
 
     /* Raw GPU attribute fetch and the CPU fallback share triangle-list ordering. */
