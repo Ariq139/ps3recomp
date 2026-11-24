@@ -240,20 +240,6 @@ static int spu_step(spu_context* ctx) {
     case SPU_fma:  DSTC = spu_fma(A,B,T); break;    /* RRR: dest=rc */
     case SPU_fms:  DSTC = spu_fms(A,B,T); break;
     case SPU_fnms: DSTC = spu_fnms(A,B,T); break;
-    /* double precision arithmetic and comparisons (two 64-bit lanes) */
-    case SPU_dfa:    DST = spu_dfa(A,B); break;
-    case SPU_dfs:    DST = spu_dfs(A,B); break;
-    case SPU_dfm:    DST = spu_dfm(A,B); break;
-    case SPU_dfceq:  DST = spu_dfceq(A,B); break;
-    case SPU_dfcmeq: DST = spu_dfcmeq(A,B); break;
-    case SPU_dfcgt:  DST = spu_dfcgt(A,B); break;
-    case SPU_dfcmgt: DST = spu_dfcmgt(A,B); break;
-    case SPU_dftsv:  DST = spu_dftsv(A,I); break;
-    /* DFMA family reads old RT as its third source, then replaces RT. */
-    case SPU_dfma:  DST = spu_dfma(A,B,DST); break;
-    case SPU_dfms:  DST = spu_dfms(A,B,DST); break;
-    case SPU_dfnms: DST = spu_dfnms(A,B,DST); break;
-    case SPU_dfnma: DST = spu_dfnma(A,B,DST); break;
     /* immediate byte/halfword compares */
     case SPU_ceqbi: DST = spu_ceqbi(A,I); break;
     case SPU_cgtbi: DST = spu_cgtbi(A,I); break;
@@ -288,13 +274,6 @@ static int spu_step(spu_context* ctx) {
     /* Scalar channel counts occupy only the preferred word; keep interpreted
      * execution identical to the lifted path (and RPCS3's from32r result). */
     case SPU_rchcnt: DST = spu_pref_u32(spu_rchcnt(ctx, d.ch)); break;
-    /* RPCS3 SPUInterpreter.cpp::MFSPR clears RT because its current model
-     * returns zero for every SPR. Keep interpreted execution consistent with
-     * the existing lifted helper; MTSpr remains ignored in RPCS3 too. */
-    case SPU_mfspr: DST = spu_mfspr(A); break;
-    /* RPCS3's fast SPU interpreter clears the whole RT for FSCRRD and ignores
-     * FSCRWR. The lifted helper already implements the same zero result. */
-    case SPU_fscrrd: DST = spu_zero(); break;
     /* hints / no-ops */
     case SPU_nop: case SPU_lnop: case SPU_sync: case SPU_dsync:
     case SPU_hbr: case SPU_hbra: case SPU_hbrr: case SPU_mtspr:

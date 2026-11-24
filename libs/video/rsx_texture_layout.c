@@ -368,7 +368,6 @@ void rsx_texture_component_remap(u32 control1, u32 rsx_fmt, u8 out[4])
     static const u8 lanes_argb[4] = {3, 0, 1, 2};
     static const u8 lanes_g8b8[4] = {1, 0, 1, 0};
     static const u8 lanes_x16[4] = {0, RSX_REMAP_ONE, 0, RSX_REMAP_ONE};
-    static const u8 lanes_y16x16f[4] = {0, 1, 0, 1};
     static const u8 lanes_r[4] = {0, 0, 0, 0};
     static const u8 lanes_b8[4] = {RSX_REMAP_ONE, 0, 0, 0};
     static const u8 lanes_depth[4] = {0, 0, 0, 0};

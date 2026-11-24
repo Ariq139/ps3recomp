@@ -166,8 +166,10 @@ enum { SAIL_ST_BOOT_TRANSITION = 1, SAIL_ST_CLOSED = 2, SAIL_ST_OPEN_TRANSITION 
  * The call token belongs to completion arg1, not either state notification. */
 static void sail_call(int slot, u32 call, u32 via, u32 to, u64 userParam)
 {
+    s_sail_players[slot].state = (s32)via;
     sail_notify(slot, SAIL_EV_STATE_CHANGED, 0, via, 0);
     sail_notify(slot, SAIL_EV_CALL_COMPLETED, call, 0, userParam);
+    s_sail_players[slot].state = (s32)to;
     sail_notify(slot, SAIL_EV_STATE_CHANGED, 0, to, 0);
 }
 
@@ -227,14 +229,13 @@ s32 cellSailPlayerStart(CellSailPlayerHandle handle, u32 command, u64 userParam)
     const int _sp = sail_player_slot((u32)handle);
     if (_sp < 0)
         return (s32)CELL_SAIL_ERROR_INVALID_ARGUMENT;
-    s_sail_players[_sp].state = CELL_SAIL_PLAYER_STATE_RUNNING;
-    /* Immediately signal finished since we don't play anything */
-    s_sail_players[_sp].state = CELL_SAIL_PLAYER_STATE_FINISHED;
     sail_call(_sp, SAIL_CALL_START, SAIL_ST_START_TRANSITION, SAIL_ST_RUNNING, userParam);
     /* Nothing decodes the stream, so it has already ended: a finished stream
      * drops the player back to OPENED, which is what a title waiting out a
      * movie (Midway's logo AVIs) watches for. */
+    s_sail_players[_sp].state = CELL_SAIL_PLAYER_STATE_STOP_TRANSITION;
     sail_notify(_sp, SAIL_EV_STATE_CHANGED, 0, SAIL_ST_STOP_TRANSITION, 0);
+    s_sail_players[_sp].state = CELL_SAIL_PLAYER_STATE_OPENED;
     sail_notify(_sp, SAIL_EV_STATE_CHANGED, 0, SAIL_ST_OPENED, 0);
     return CELL_OK;
 }
@@ -245,7 +246,6 @@ s32 cellSailPlayerStop(CellSailPlayerHandle handle, u64 userParam)
     const int _sp = sail_player_slot((u32)handle);
     if (_sp < 0)
         return (s32)CELL_SAIL_ERROR_INVALID_ARGUMENT;
-    s_sail_players[_sp].state = CELL_SAIL_PLAYER_STATE_FINISHED;
     sail_call(_sp, SAIL_CALL_STOP, SAIL_ST_STOP_TRANSITION, SAIL_ST_OPENED, userParam);
     return CELL_OK;
 }
