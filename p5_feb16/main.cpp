@@ -223,7 +223,7 @@ static DWORD WINAPI guest_vblank_clock(LPVOID)
 static DWORD WINAPI frame_clock(LPVOID)
 {
     const char* title = getenv("PS3_TITLE");
-    if (!title || !*title) title = "ps3recomp";
+    if (!title || !*title) title = "TEST00000";
 
     const uint32_t window_width = window_dimension_from_environment("RSX_W", WINDOW_WIDTH, 320, 7680);
     const uint32_t window_height = window_dimension_from_environment("RSX_H", WINDOW_HEIGHT, 240, 4320);

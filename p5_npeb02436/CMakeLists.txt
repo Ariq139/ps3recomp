@@ -237,6 +237,11 @@ if(WIN32)
                 "${_sdl2_runtime}"
                 "$<TARGET_FILE_DIR:${PROJECT_NAME}>")
     endif()
+    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/assets/persona5.ico"
+            "$<TARGET_FILE_DIR:${PROJECT_NAME}>/ps3recomp.ico"
+        COMMENT "Staging Persona 5 window icon")
 endif()
 
 include("${PS3RECOMP_DIR}/cmake/PS3RecompBootImage.cmake")
@@ -302,13 +307,6 @@ if(P5_SPU_AVX2)
         set_property(SOURCE ${P5_VECTOR_SOURCE} APPEND PROPERTY
             COMPILE_OPTIONS ${P5_SPU_VECTOR_FLAGS})
     endforeach()
-endif()
-
-# app.rc carries the icon, the version block and the manifest, and needs a
-# resource compiler. Listing it as a source on a host that has none is not a
-# link error, it is a "no rule to make" for a file nothing can consume.
-if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/app.rc")
-    target_sources(${PROJECT_NAME} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/app.rc")
 endif()
 
 target_include_directories(${PROJECT_NAME} PRIVATE

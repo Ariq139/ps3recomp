@@ -1052,6 +1052,31 @@ static LRESULT CALLBACK d3d12_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     return DefWindowProcA(hwnd, msg, wp, lp);
 }
 
+static HICON s_game_icon_large;
+static HICON s_game_icon_small;
+
+static HICON load_game_icon(int width, int height)
+{
+    char icon_path[MAX_PATH];
+    const DWORD length = GetModuleFileNameA(NULL, icon_path,
+                                             (DWORD)sizeof(icon_path));
+    if (length == 0 || length >= sizeof(icon_path)) return NULL;
+
+    char* separator = strrchr(icon_path, '\\');
+    char* forward_separator = strrchr(icon_path, '/');
+    if (forward_separator && (!separator || forward_separator > separator))
+        separator = forward_separator;
+    if (!separator) return NULL;
+
+    static const char icon_file[] = "ps3recomp.ico";
+    const size_t directory_length = (size_t)(separator - icon_path) + 1;
+    if (directory_length + sizeof(icon_file) > sizeof(icon_path)) return NULL;
+    memcpy(icon_path + directory_length, icon_file, sizeof(icon_file));
+
+    return (HICON)LoadImageA(NULL, icon_path, IMAGE_ICON, width, height,
+                             LR_LOADFROMFILE | LR_DEFAULTCOLOR);
+}
+
 static HWND create_window(u32 width, u32 height, const char* title)
 {
     WNDCLASSEXA wc = {0};
@@ -1060,6 +1085,14 @@ static HWND create_window(u32 width, u32 height, const char* title)
     wc.lpfnWndProc = d3d12_wndproc;
     wc.hInstance = GetModuleHandle(NULL);
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    if (!s_game_icon_large)
+        s_game_icon_large = load_game_icon(GetSystemMetrics(SM_CXICON),
+                                           GetSystemMetrics(SM_CYICON));
+    if (!s_game_icon_small)
+        s_game_icon_small = load_game_icon(GetSystemMetrics(SM_CXSMICON),
+                                           GetSystemMetrics(SM_CYSMICON));
+    wc.hIcon = s_game_icon_large;
+    wc.hIconSm = s_game_icon_small;
     wc.lpszClassName = "ps3recomp_d3d12";
     RegisterClassExA(&wc);
 

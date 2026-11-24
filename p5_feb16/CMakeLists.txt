@@ -270,6 +270,11 @@ if(WIN32)
                 "${_sdl2_runtime}"
                 "$<TARGET_FILE_DIR:${PROJECT_NAME}>")
     endif()
+    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/assets/test00000.ico"
+            "$<TARGET_FILE_DIR:${PROJECT_NAME}>/ps3recomp.ico"
+        COMMENT "Staging TEST00000 window icon")
 endif()
 
 include("${PS3RECOMP_DIR}/cmake/PS3RecompBootImage.cmake")
@@ -374,13 +379,6 @@ if(PORT_ENABLE_SPU AND (NOT P5_SPU_MAIN40_LOOP_MODE STREQUAL "OFF" OR
             p5_job_A96F7BFC_spu_func_00000040 0x2DFC 0x2E00 0x3AD0
             "${P5_SPU_MAIN40_LOOP2_MODE}")
     endif()
-endif()
-
-# app.rc carries the icon, the version block and the manifest, and needs a
-# resource compiler. Listing it as a source on a host that has none is not a
-# link error, it is a "no rule to make" for a file nothing can consume.
-if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/app.rc")
-    target_sources(${PROJECT_NAME} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/app.rc")
 endif()
 
 target_include_directories(${PROJECT_NAME} PRIVATE
