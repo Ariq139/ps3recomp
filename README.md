@@ -5,6 +5,90 @@
 > Static recompilation runtime libraries for PlayStation 3 titles.
 > Turn PS3 binaries into native executables. No emulator required.
 
+## Quick start: from EBOOT to a running port
+
+**Downloads:** each [release](https://github.com/sp00nznet/ps3recomp/releases/latest)
+includes a prebuilt SDK bundle per platform (`ps3recomp-<version>-win-x64.zip`,
+`-mac-arm64.zip`, `-linux-x64.zip`) plus `SHA256SUMS.txt`. A bundle contains the
+runtime library, its headers, the Python dependency manifest and pipeline, and
+the project template with the support sources it builds. Point `PS3RECOMP_DIR`
+at the extracted bundle just as you would at a source checkout. `VERSION.txt`
+inside it says what that platform can and cannot do yet.
+
+> **Prerequisites:** Python 3.10+, CMake 3.20+, Ninja, and a C17/C++20 compiler.
+> On Windows use `clang-cl` from Visual Studio 2022; on Linux use GCC or Clang;
+> on macOS use Apple Clang. SDL2 is required on Linux and macOS. On macOS, run
+> `brew install cmake ninja python@3.12 sdl2`.
+
+The recompiler needs a **decrypted PPU ELF**. A retail `USRDIR/EBOOT.BIN` is
+encrypted: run your legally obtained game in RPCS3 and copy the decrypted ELF
+from RPCS3's cache. An unencrypted debug/prototype fSELF can be unpacked with
+`tools/unfself.py`. This repository contains no game files or decryption keys.
+
+The commands below show the Windows path. Start in the repository root, copy
+the template for your port, and prepare its input/output folders:
+
+```powershell
+py -3 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+cmake -E copy_directory templates/project my_game
+New-Item -ItemType Directory -Force my_game/game, my_game/out | Out-Null
+```
+
+Copy the decrypted RPCS3 ELF to `my_game/game/EBOOT.ELF`. For an unencrypted
+debug fSELF, unpack it instead:
+
+```powershell
+python tools/unfself.py 'C:\path\to\EBOOT.BIN' --output my_game/game/EBOOT.ELF
+```
+
+Load the ELF metadata, then lift the PPU code. Keep `--hle-stubs`: it routes
+firmware imports through the runtime's HLE handlers.
+
+```powershell
+python tools/ppu_loader.py my_game/game/EBOOT.ELF -o my_game/out
+python tools/ppu_lifter.py my_game/game/EBOOT.ELF `
+    --functions my_game/out/EBOOT.functions.json `
+    --hle-stubs my_game/out/EBOOT.imports.json `
+    --output my_game/recompiled
+```
+
+For titles with embedded SPU programs, extract and lift them too. Skip this
+step only if the title does not use SPUs:
+
+```powershell
+python tools/extract_spu_images.py my_game/game/EBOOT.ELF --output my_game/spu/images
+python tools/build_spu_workloads.py --images my_game/spu/images `
+    --lifted my_game/spu --out my_game/spu/spu_workloads.c --constructor
+```
+
+Configure and build the template port. CMake generates the HLE registration
+table and, on Windows, embeds `game/EBOOT.ELF` in the executable:
+
+```powershell
+$repoRoot = (Get-Location).Path
+cmake -S my_game -B my_game/build-clang -G Ninja `
+    "-DPS3RECOMP_DIR=$repoRoot" `
+    "-DRECOMP_DIR=$repoRoot/my_game/recompiled" `
+    -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl
+cmake --build my_game/build-clang
+```
+
+Launch it with the ELF path so the runner can also derive its game-file root.
+If the title's files are arranged differently, set `PS3_VFS_ROOT` to the
+directory containing `PS3_GAME`:
+
+```powershell
+$env:PS3_VFS_ROOT = 'D:\path\to\game-root'
+& '.\my_game\build-clang\MyGameRecomp.exe' '.\my_game\game\EBOOT.ELF'
+```
+
+This builds the runner and lifted code; a real port may still need title-specific
+HLE implementations, PRX support, or fixes for unimplemented system calls.
+See [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) for Linux/macOS commands,
+deeper explanations, and the full boot/debugging walkthrough.
+
 **[Join the sp00nznet recomp Discord](https://discord.gg/CRpzGWZFcu)** — the
 community hub for sp00nznet's recomp projects, where ps3recomp development
 happens in the open. Good place to ask questions, show a port you are working
@@ -282,89 +366,7 @@ We've written extensive docs covering every aspect of the project. Whether you'r
 
 ## Getting Started
 
-**Downloads:** each [release](https://github.com/sp00nznet/ps3recomp/releases/latest)
-includes a prebuilt SDK bundle per platform (`ps3recomp-<version>-win-x64.zip`,
-`-mac-arm64.zip`, `-linux-x64.zip`) plus `SHA256SUMS.txt`. A bundle contains the
-runtime library, its headers, the Python dependency manifest and pipeline, and
-the project template with the support sources it builds. Point `PS3RECOMP_DIR`
-at the extracted bundle just as you would at a source checkout. `VERSION.txt`
-inside it says what that platform can and cannot do yet.
-
-> **Prerequisites:** Python 3.10+, CMake 3.20+, Ninja, and a C17/C++20 compiler.
-> On Windows use `clang-cl` from Visual Studio 2022; on Linux use GCC or Clang;
-> on macOS use Apple Clang. SDL2 is required on Linux and macOS. On macOS, run
-> `brew install cmake ninja python@3.12 sdl2`.
-
-### Quick start: from EBOOT to a running port
-
-The recompiler needs a **decrypted PPU ELF**. A retail `USRDIR/EBOOT.BIN` is
-encrypted: run your legally obtained game in RPCS3 and copy the decrypted ELF
-from RPCS3's cache. An unencrypted debug/prototype fSELF can be unpacked with
-`tools/unfself.py`. This repository contains no game files or decryption keys.
-
-The commands below show the Windows path. Start in the repository root, copy
-the template for your port, and prepare its input/output folders:
-
-```powershell
-py -3 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
-cmake -E copy_directory templates/project my_game
-New-Item -ItemType Directory -Force my_game/game, my_game/out | Out-Null
-```
-
-Copy the decrypted RPCS3 ELF to `my_game/game/EBOOT.ELF`. For an unencrypted
-debug fSELF, unpack it instead:
-
-```powershell
-python tools/unfself.py 'C:\path\to\EBOOT.BIN' --output my_game/game/EBOOT.ELF
-```
-
-Load the ELF metadata, then lift the PPU code. Keep `--hle-stubs`: it routes
-firmware imports through the runtime's HLE handlers.
-
-```powershell
-python tools/ppu_loader.py my_game/game/EBOOT.ELF -o my_game/out
-python tools/ppu_lifter.py my_game/game/EBOOT.ELF `
-    --functions my_game/out/EBOOT.functions.json `
-    --hle-stubs my_game/out/EBOOT.imports.json `
-    --output my_game/recompiled
-```
-
-For titles with embedded SPU programs, extract and lift them too. Skip this
-step only if the title does not use SPUs:
-
-```powershell
-python tools/extract_spu_images.py my_game/game/EBOOT.ELF --output my_game/spu/images
-python tools/build_spu_workloads.py --images my_game/spu/images `
-    --lifted my_game/spu --out my_game/spu/spu_workloads.c --constructor
-```
-
-Configure and build the template port. CMake generates the HLE registration
-table and, on Windows, embeds `game/EBOOT.ELF` in the executable:
-
-```powershell
-$repoRoot = (Get-Location).Path
-cmake -S my_game -B my_game/build-clang -G Ninja `
-    "-DPS3RECOMP_DIR=$repoRoot" `
-    "-DRECOMP_DIR=$repoRoot/my_game/recompiled" `
-    -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl
-cmake --build my_game/build-clang
-```
-
-Launch it with the ELF path so the runner can also derive its game-file root.
-If the title's files are arranged differently, set `PS3_VFS_ROOT` to the
-directory containing `PS3_GAME`:
-
-```powershell
-$env:PS3_VFS_ROOT = 'D:\path\to\game-root'
-& '.\my_game\build-clang\MyGameRecomp.exe' '.\my_game\game\EBOOT.ELF'
-```
-
-This builds the runner and lifted code; a real port may still need title-specific
-HLE implementations, PRX support, or fixes for unimplemented system calls.
-See [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) for Linux/macOS commands,
-deeper explanations, and the full boot/debugging walkthrough.
+Start with the [quick start at the top](#quick-start-from-eboot-to-a-running-port) to go from a decrypted EBOOT to a running port. See [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) for platform-specific details.
 
 ## Game Ports Using ps3recomp
 
