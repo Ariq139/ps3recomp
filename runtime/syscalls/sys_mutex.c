@@ -42,22 +42,33 @@ static void mtx_table_unlock(void)
 #endif
 }
 
+/* Independent per-slot lifetime words: readers never contend on the table
+ * lock. Keep these outside the descriptor so memset on create cannot race
+ * an unsuccessful pin. Only table-locked create/destroy change LIVE. */
+#define MTX_LIVE 0x80000000u
+static uint32_t s_lifetime[SYS_MUTEX_MAX];
 sys_mutex_info* sys_mutex_pin(uint32_t id)
 {
     if (!id || id > SYS_MUTEX_MAX) return NULL;
-    mtx_table_lock();
-    sys_mutex_info* m = &g_sys_mutexes[id - 1];
-    if (!m->active) m = NULL;
-    else ++m->refs;
-    mtx_table_unlock();
-    return m;
+    uint32_t* life = &s_lifetime[id - 1];
+    uint32_t old = __atomic_load_n(life, __ATOMIC_ACQUIRE);
+    for (;;) {
+        if (!(old & MTX_LIVE)) {
+            mtx_table_lock();
+            old = __atomic_load_n(life, __ATOMIC_ACQUIRE);
+            mtx_table_unlock();
+            if (!(old & MTX_LIVE)) return NULL;
+            continue;
+        }
+        if (old == UINT32_MAX) return NULL;
+        if (__atomic_compare_exchange_n(life, &old, old + 1, 0,
+                                        __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+            return &g_sys_mutexes[id - 1];
+    }
 }
-
 void sys_mutex_unpin(sys_mutex_info* m)
 {
-    mtx_table_lock();
-    --m->refs;
-    mtx_table_unlock();
+    __atomic_sub_fetch(&s_lifetime[m - g_sys_mutexes], 1, __ATOMIC_ACQ_REL);
 }
 
 static int mtx_find_free(void)
@@ -101,8 +112,6 @@ int64_t sys_mutex_create(ppu_context* ctx)
 
     sys_mutex_info* m = &g_sys_mutexes[slot];
     memset(m, 0, sizeof(*m));
-    m->active = 1;
-
     /* Read attributes from guest memory */
     if (attr_addr != 0) {
         uint8_t* attr_raw = (uint8_t*)vm_to_host(attr_addr);
@@ -130,23 +139,28 @@ int64_t sys_mutex_create(ppu_context* ctx)
         memcpy(m->name, attr_raw + 0x20, 8);
     }
 
-    /* Initialize host mutex */
+    /* Publish only after all native initialization succeeds. */
 #ifdef _WIN32
-    InitializeCriticalSection(&m->cs);
-    m->wait_handle = CreateEventA(NULL, FALSE, TRUE, NULL);
-#else
-    {
-        pthread_mutexattr_t mattr;
-        pthread_mutexattr_init(&mattr);
-        if (m->recursive) {
-            pthread_mutexattr_settype(&mattr, PTHREAD_MUTEX_RECURSIVE);
-        } else {
-            pthread_mutexattr_settype(&mattr, PTHREAD_MUTEX_ERRORCHECK);
-        }
-        pthread_mutex_init(&m->mtx, &mattr);
-        pthread_mutexattr_destroy(&mattr);
+    if (!InitializeCriticalSectionEx(&m->cs, 0, 0)) {
+        mtx_table_unlock(); return (int32_t)CELL_EAGAIN;
     }
+    m->wait_handle = CreateEventA(NULL, FALSE, TRUE, NULL);
+    if (!m->wait_handle) {
+        DeleteCriticalSection(&m->cs);
+        mtx_table_unlock(); return (int32_t)CELL_EAGAIN;
+    }
+#else
+    pthread_mutexattr_t mattr;
+    int rc = pthread_mutexattr_init(&mattr);
+    if (rc) { mtx_table_unlock(); return (int32_t)CELL_EAGAIN; }
+    rc = pthread_mutexattr_settype(&mattr, m->recursive ?
+                                   PTHREAD_MUTEX_RECURSIVE : PTHREAD_MUTEX_ERRORCHECK);
+    if (!rc) rc = pthread_mutex_init(&m->mtx, &mattr);
+    pthread_mutexattr_destroy(&mattr);
+    if (rc) { mtx_table_unlock(); return (int32_t)CELL_EAGAIN; }
 #endif
+    m->active = 1;
+    __atomic_store_n(&s_lifetime[slot], MTX_LIVE, __ATOMIC_RELEASE);
 
     /* Write mutex ID (slot + 1) to guest */
     uint32_t mutex_id = (uint32_t)(slot + 1);
@@ -183,22 +197,25 @@ int64_t sys_mutex_destroy(ppu_context* ctx)
      * and the next sys_mutex_create in the same slot initialised a new one
      * over it: everyone else then used the new mutex and the blocked thread
      * waited on the dead one for good. */
-    if (m->refs || sys_mutex_depth(m) > 0 || __atomic_load_n(&m->waiters, __ATOMIC_SEQ_CST) > 0) {
-        static int n = 0;
-        if (n++ < 16)
-            fprintf(stderr, "[mutex] destroy of mutex %u '%.8s' refused: owner tid=%llu "
-                    "count=%d waiters=%d (EBUSY)\n", mutex_id, m->name,
-                    (unsigned long long)sys_mutex_owner(m), sys_mutex_depth(m),
-                    __atomic_load_n(&m->waiters, __ATOMIC_SEQ_CST));
-        mtx_table_unlock();
-        return (int64_t)(int32_t)CELL_EBUSY;
+    // Close admission only if there are no in-flight operations/conditions.
+    // Ownership can outlast its operation pin; check it after closing.
+    uint32_t expected = MTX_LIVE;
+    if (!__atomic_compare_exchange_n(&s_lifetime[mutex_id - 1], &expected, 0, 0,
+                                     __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        mtx_table_unlock(); return (int32_t)CELL_EBUSY;
     }
-
+    if (sys_mutex_depth(m) > 0 || __atomic_load_n(&m->waiters, __ATOMIC_ACQUIRE)) {
+        __atomic_store_n(&s_lifetime[mutex_id - 1], MTX_LIVE, __ATOMIC_RELEASE);
+        mtx_table_unlock(); return (int32_t)CELL_EBUSY;
+    }
 #ifdef _WIN32
     DeleteCriticalSection(&m->cs);
     if (m->wait_handle) CloseHandle(m->wait_handle);
 #else
-    pthread_mutex_destroy(&m->mtx);
+    if (pthread_mutex_destroy(&m->mtx)) {
+        __atomic_store_n(&s_lifetime[mutex_id - 1], MTX_LIVE, __ATOMIC_RELEASE);
+        mtx_table_unlock(); return (int32_t)CELL_EBUSY;
+    }
 #endif
 
     m->active = 0;
@@ -282,9 +299,10 @@ int64_t sys_mutex_lock(ppu_context* ctx)
     if (!m) return (int64_t)(int32_t)CELL_ESRCH;
 
     uint64_t caller_tid = ctx->thread_id;
+    const sys_mutex_ownership ownership = sys_mutex_snapshot(m);
 
     /* Check for deadlock on non-recursive mutex */
-    if (!m->recursive && sys_mutex_owner(m) == caller_tid && sys_mutex_depth(m) > 0) {
+    if (!m->recursive && ownership.tid == caller_tid && ownership.depth > 0) {
         sys_mutex_unpin(m);
         return (int64_t)(int32_t)CELL_EDEADLK;
     }
@@ -399,6 +417,7 @@ int64_t sys_mutex_trylock(ppu_context* ctx)
     if (!m) return (int64_t)(int32_t)CELL_ESRCH;
 
     uint64_t caller_tid = ctx->thread_id;
+    const sys_mutex_ownership ownership = sys_mutex_snapshot(m);
 
     /* Recursive re-entry. MUST still acquire the host primitive: unlock
      * calls LeaveCriticalSection unconditionally per guest unlock, so every
@@ -409,7 +428,7 @@ int64_t sys_mutex_trylock(ppu_context* ctx)
      * the CS and causes random forever-blocks on later Enters).
      * EnterCriticalSection by the current owner is itself recursive and
      * never blocks, so this is safe and cheap. */
-    if (m->recursive && sys_mutex_owner(m) == caller_tid && sys_mutex_depth(m) > 0) {
+    if (m->recursive && ownership.tid == caller_tid && ownership.depth > 0) {
 #ifdef _WIN32
         EnterCriticalSection(&m->cs);
 #else
@@ -433,7 +452,7 @@ int64_t sys_mutex_trylock(ppu_context* ctx)
      * a CRITICAL_SECTION (and a recursive pthread mutex) is always re-enterable
      * by its owner -- so the guest was told it had taken a second level of a
      * mutex that has none. */
-    if (!m->recursive && sys_mutex_owner(m) == caller_tid && sys_mutex_depth(m) > 0) {
+    if (!m->recursive && ownership.tid == caller_tid && ownership.depth > 0) {
         sys_mutex_unpin(m);
         return (int64_t)(int32_t)CELL_EDEADLK;
     }
@@ -472,8 +491,9 @@ int64_t sys_mutex_unlock(ppu_context* ctx)
     if (!m) return (int64_t)(int32_t)CELL_ESRCH;
 
     uint64_t caller_tid = ctx->thread_id;
+    const sys_mutex_ownership ownership = sys_mutex_snapshot(m);
 
-    if (sys_mutex_owner(m) != caller_tid || sys_mutex_depth(m) <= 0) {
+    if (ownership.tid != caller_tid || ownership.depth <= 0) {
         /* Real lv2 returns EPERM for a non-owner unlock (RPCS3
          * sys_mutex.h's lv2_mutex::try_unlock, oracle, no code copied:
          * "if (it.owner != cpu.id) return CELL_EPERM;"), not a made up
@@ -501,7 +521,7 @@ int64_t sys_mutex_unlock(ppu_context* ctx)
  * -----------------------------------------------------------------------*/
 void sys_mutex_init(lv2_syscall_table* tbl)
 {
-    memset(g_sys_mutexes, 0, sizeof(g_sys_mutexes));
+    /* Static storage is initially empty. Registration does not reset live mutexes. */
 
 
     lv2_syscall_register(tbl, SYS_MUTEX_CREATE,  sys_mutex_create);

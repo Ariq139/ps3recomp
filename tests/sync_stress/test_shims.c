@@ -27,6 +27,8 @@ int lv2_deadline_passed(int64_t deadline)
 }
 
 void ydkj_release_pending_threads(void) {}
+int ppu_thread_exists(uint64_t tid) { return tid >= 1 && tid <= 4; }
+int32_t ppu_thread_priority_snapshot(uint64_t tid) { return tid == 3 ? 100 : 1000; }
 void ppu_thread_note_block(uint64_t tid) { (void)tid; }   /* sys_ppu_thread.c: PS3_PRIO_START */
 
 uint32_t vm_read32(uint64_t addr)

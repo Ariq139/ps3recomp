@@ -86,7 +86,9 @@ int64_t sys_cond_create(ppu_context* ctx)
         if (c->active) continue;
         if (!c->initialized) {
 #ifdef _WIN32
-            InitializeCriticalSection(&c->signal_lock);
+            if (!InitializeCriticalSectionEx(&c->signal_lock, 0, 0)) {
+                table_unlock(); sys_mutex_unpin(m); return (int32_t)CELL_EAGAIN;
+            }
 #else
             int rc = pthread_mutex_init(&c->signal_lock, NULL);
             if (rc) { table_unlock(); sys_mutex_unpin(m); return (int32_t)CELL_EAGAIN; }
@@ -168,7 +170,8 @@ int64_t sys_cond_wait(ppu_context* ctx)
     sys_cond_info* c = acquire_cond(LV2_ARG_U32(ctx, 0));
     if (!c) return (int32_t)CELL_ESRCH;
     sys_mutex_info* m = c->mutex;
-    if (sys_mutex_owner(m) != ctx->thread_id || sys_mutex_depth(m) <= 0) {
+    const sys_mutex_ownership ownership = sys_mutex_snapshot(m);
+    if (ownership.tid != ctx->thread_id || ownership.depth <= 0) {
         cond_unlock(c); return (int32_t)CELL_EPERM;
     }
     struct sys_cond_waiter waiter = {0};
@@ -181,7 +184,7 @@ int64_t sys_cond_wait(ppu_context* ctx)
     struct sys_cond_waiter** tail = &c->waiters;
     while (*tail) tail = &(*tail)->next;
     *tail = &waiter;
-    int depth = sys_mutex_depth(m);
+    int depth = ownership.depth;
     sys_mutex_publish_owner(m, 0, 0);
     for (int i = 0; i < depth; ++i) guest_unlock(m);
 
@@ -245,17 +248,23 @@ static int64_t signal_cond(uint32_t id, int all, int targeted, uint64_t tid)
 {
     sys_cond_info* c = acquire_cond(id);
     if (!c) return (int32_t)CELL_ESRCH;
-    int selected = 0;
+    struct sys_cond_waiter* chosen = NULL;
+    int32_t best_priority = INT32_MAX;
+    const int prioritized = !targeted && !all &&
+        (c->mutex->protocol == SYS_SYNC_PRIORITY || c->mutex->protocol == SYS_SYNC_PRIORITY_INHERIT);
     for (struct sys_cond_waiter* w = c->waiters; w; w = w->next) {
         if (w->signalled || (targeted && w->tid != tid)) continue;
-        w->signalled = 1;
-        cond_wake(w);
-        selected = 1;
-        if (!all) break;
+        if (all) { w->signalled = 1; cond_wake(w); continue; }
+        if (!prioritized) { chosen = w; break; }
+        int32_t priority = ppu_thread_priority_snapshot(w->tid);
+        if (!chosen || priority < best_priority) { chosen = w; best_priority = priority; }
     }
+    if (chosen) { chosen->signalled = 1; cond_wake(chosen); }
     cond_unlock(c);
-    // Exact target selection; preserve FIFO for ordinary signal.
-    return targeted && !selected ? (int32_t)CELL_EPERM : CELL_OK;
+    // The condition itself was valid. Distinguish an absent thread from
+    // a live thread that is not waiting (RPCS3 sys_cond_signal_to contract).
+    if (targeted && !chosen) return ppu_thread_exists(tid) ? (int32_t)CELL_EPERM : (int32_t)CELL_ESRCH;
+    return CELL_OK;
 }
 
 int64_t sys_cond_signal(ppu_context* ctx) { return signal_cond(LV2_ARG_U32(ctx, 0), 0, 0, 0); }
