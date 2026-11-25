@@ -23,6 +23,19 @@ _SPU_PURE = frozenset("spu_" + n for n in (
 ))
 
 
+# Instruction-effect declarations: only non-record, non-OE PPU integer
+# operations and by-value SPU integer helpers can establish eligibility.
+# The generated C shape is a second independent check, not the source of
+# permission. No instruction that can access memory, trap, update another
+# architectural register, halt, or invoke context-aware code belongs here.
+PPU_PURE_GPR = frozenset((
+    "li", "lis", "addi", "addis", "add", "subf", "neg",
+    "mr", "ori", "oris", "xori", "xoris", "and", "or", "xor",
+    "nand", "nor", "eqv", "andc", "orc", "extsb", "extsh", "extsw",
+))
+SPU_PURE_GPR = frozenset(name[4:] for name in _SPU_PURE)
+
+
 def _candidate(line, arch):
     m = _ASSIGN.fullmatch(line)
     if not m:
@@ -56,9 +69,12 @@ def _candidate(line, arch):
     return dest, rhs
 
 
-def promote_register_regions(lines, arch):
+def promote_register_regions(lines, arch, eligible_lines):
     """Promote runs of 2–8 assignments; always commit every written GPR.
 
+    eligible_lines is produced only by lowering whitelisted decoded
+    instructions. Unknown or synthesized statements are materialization
+    barriers even if their textual shape resembles an eligible assignment.
     Reads before a first write remain reads of ctx. Once a local is assigned,
     later reads of that register use the local. Braces keep goto targets
     outside the lifetime of declarations. Do not change input statements
@@ -87,7 +103,7 @@ def promote_register_regions(lines, arch):
         run.clear()
 
     for line in lines:
-        candidate = _candidate(line, arch)
+        candidate = _candidate(line, arch) if line in eligible_lines else None
         if candidate is None:
             flush()
             out.append(line)
