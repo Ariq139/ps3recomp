@@ -22,7 +22,7 @@ int main(void) {
    if(i==2)data[0]^=0xFF;
    if(i==3)data[8224]^=0x01;
    assert(rsx_constant_snapshot_record(&a,data,i,gpu)==
-     rsx_constant_snapshot_record_parts(&b,data,8192,data+8192,i,gpu2));
+     rsx_constant_snapshot_record_parts(&b,data,data+RSX_CONSTANT_BANK_BYTES,i,gpu2));
    assert(!memcmp(gpu,gpu2,4*RSX_CONSTANT_SNAPSHOT_BYTES));
  }
  free(gpu2);free(gpu);

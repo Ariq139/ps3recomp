@@ -5847,9 +5847,23 @@ static void vp_record_cb(u32 slot, int vs_idx, D3D12DrawRecord* dr)
         alpha[2] = dr ? (float)((dr->alpha_ctl >> 8) & 7u) : 7.0f;
     }
     enum { bank_bytes = RSX_MAX_VERTEX_CONSTANTS * 16 };
-    _Alignas(16) u8 tail[VP_CB_STRIDE - bank_bytes] = {0};
-    _Alignas(16) u8 projection_override[bank_bytes];
+    _Static_assert(bank_bytes == RSX_CONSTANT_BANK_BYTES, "constant bank size");
+    /* The FIFO serializes its state and draw callback under s_gcm_fifo_lock.
+     * Keep the early contiguous capture as a default-off A/B fallback for
+     * other callers until runtime equivalence has been established. */
+    static int split_mode = -1;
+    if (split_mode < 0) {
+        const char* e = getenv("RSX_SPLIT_VP_SNAPSHOT");
+        split_mode = e && !strcmp(e, "1");
+    }
+    _Alignas(16) u8 snapshot[VP_CB_STRIDE];
+    u8* tail = snapshot + bank_bytes;
+    memset(tail, 0, VP_CB_STRIDE - bank_bytes);
     const void* bank = st->vertex_constants;
+    if (!split_mode) {
+        memcpy(snapshot, bank, bank_bytes);
+        bank = snapshot;
+    }
     /* VP_MVP=<N>: the constant bank as the shader will see it, for the first N
      * draws. A snapshot taken from a stale rsx_state looks exactly like a broken
      * vertex program from the outside -- both give zero fragments. */
@@ -5939,9 +5953,9 @@ static void vp_record_cb(u32 slot, int vs_idx, D3D12DrawRecord* dr)
      * replacing c[0..3] based on its sign destroys the guest transform. Keep
      * that old diagnostic available only when explicitly requested. */
     if (getenv("VP_FIXPROJ")) {
-        memcpy(projection_override, bank, bank_bytes);
-        bank = projection_override;
-        float* c = (float*)projection_override;
+        if (bank != snapshot) memcpy(snapshot, bank, bank_bytes);
+        bank = snapshot;
+        float* c = (float*)snapshot;
         float c00 = c[0];
         { static int _fb = 0; if (PS3_LOG_FIRST(_fb, 6))
             printf("[VPFB] fallback proj on draw slot %u (c00=%g vs_idx=%d)\n",
@@ -5954,8 +5968,10 @@ static void vp_record_cb(u32 slot, int vs_idx, D3D12DrawRecord* dr)
     /* NV4097_SET_TRANSFORM_BRANCH_BITS follows the 512 constants and two
      * viewport float4s in VPConst (offset 8224). */
     memcpy(tail + 2u * 16u, &st->transform_branch_bits, sizeof(st->transform_branch_bits));
-    dr->vp_cb_slot = rsx_constant_snapshot_record_parts(&s_vp_cb_cache, bank, bank_bytes, tail, slot,
-        (u8*)s_d3d.vp_cb_mapped + (u64)s_d3d.vp_parity * MAX_DRAWS * VP_CB_STRIDE);
+    u8* upload = (u8*)s_d3d.vp_cb_mapped + (u64)s_d3d.vp_parity * MAX_DRAWS * VP_CB_STRIDE;
+    dr->vp_cb_slot = split_mode
+        ? rsx_constant_snapshot_record_parts(&s_vp_cb_cache, bank, tail, slot, upload)
+        : rsx_constant_snapshot_record(&s_vp_cb_cache, snapshot, slot, upload);
 
 }
 
