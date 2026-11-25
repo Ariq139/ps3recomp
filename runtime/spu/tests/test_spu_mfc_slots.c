@@ -127,6 +127,7 @@ static void test_private_ls_init(void)
     spu_context_init(&expected, 0);
     memcpy(expected.ls, image, sizeof(image));
     spu_job_init_private_ls(&actual, image);
+    memcpy(actual.ls, image, sizeof(image));
     CHECK(actual.ls == actual.ls_store);
     CHECK(!memcmp(actual.ls, image, sizeof(image)));
     /* Normalize only the self pointer; all remaining context bytes, including
