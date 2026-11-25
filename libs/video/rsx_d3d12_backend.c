@@ -5846,16 +5846,17 @@ static void vp_record_cb(u32 slot, int vs_idx, D3D12DrawRecord* dr)
             ? (float)((dr->alpha_ctl >> 16) & 1u) : 0.0f;
         alpha[2] = dr ? (float)((dr->alpha_ctl >> 8) & 7u) : 7.0f;
     }
-    _Alignas(16) u8 snapshot[VP_CB_STRIDE] = {0};
-    char* dst = (char*)snapshot;
-    memcpy(dst, st->vertex_constants, RSX_MAX_VERTEX_CONSTANTS * 16);
+    enum { bank_bytes = RSX_MAX_VERTEX_CONSTANTS * 16 };
+    _Alignas(16) u8 tail[VP_CB_STRIDE - bank_bytes] = {0};
+    _Alignas(16) u8 projection_override[bank_bytes];
+    const void* bank = st->vertex_constants;
     /* VP_MVP=<N>: the constant bank as the shader will see it, for the first N
      * draws. A snapshot taken from a stale rsx_state looks exactly like a broken
      * vertex program from the outside -- both give zero fragments. */
     { static int cap = -1, seen = 0;
       if (cap < 0) { const char* e = getenv("VP_MVP"); cap = e ? atoi(e) : 0; }
       if (cap && seen < cap) { seen++;
-        const float* c = (const float*)dst;
+        const float* c = (const float*)bank;
         int last_nz = -1;
         for (int i = 0; i < RSX_MAX_VERTEX_CONSTANTS * 4; i++)
             if (c[i] > 1e-9f || c[i] < -1e-9f) last_nz = i / 4;
@@ -5867,12 +5868,12 @@ static void vp_record_cb(u32 slot, int vs_idx, D3D12DrawRecord* dr)
      * constant buffer for that texture's draws -- i.e. exactly what the shader
      * samples, not what the CPU-side rsx_state holds. Those two agreeing is an
      * assumption worth checking directly when a draw transforms to nothing. */
-    const float* vpx_dbg = (const float*)(dst + RSX_MAX_VERTEX_CONSTANTS * 16);
+    const float* vpx_dbg = (const float*)tail;
     { static const char* dc = (const char*)1; static u32 wantc = 0; static int n = 0;
       if (dc == (const char*)1) { dc = getenv("RSX_DBG_CB");
                                   wantc = dc ? (u32)strtoul(dc, NULL, 16) : 0; }
       if (wantc && dr && dr->tex[0].raw == wantc && n < 4) { n++;
-          const float* c = (const float*)dst;
+          const float* c = (const float*)bank;
           fprintf(stderr, "[DUCKCB] slot=%u vs_idx=%d posscale=(%g %g %g) posoffset=(%g %g %g)%c",
                   slot, vs_idx, vpx_dbg[0], vpx_dbg[1], vpx_dbg[2],
                   vpx_dbg[4], vpx_dbg[5], vpx_dbg[6], 10);
@@ -5886,7 +5887,7 @@ static void vp_record_cb(u32 slot, int vs_idx, D3D12DrawRecord* dr)
      * explicitly. Shadow passes can use positive Y scale while the main
      * scene uses negative Y scale, so an identity XY epilogue mirrors only
      * the shadow map relative to its consumers. */
-    float* vpx = (float*)(dst + RSX_MAX_VERTEX_CONSTANTS * 16);
+    float* vpx = (float*)tail;
     const float* vs_ = st->viewport_scale;
     const float* vo_ = st->viewport_offset;
     vpx[0] = vpx[1] = vpx[3] = 1.0f;
@@ -5937,9 +5938,11 @@ static void vp_record_cb(u32 slot, int vs_idx, D3D12DrawRecord* dr)
      * c[0] can legitimately be negative for a game's coordinate convention;
      * replacing c[0..3] based on its sign destroys the guest transform. Keep
      * that old diagnostic available only when explicitly requested. */
-    float* c = (float*)dst;
-    float c00 = c[0];
     if (getenv("VP_FIXPROJ")) {
+        memcpy(projection_override, bank, bank_bytes);
+        bank = projection_override;
+        float* c = (float*)projection_override;
+        float c00 = c[0];
         { static int _fb = 0; if (PS3_LOG_FIRST(_fb, 6))
             printf("[VPFB] fallback proj on draw slot %u (c00=%g vs_idx=%d)\n",
                    slot, c00, vs_idx); }
@@ -5950,9 +5953,8 @@ static void vp_record_cb(u32 slot, int vs_idx, D3D12DrawRecord* dr)
     }
     /* NV4097_SET_TRANSFORM_BRANCH_BITS follows the 512 constants and two
      * viewport float4s in VPConst (offset 8224). */
-    memcpy(dst + (RSX_MAX_VERTEX_CONSTANTS + 2u) * 16u,
-           &st->transform_branch_bits, sizeof(st->transform_branch_bits));
-    dr->vp_cb_slot = rsx_constant_snapshot_record(&s_vp_cb_cache,snapshot,slot,
+    memcpy(tail + 2u * 16u, &st->transform_branch_bits, sizeof(st->transform_branch_bits));
+    dr->vp_cb_slot = rsx_constant_snapshot_record_parts(&s_vp_cb_cache, bank, bank_bytes, tail, slot,
         (u8*)s_d3d.vp_cb_mapped + (u64)s_d3d.vp_parity * MAX_DRAWS * VP_CB_STRIDE);
 
 }

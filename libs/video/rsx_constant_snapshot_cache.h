@@ -9,4 +9,19 @@ static uint32_t rsx_constant_snapshot_record(rsx_constant_snapshot_cache* c,cons
  memcpy((unsigned char*)upload+(uint64_t)slot*RSX_CONSTANT_SNAPSHOT_BYTES,bytes,RSX_CONSTANT_SNAPSHOT_BYTES);
  memcpy(c->bytes,bytes,RSX_CONSTANT_SNAPSHOT_BYTES);c->valid=1;c->slot=slot;return slot;
 }
+/* Exact split snapshot: do not assemble a full temporary bank just to
+ * compare it. Both parts are immutable for the duration of this call. */
+static uint32_t rsx_constant_snapshot_record_parts(rsx_constant_snapshot_cache* c,
+    const void* bank, uint32_t bank_bytes, const void* tail, uint32_t slot, void* upload)
+{
+    const uint32_t tail_bytes = RSX_CONSTANT_SNAPSHOT_BYTES - bank_bytes;
+    if (c->valid && !memcmp(c->bytes, bank, bank_bytes) &&
+        !memcmp(c->bytes + bank_bytes, tail, tail_bytes)) return c->slot;
+    unsigned char* dst = (unsigned char*)upload + (uint64_t)slot * RSX_CONSTANT_SNAPSHOT_BYTES;
+    /* Take the exact cache snapshot once; the upload uses the same bytes. */
+    memcpy(c->bytes, bank, bank_bytes);
+    memcpy(c->bytes + bank_bytes, tail, tail_bytes);
+    memcpy(dst, c->bytes, RSX_CONSTANT_SNAPSHOT_BYTES);
+    c->valid = 1; c->slot = slot; return slot;
+}
 #endif
