@@ -385,6 +385,81 @@ else()
         COMPILE_OPTIONS "-w;-ffp-contract=off")
 endif()
 
+# Optional whole-program and profile-guided optimization. Keep ordinary
+# Release and source-specific SPU/PPU flags untouched when disabled.
+option(P5_ENABLE_IPO "Enable checked Release interprocedural optimization" OFF)
+set(P5_PGO_MODE "OFF" CACHE STRING "P5 profiling mode: OFF, GENERATE or USE")
+set_property(CACHE P5_PGO_MODE PROPERTY STRINGS OFF GENERATE USE)
+set(P5_PGO_DATA "" CACHE FILEPATH "MSVC .pgd or LLVM merged .profdata file")
+if(P5_ENABLE_IPO)
+    include(CheckIPOSupported)
+    check_ipo_supported(RESULT _p5_ipo_ok OUTPUT _p5_ipo_error LANGUAGES C CXX)
+    if(NOT _p5_ipo_ok)
+        message(FATAL_ERROR "P5 IPO unavailable: ${_p5_ipo_error}")
+    endif()
+    set_property(TARGET ${PROJECT_NAME} ps3recomp_runtime
+        PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+endif()
+
+if(NOT P5_PGO_MODE MATCHES "^(OFF|GENERATE|USE)$")
+    message(FATAL_ERROR "P5_PGO_MODE must be OFF, GENERATE or USE")
+endif()
+if(NOT P5_PGO_MODE STREQUAL "OFF")
+    if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE STREQUAL "Release")
+        message(FATAL_ERROR "P5 PGO requires a Release build")
+    endif()
+    if(CMAKE_C_COMPILER_ID STREQUAL "MSVC" AND
+       CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+        if(NOT P5_PGO_DATA)
+            set(_p5_profile "${CMAKE_BINARY_DIR}/P5.pgd")
+        else()
+            get_filename_component(_p5_profile "${P5_PGO_DATA}" ABSOLUTE)
+        endif()
+        if(P5_PGO_MODE STREQUAL "USE" AND NOT EXISTS "${_p5_profile}")
+            message(FATAL_ERROR "Missing PGO database: ${_p5_profile}")
+        endif()
+        foreach(_p5_t IN ITEMS ${PROJECT_NAME} ps3recomp_runtime)
+            target_compile_options(${_p5_t} PRIVATE
+                "$<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:C,CXX>>:/GL>")
+        endforeach()
+        if(P5_PGO_MODE STREQUAL "GENERATE")
+            set(_p5_pgo_link "/GENPROFILE:PGD=${_p5_profile}")
+        else()
+            set(_p5_pgo_link "/USEPROFILE:PGD=${_p5_profile}")
+        endif()
+        target_link_options(${PROJECT_NAME} PRIVATE
+            "$<$<CONFIG:Release>:/LTCG>" "$<$<CONFIG:Release>:${_p5_pgo_link}>")
+    elseif(CMAKE_C_COMPILER_ID MATCHES "^(Clang|AppleClang)$" AND
+           CMAKE_CXX_COMPILER_ID MATCHES "^(Clang|AppleClang)$" AND NOT MSVC)
+        if(P5_PGO_MODE STREQUAL "GENERATE")
+            set(_p5_pgo_flag "-fprofile-instr-generate")
+        else()
+            if(NOT P5_PGO_DATA)
+                message(FATAL_ERROR "Set P5_PGO_DATA to merged LLVM .profdata")
+            endif()
+            get_filename_component(_p5_profile "${P5_PGO_DATA}" ABSOLUTE)
+            if(NOT EXISTS "${_p5_profile}")
+                message(FATAL_ERROR "Missing PGO data: ${_p5_profile}")
+            endif()
+            set(_p5_pgo_flag "-fprofile-instr-use=${_p5_profile}")
+        endif()
+        foreach(_p5_t IN ITEMS ${PROJECT_NAME} ps3recomp_runtime)
+            target_compile_options(${_p5_t} PRIVATE
+                "$<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:C,CXX>>:${_p5_pgo_flag}>")
+        endforeach()
+        # Only the training executable needs the profile runtime at link time.
+        if(P5_PGO_MODE STREQUAL "GENERATE")
+            target_link_options(${PROJECT_NAME} PRIVATE
+                "$<$<CONFIG:Release>:${_p5_pgo_flag}>")
+        endif()
+    else()
+        message(FATAL_ERROR
+            "P5 PGO currently supports native MSVC and GNU-driver Clang; "
+            "clang-cl/GCC profile-runtime integration is not configured. "
+            "Use P5_ENABLE_IPO alone if supported.")
+    endif()
+endif()
+
 # ---------------------------------------------------------------------------
 # Install
 # ---------------------------------------------------------------------------
