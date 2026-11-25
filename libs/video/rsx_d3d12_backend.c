@@ -1882,28 +1882,32 @@ static int init_d3d12(u32 width, u32 height)
 /* Queue submissions are serialized on the render thread. A completed drain
  * remains valid until another command list is submitted. */
 
-/* The queue signals a single monotonically increasing fence. A previously
- * observed completed value is sufficient for any earlier retirement target.
- * Never cache UINT64_MAX: D3D12 uses it for a removed device. */
-/* The guest WAIT_FOR_IDLE backend callback is void, and callers can
- * otherwise continue after a failed wait and overwrite in-flight resources.
- * There is no device-recovery or guest-visible failure channel here. Stop
- * explicitly rather than publish false completion or recycle GPU storage.
- * This is a terminal error path only, not a retry/recovery policy. */
-static void d3d12_sync_fatal(const char* context, u64 target)
+/* A single monotonically increasing fence orders all submitted work.
+ * Never return success on a device-removal sentinel. The existing backend
+ * WAIT_FOR_IDLE callback cannot propagate an error to the guest; returning
+ * on an unrecoverable synchronization error would let the FIFO publish
+ * false completion. Stop the process with a failure status on that path,
+ * without running teardown which might recycle unretired GPU resources.
+ * A debug abort/core dump is explicit opt-in. A merely slow GPU is NOT
+ * a terminal failure and must continue waiting. */
+static void d3d12_sync_stop(const char* context, u64 target, HRESULT failure)
 {
     const HRESULT reason = s_d3d.device
         ? s_d3d.device->lpVtbl->GetDeviceRemovedReason(s_d3d.device) : E_FAIL;
-    fprintf(stderr, "[D3D12] fatal synchronization failure: %s target=%llu device=0x%08lX\n",
-            context, (unsigned long long)target, (long)reason);
+    fprintf(stderr, "[D3D12] unrecoverable synchronization failure: %s target=%llu hr=0x%08lX device=0x%08lX\n",
+            context, (unsigned long long)target, (long)failure, (long)reason);
     fflush(stderr);
-    abort();
+    const char* crash = getenv("D3D12_ABORT_ON_SYNC_FAILURE");
+    if (crash && !strcmp(crash, "1")) abort();
+    /* No guest-visible failure channel or safe recovery protocol exists.
+     * _Exit avoids arbitrary exit handlers on the FIFO/renderer thread. */
+    _Exit(EXIT_FAILURE);
 }
 static u64 d3d12_poll_completed_fence(void)
 {
     const u64 value = s_d3d.fence->lpVtbl->GetCompletedValue(s_d3d.fence);
     if (value == ~(u64)0)
-        d3d12_sync_fatal("device removed while polling fence", s_d3d.last_fence_value);
+        d3d12_sync_stop("device removed while polling fence", s_d3d.last_fence_value, DXGI_ERROR_DEVICE_REMOVED);
     if (value > s_d3d.completed_fence_value)
         s_d3d.completed_fence_value = value;
     return value;
@@ -1912,42 +1916,57 @@ static int wait_for_fence_value_impl(u64 target, const char* context, u32* parke
 {
     if (!target || target <= s_d3d.completed_fence_value) return 1;
     u64 completed = d3d12_poll_completed_fence();
-    if (completed == ~(u64)0) return 0;
     if (completed >= target) return 1;
+
     HRESULT hr = s_d3d.fence->lpVtbl->SetEventOnCompletion(
         s_d3d.fence, target, s_d3d.fence_event);
-    if (FAILED(hr)) {
-        printf("[D3D12] %s SetEventOnCompletion failed (0x%08lX)\n", context, hr);
-        return 0;
+    int use_event = SUCCEEDED(hr);
+    if (!use_event) {
+        const HRESULT reason = s_d3d.device->lpVtbl->GetDeviceRemovedReason(s_d3d.device);
+        if (FAILED(reason)) d3d12_sync_stop(context, target, reason);
+        fprintf(stderr, "[D3D12] %s fence event registration failed (0x%08lX); polling completion\n",
+                context, (long)hr);
     }
+
     *parked = 1;
-    for (int tries = 0; tries < 3; tries++) {
-        DWORD wake = WaitForSingleObject(s_d3d.fence_event, 2000);
+    const ULONGLONG start = GetTickCount64();
+    ULONGLONG next_report = start + 2000;
+    for (;;) {
+        ULONGLONG now = GetTickCount64();
+        if (use_event) {
+            /* An unrelated/stale event does not consume a retry budget and
+             * is not evidence that this target has retired. */
+            const DWORD ms = now >= next_report ? 1u : (DWORD)(next_report - now);
+            const DWORD wake = WaitForSingleObject(s_d3d.fence_event, ms);
+            if (wake != WAIT_OBJECT_0 && wake != WAIT_TIMEOUT) {
+                use_event = 0;
+                fprintf(stderr, "[D3D12] %s fence event wait failed; polling completion\n", context);
+            }
+        } else {
+            Sleep(1);
+        }
         completed = d3d12_poll_completed_fence();
-        if (completed == ~(u64)0) return 0;
         if (completed >= target) return 1;
-        /* An earlier timed-out registration may have signaled this shared
-         * auto-reset event. Do not recycle resources on an unrelated wake. */
-        if (wake == WAIT_OBJECT_0) continue;
-        HRESULT rr = s_d3d.device->lpVtbl->GetDeviceRemovedReason(s_d3d.device);
-        printf("[D3D12] %s STUCK %ds: want %llu got %llu removed=0x%08lX\n",
-               context, 2 * (tries + 1), (unsigned long long)target,
-               (unsigned long long)completed, (long)rr);
-        fflush(stdout);
-        if (rr != 0 || wake == WAIT_FAILED) break;
+        now = GetTickCount64();
+        if (now >= next_report || !use_event) {
+            const HRESULT reason = s_d3d.device->lpVtbl->GetDeviceRemovedReason(s_d3d.device);
+            if (FAILED(reason)) d3d12_sync_stop(context, target, reason);
+        }
+        if (now >= next_report) {
+            fprintf(stderr, "[D3D12] %s waiting %llums: want %llu got %llu (device alive)\n",
+                    context, (unsigned long long)(now - start),
+                    (unsigned long long)target, (unsigned long long)completed);
+            fflush(stderr);
+            next_report = now + 2000;
+        }
+        /* No hard timeout: a live but slow device is not safe to recycle. */
     }
-    completed = d3d12_poll_completed_fence();
-    return completed != ~(u64)0 && completed >= target;
 }
 
 static int wait_for_fence_value(u64 target, const char* context)
 {
     u32 parked = 0;
-    if (!perf_on()) {
-        const int result = wait_for_fence_value_impl(target, context, &parked);
-        if (!result) d3d12_sync_fatal(context, target);
-        return result;
-    }
+    if (!perf_on()) return wait_for_fence_value_impl(target, context, &parked);
     const int reason = !strcmp(context, "submission-slot") ? FENCE_SLOT :
                        !strcmp(context, "backbuffer-retire") ? FENCE_BACKBUFFER : FENCE_IDLE;
     const double start = perf_now();
@@ -1955,7 +1974,6 @@ static int wait_for_fence_value(u64 target, const char* context)
     s_perf_fence_reason[reason].seconds += perf_now() - start;
     s_perf_fence_reason[reason].calls++;
     s_perf_fence_reason[reason].parks += parked;
-    if (!result) d3d12_sync_fatal(context, target);
     return result;
 }
 
@@ -1974,7 +1992,7 @@ static void d3d12_signal_submission(u32 slot)
     HRESULT hr = s_d3d.cmd_queue->lpVtbl->Signal(s_d3d.cmd_queue, s_d3d.fence, value);
     if (FAILED(hr)) {
         printf("[D3D12] queue fence signal failed (0x%08lX)\n", hr);
-        d3d12_sync_fatal("queue Signal", value);
+        d3d12_sync_stop("queue Signal", value, hr);
         return; /* unreachable */
     }
     s_d3d.last_fence_value = value;
@@ -8896,7 +8914,7 @@ skip_dump_consider: ;
         const HRESULT hr = s_d3d.swap_chain->lpVtbl->Present(s_d3d.swap_chain, 1, 0);
         if (FAILED(hr)) {
             fprintf(stderr, "[D3D12] Present failed (0x%08lX)\n", (long)hr);
-            d3d12_sync_fatal("Present", s_d3d.last_fence_value);
+            d3d12_sync_stop("Present", s_d3d.last_fence_value, hr);
         }
     } /* vsync; skipped for offscreen-only batches */
 
