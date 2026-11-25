@@ -1885,10 +1885,26 @@ static int init_d3d12(u32 width, u32 height)
 /* The queue signals a single monotonically increasing fence. A previously
  * observed completed value is sufficient for any earlier retirement target.
  * Never cache UINT64_MAX: D3D12 uses it for a removed device. */
+/* The guest WAIT_FOR_IDLE backend callback is void, and callers can
+ * otherwise continue after a failed wait and overwrite in-flight resources.
+ * There is no device-recovery or guest-visible failure channel here. Stop
+ * explicitly rather than publish false completion or recycle GPU storage.
+ * This is a terminal error path only, not a retry/recovery policy. */
+static void d3d12_sync_fatal(const char* context, u64 target)
+{
+    const HRESULT reason = s_d3d.device
+        ? s_d3d.device->lpVtbl->GetDeviceRemovedReason(s_d3d.device) : E_FAIL;
+    fprintf(stderr, "[D3D12] fatal synchronization failure: %s target=%llu device=0x%08lX\n",
+            context, (unsigned long long)target, (long)reason);
+    fflush(stderr);
+    abort();
+}
 static u64 d3d12_poll_completed_fence(void)
 {
     const u64 value = s_d3d.fence->lpVtbl->GetCompletedValue(s_d3d.fence);
-    if (value != ~(u64)0 && value > s_d3d.completed_fence_value)
+    if (value == ~(u64)0)
+        d3d12_sync_fatal("device removed while polling fence", s_d3d.last_fence_value);
+    if (value > s_d3d.completed_fence_value)
         s_d3d.completed_fence_value = value;
     return value;
 }
@@ -1927,7 +1943,11 @@ static int wait_for_fence_value_impl(u64 target, const char* context, u32* parke
 static int wait_for_fence_value(u64 target, const char* context)
 {
     u32 parked = 0;
-    if (!perf_on()) return wait_for_fence_value_impl(target, context, &parked);
+    if (!perf_on()) {
+        const int result = wait_for_fence_value_impl(target, context, &parked);
+        if (!result) d3d12_sync_fatal(context, target);
+        return result;
+    }
     const int reason = !strcmp(context, "submission-slot") ? FENCE_SLOT :
                        !strcmp(context, "backbuffer-retire") ? FENCE_BACKBUFFER : FENCE_IDLE;
     const double start = perf_now();
@@ -1935,6 +1955,7 @@ static int wait_for_fence_value(u64 target, const char* context)
     s_perf_fence_reason[reason].seconds += perf_now() - start;
     s_perf_fence_reason[reason].calls++;
     s_perf_fence_reason[reason].parks += parked;
+    if (!result) d3d12_sync_fatal(context, target);
     return result;
 }
 
@@ -1953,7 +1974,8 @@ static void d3d12_signal_submission(u32 slot)
     HRESULT hr = s_d3d.cmd_queue->lpVtbl->Signal(s_d3d.cmd_queue, s_d3d.fence, value);
     if (FAILED(hr)) {
         printf("[D3D12] queue fence signal failed (0x%08lX)\n", hr);
-        return;
+        d3d12_sync_fatal("queue Signal", value);
+        return; /* unreachable */
     }
     s_d3d.last_fence_value = value;
     s_d3d.fence_values[s_d3d.frame_index] = value;
@@ -8870,8 +8892,13 @@ skip_dump_consider: ;
       } }
 
     /* Present */
-    if (s_present_this_frame)
-        s_d3d.swap_chain->lpVtbl->Present(s_d3d.swap_chain, 1, 0); /* vsync */   /* skipped for an offscreen-only batch */
+    if (s_present_this_frame) {
+        const HRESULT hr = s_d3d.swap_chain->lpVtbl->Present(s_d3d.swap_chain, 1, 0);
+        if (FAILED(hr)) {
+            fprintf(stderr, "[D3D12] Present failed (0x%08lX)\n", (long)hr);
+            d3d12_sync_fatal("Present", s_d3d.last_fence_value);
+        }
+    } /* vsync; skipped for offscreen-only batches */
 
     move_to_next_frame(s_present_this_frame);
 
