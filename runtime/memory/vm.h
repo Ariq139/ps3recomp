@@ -348,49 +348,73 @@ static inline int32_t vm_protect(uint32_t addr, uint32_t size, int read, int wri
 }
 
 /* ---------------------------------------------------------------------------
- * Stack allocation for PPU threads
- *
- * Simple bump allocator within the stack region.  Each thread gets
- * a fixed-size stack with a guard page at the bottom.
+ * Reusable guest PPU stacks. The thread table serializes these operations.
+ * Retired extents retain their original guard address; best-fit reuse never
+ * exposes a former guard page as usable stack. Do not split a retired extent.
+ * The bounded array covers the 240 MiB arena at the syscall's 16 KiB minimum.
  * -----------------------------------------------------------------------*/
+#define VM_STACK_RETIRED_MAX 16384u
+typedef struct vm_stack_extent { uint32_t addr, bytes; } vm_stack_extent;
 typedef struct vm_stack_alloc {
-    uint32_t next_addr;     /* next stack base to allocate */
-    uint32_t region_end;    /* end of the stack region */
+    uint32_t next_addr, region_end;
+    uint32_t retired_count;
+    vm_stack_extent retired[VM_STACK_RETIRED_MAX];
 } vm_stack_alloc;
 
 static inline void vm_stack_alloc_init(vm_stack_alloc* sa)
 {
-    sa->next_addr  = VM_STACK_BASE;
-    sa->region_end = VM_CB_STACK_BASE;   /* callback stacks above, see VM_CB_STACK_REGION */
+    sa->next_addr = VM_STACK_BASE;
+    sa->region_end = VM_CB_STACK_BASE;
+    sa->retired_count = 0;
 }
 
-/*
- * Allocate a stack.  Returns the BASE address of the stack region (lowest address).
- * The usable stack top = base + size.
- * Returns 0 on failure.
- */
-static inline uint32_t vm_stack_allocate(vm_stack_alloc* sa, uint32_t stack_size)
+/* Capacity records the whole reserved usable extent, not the requested size.
+ * The legacy non-recycling API remains available for external callers. */
+static inline uint32_t vm_stack_allocate_extent(vm_stack_alloc* sa, uint32_t stack_size, uint32_t* capacity)
 {
-    /* Host page granularity throughout: the guard must be exactly one host
-     * page, and the stack above it must start on a host page boundary, or a
-     * 16 KB host would either refuse the mprotect or protect part of the
-     * stack itself. On a 4 KB host this is the layout it always was. */
-    uint32_t pg = vm_host_page_size();
-    stack_size = VM_ALIGN_UP(stack_size, pg);
-
-    /* Add a guard page */
-    uint32_t total = stack_size + pg;
-
-    if (sa->next_addr + total > sa->region_end)
-        return 0; /* out of stack space */
-
+    const uint32_t pg = vm_host_page_size();
+    const uint64_t rounded = ((uint64_t)stack_size + pg - 1u) & ~(uint64_t)(pg - 1u);
+    if (!rounded || rounded > UINT32_MAX - pg) return 0;
+    const uint32_t bytes = (uint32_t)rounded;
+    if (capacity) {
+        uint32_t best = sa->retired_count;
+        for (uint32_t i = 0; i < sa->retired_count; ++i)
+            if (sa->retired[i].bytes >= bytes &&
+                (best == sa->retired_count || sa->retired[i].bytes < sa->retired[best].bytes)) best = i;
+        if (best < sa->retired_count) {
+            const vm_stack_extent block = sa->retired[best];
+            sa->retired[best] = sa->retired[--sa->retired_count];
+            *capacity = block.bytes;
+            // Same guard, no new protection changes. A recycled guest stack
+            // starts with clean usable pages, as a fresh mapped stack does.
+            vm_note_write(block.addr, bytes);
+            memset(vm_base + block.addr, 0, bytes);
+            return block.addr;
+        }
+    }
+    const uint32_t total = bytes + pg;
+    if ((uint64_t)sa->next_addr + total > sa->region_end) return 0;
     uint32_t base = sa->next_addr;
     sa->next_addr += total;
-
-    /* Guard page at the bottom (no access) */
+    // Preserve the existing best-effort protection on lazy-commit runners.
+    // Reuse never moves this guard or treats it as usable storage.
     vm_protect(base, pg, 0, 0, 0);
-
-    return base + pg; /* skip the guard page */
+    if (capacity) *capacity = bytes;
+    return base + pg;
+}
+static inline uint32_t vm_stack_allocate(vm_stack_alloc* sa, uint32_t stack_size)
+{
+    return vm_stack_allocate_extent(sa, stack_size, NULL);
+}
+static inline void vm_stack_release(vm_stack_alloc* sa, uint32_t addr, uint32_t capacity)
+{
+    const uint32_t pg = vm_host_page_size();
+    if (!addr || !capacity || (addr & (pg - 1u)) || (capacity & (pg - 1u)) ||
+        (uint64_t)addr + capacity > sa->next_addr) return;
+    for (uint32_t i = 0; i < sa->retired_count; ++i)
+        if (sa->retired[i].addr == addr) return; // never publish a duplicate extent
+    if (sa->retired_count == VM_STACK_RETIRED_MAX) return;
+    sa->retired[sa->retired_count++] = (vm_stack_extent){addr, capacity};
 }
 
 /* ---------------------------------------------------------------------------

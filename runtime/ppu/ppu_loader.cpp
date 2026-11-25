@@ -4095,55 +4095,45 @@ extern "C" int ppu_opd_resolve(uint32_t opd, uint32_t* code, uint32_t* toc)
  * way the main entry does and dispatch into the recompiled function, draining
  * the tail-call trampoline chain so the thread body fully runs. */
 extern "C" void (*g_ppu_thread_entry_trampoline)(ppu_context*);
-/* Carve a fresh TLS block for one guest thread, or 0 when there is no room
- * (then the caller shares the main block, which is what every thread used to
- * do).
- *
- * Every sys_ppu_thread_create'd thread used to get r13 = PPU_TLS_TP -- the
- * MAIN thread's block -- so nothing the guest keeps in __thread storage was
- * actually per-thread. It reads as "TLS works" because the accesses resolve
- * and the memory is there; what breaks is any thread-local that means
- * something, and the worst case is a thread-local LOCK.
- *
- * Guitar Hero III keeps its allocator context in one: a flag at TLS+8 and a
- * pointer at TLS+0xC, set on entry to an allocation and cleared on exit. With
- * one shared block, thread 2 clears the flag and writes -1 to the pointer
- * while thread 1 is inside the allocator. Thread 1 then reads its own context
- * as null, every allocation on it returns 0, and the caller memsets the null
- * buffer -- see [null-write]. One shared word, and the title cannot allocate.
- *
- * The PRX path (sys_initialize_tls in ppu_sysprx.cpp) has always done this per
- * block; this is the same thing for the static path.
- *
- * ponytail: bump allocator, never freed. A thread's block is dead once it
- * exits, but the 1 MB window holds about 250 page-sized blocks (for a small
- * TLS image) and titles create their threads at boot and keep them. Reuse a
- * free list if a title ever churns threads. */
+/* Reusable fixed-size loader TLS images. One image (slot 0) belongs to
+ * main. Every host worker owns a separate slot for its whole lifetime,
+ * released only when the host thread exits. This covers static PT_TLS and
+ * the registered AIO service, not the separate PRX sys_initialize_tls arena.
+ * The title/VM/TLS template must remain unchanged while threads exist. */
+static std::atomic<uint64_t> s_tls_slots[4]{};
+struct ppu_tls_slot_owner {
+    unsigned slot = 0;
+    ~ppu_tls_slot_owner() {
+        if (slot) s_tls_slots[slot / 64].fetch_and(~(1ull << (slot % 64)), std::memory_order_release);
+    }
+};
+static thread_local ppu_tls_slot_owner t_tls_slot;
+
 static uint32_t ppu_tls_new_block(void)
 {
-    if (!g_tls_memsz) return 0;                 /* no PT_TLS: nothing to copy */
-    /* A block holds the TLS image only. r13 = base + 0x7000 is the ABI's bias
-     * (the guest addresses TLS as r13 - 0x7000 + off with off < memsz), not
-     * storage: counting the 0x7000 in the size made every block 0x8000, so the
-     * 1 MB window held 31 threads and the 32nd onwards shared the main block. */
-    uint32_t total = (g_tls_memsz + 0xFFFu) & ~0xFFFu;
-    uint32_t lim   = 0x11000000u;               /* same bound the main block uses */
+    if (!g_tls_memsz || g_tls_filesz > g_tls_memsz) return 0;
+    const uint64_t total = ((uint64_t)g_tls_memsz + 0xfffu) & ~0xfffull;
+    uint32_t lim = 0x11000000u;
     if (ppu_vm_size && ppu_vm_size < lim) lim = ppu_vm_size;
-    /* Threads are created concurrently, so hand out offsets atomically. */
-    static uint32_t s_bump = 0;
-    uint32_t off  = __atomic_fetch_add(&s_bump, total, __ATOMIC_RELAXED);
-    uint32_t base = PPU_TLS_IMG + total + off;  /* main block occupies the first */
-    if (base + total > lim) {                   /* out of room: share, as before */
-        static int s_warned = 0;
-        if (!__atomic_exchange_n(&s_warned, 1, __ATOMIC_RELAXED))
-            fprintf(stderr, "[ppu] TLS window full after %u thread blocks: later "
-                    "threads share the main thread's TLS\n", (unsigned)(off / total));
-        return 0;
+    if (lim <= PPU_TLS_IMG || total > lim - PPU_TLS_IMG) return 0;
+    const unsigned slots = (unsigned)((lim - PPU_TLS_IMG) / total);
+    if (t_tls_slot.slot)
+        return (uint32_t)(PPU_TLS_IMG + total * t_tls_slot.slot + 0x7000u);
+    for (unsigned i = 1; i < slots && i < 256; ++i) {
+        auto& word = s_tls_slots[i / 64];
+        uint64_t mask = 1ull << (i % 64), old = word.load(std::memory_order_relaxed);
+        while (!(old & mask)) {
+            if (!word.compare_exchange_weak(old, old | mask, std::memory_order_acq_rel)) continue;
+            t_tls_slot.slot = i;
+            uint32_t base = (uint32_t)(PPU_TLS_IMG + total * i);
+            if (g_tls_filesz) memcpy(vm_base + base, vm_base + g_tls_vaddr, g_tls_filesz);
+            if (g_tls_memsz > g_tls_filesz)
+                memset(vm_base + base + g_tls_filesz, 0, g_tls_memsz - g_tls_filesz);
+            return base + 0x7000u;
+        }
     }
-    if (g_tls_filesz) memcpy(vm_base + base, vm_base + g_tls_vaddr, g_tls_filesz);
-    if (g_tls_memsz > g_tls_filesz)
-        memset(vm_base + base + g_tls_filesz, 0, g_tls_memsz - g_tls_filesz);
-    return base + 0x7000u;                      /* TLS data at r13 - 0x7000 */
+    fprintf(stderr, "[ppu] TLS arena exhausted; refusing shared main TLS\n");
+    return 0;
 }
 
 static void ppu_thread_entry_trampoline(ppu_context* ctx)
@@ -4151,8 +4141,11 @@ static void ppu_thread_entry_trampoline(ppu_context* ctx)
     uint32_t code = 0, toc = 0;
     ppu_opd_resolve((uint32_t)ctx->cia, &code, &toc);
     if (toc) ctx->gpr[2] = toc;
-    if (!ctx->gpr[13]) { uint32_t tp = ppu_tls_new_block();
-                         ctx->gpr[13] = tp ? tp : PPU_TLS_TP; }
+    if (!ctx->gpr[13]) {
+        uint32_t tp = ppu_tls_new_block();
+        if (!tp && g_tls_memsz) { ctx->gpr[3] = (uint64_t)(int64_t)(int32_t)CELL_ENOMEM; return; }
+        ctx->gpr[13] = tp ? tp : PPU_TLS_TP;
+    }
     ppu_fn fn = ppu_lookup(code);
     if (!fn) {
         fprintf(stderr, "[ppu] thread entry 0x%08X (cia=0x%08X) not registered\n",
