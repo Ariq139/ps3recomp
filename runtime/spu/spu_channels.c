@@ -1707,6 +1707,18 @@ static void spu_report_cross_image(uint32_t addr, int want, int got)
  * cache here, not just in spu_lifted_lookup(), since the musttail dispatcher
  * and full resolver call spu_lookup() directly. Registration remains subject
  * to the existing startup/single-writer contract. */
+/* Address bits above the direct-mapped cache index still matter: hot
+ * overlay entrypoints separated by 1–2 KiB otherwise evict each other
+ * systematically. Mix the whole pair before selecting the bucket. Full
+ * key and registry generation checks below are unchanged. */
+static inline uint32_t spu_lookup_cache_hash(uint32_t addr, int image_id)
+{
+    uint32_t h = ((addr >> 2) ^ ((uint32_t)image_id * 0x9E3779B1u));
+    h ^= h >> 16;
+    h *= 0x7FEB352Du;
+    h ^= h >> 15;
+    return h;
+}
 #ifndef PS3RECOMP_SPU_LOOKUP_CACHE_SLOTS
 #define PS3RECOMP_SPU_LOOKUP_CACHE_SLOTS 256u
 #endif
@@ -1729,7 +1741,7 @@ spu_fn spu_lookup(uint32_t addr, int image_id)
 #if PS3RECOMP_SPU_LOOKUP_CACHE_SLOTS > 0
     const uint32_t epoch =
         atomic_load_explicit(&s_registry_count, memory_order_acquire) + 1u;
-    const uint32_t slot = ((addr >> 2) ^ ((uint32_t)image_id * 2654435761u)) &
+    const uint32_t slot = spu_lookup_cache_hash(addr, image_id) &
                          (PS3RECOMP_SPU_LOOKUP_CACHE_SLOTS - 1u);
     spu_lookup_cache_entry* cache = &s_lookup_cache[slot];
     if (cache->epoch == epoch && cache->addr == addr &&
@@ -1773,7 +1785,7 @@ typedef struct { uint32_t addr, gen; int image; spu_fn fn; } spu_lookup_memo;
 static SPU_TLS spu_lookup_memo t_lookup_memo[SPU_LOOKUP_MEMO_SIZE];
 static spu_fn spu_lookup_memoized(uint32_t addr, int image_id)
 {
-    spu_lookup_memo* m = &t_lookup_memo[((addr >> 2) ^ ((uint32_t)image_id * 0x9E3779B1u)) &
+    spu_lookup_memo* m = &t_lookup_memo[spu_lookup_cache_hash(addr, image_id) &
                                         (SPU_LOOKUP_MEMO_SIZE - 1)];
     const uint32_t gen = s_registry_count + 1;   /* +1: zero-init never matches */
     if (m->gen != gen || m->addr != addr || m->image != image_id) {
