@@ -545,6 +545,34 @@ s32 cellSpursDestroyJobQueue(CellSpursJobQueue* jq)
     return CELL_OK;
 }
 
+/* A nonblocking rejection before snapshot changes the observation point
+ * and error precedence (allocation/faults versus queue-full). Preserve the
+ * original order. Measure the exact work already discarded instead. */
+typedef struct {
+    uint64_t full, busy, aborted, binary_bytes, descriptor_bytes, guest_copy_bytes;
+} JqRejectProfile;
+static JqRejectProfile s_jq_reject_profile;
+static int s_jq_reject_profile_enabled = -1;
+
+/* Pool lock held. No diagnostics on the accepted hot path. */
+static void jq_note_rejected_locked(const JqTask* t, u32 flags, s32 rc)
+{
+    if (!(flags & JQ_FLAG_NON_BLOCKING)) return;
+    if (s_jq_reject_profile_enabled < 0) {
+        const char* e = getenv("SPURS_JQ_REJECT_PROFILE");
+        s_jq_reject_profile_enabled = e && !strcmp(e, "1");
+    }
+    if (!s_jq_reject_profile_enabled) return;
+    if (rc == (s32)CELL_SPURS_JQ_ERROR_QUEUE_FULL) ++s_jq_reject_profile.full;
+    else if (rc == (s32)CELL_SPURS_JQ_ERROR_BUSY) ++s_jq_reject_profile.busy;
+    else if (rc == (s32)CELL_SPURS_JQ_ERROR_ABORT) ++s_jq_reject_profile.aborted;
+    else return;
+    s_jq_reject_profile.binary_bytes += t->binary_size;
+    s_jq_reject_profile.descriptor_bytes += 2u * (uint64_t)t->descriptor_size;
+    if (t->owned_descriptor)
+        s_jq_reject_profile.guest_copy_bytes += t->descriptor_size;
+}
+
 s32 cellSpursShutdownJobQueue(void)
 {
     atomic_store_explicit(&s_queue_shutdown_requested, 1, memory_order_release);
@@ -566,7 +594,15 @@ s32 cellSpursShutdownJobQueue(void)
     jq_lock();
     s_pool_workers = 0;
     s_pool_stopping = 0;
+    const JqRejectProfile rejected = s_jq_reject_profile;
+    const int report_rejected = s_jq_reject_profile_enabled == 1;
+    memset(&s_jq_reject_profile, 0, sizeof(s_jq_reject_profile));
     jq_unlock();
+    if (report_rejected)
+        fprintf(stderr, "[JQ-REJECT] full=%llu busy=%llu abort=%llu binary=%llu descriptor=%llu guest-copy=%llu bytes\n",
+            (unsigned long long)rejected.full, (unsigned long long)rejected.busy,
+            (unsigned long long)rejected.aborted, (unsigned long long)rejected.binary_bytes,
+            (unsigned long long)rejected.descriptor_bytes, (unsigned long long)rejected.guest_copy_bytes);
     return CELL_OK;
 }
 
@@ -579,22 +615,8 @@ s32 cellSpursJoinJobQueue(void)
 /* Prepare immutable job header+image at submission time. DMA payload buffers
  * remain guest-owned and may be mutated by the title; hardware likewise
  * requires titles to synchronize those buffers with job execution. */
-static int jq_early_reject_enabled(void)
+static JqTask* jq_prepare(u32 job_ea, u32 descriptor_size)
 {
-    static atomic_int mode;
-    int value = atomic_load_explicit(&mode, memory_order_acquire);
-    if (!value) {
-        const char* e = getenv("SPURS_JQ_EARLY_REJECT");
-        value = e && !strcmp(e, "1") ? 2 : 1;
-        atomic_store_explicit(&mode, value, memory_order_release);
-    }
-    return value == 2;
-}
-
-static JqTask* jq_prepare(u32 job_ea, u32 descriptor_size,
-                          u32 slot, u32 flags, s32* error)
-{
-    *error = (s32)CELL_SPURS_JQ_ERROR_INVALID_ARGUMENT;
     if (!vm_base || !job_ea ||
         (descriptor_size != 128u && descriptor_size != 256u) ||
         job_ea > UINT32_MAX - descriptor_size) return NULL;
@@ -610,23 +632,6 @@ static JqTask* jq_prepare(u32 job_ea, u32 descriptor_size,
     if (ea64 > UINT32_MAX || ea64 == 0 || binary_size == 0 ||
         binary_size > 0x40000u || ea64 > UINT32_MAX - binary_size)
         return NULL;
-
-    /* Keep descriptor validation ahead of capacity rejection. On opt-in
-     * nonblocking submissions, observe queue state before allocating/copying
-     * the binary. Accepted submissions still take their immutable snapshot
-     * here and recheck capacity under the original lock. No reservation is
-     * held across guest reads or allocations. */
-    if ((flags & JQ_FLAG_NON_BLOCKING) && jq_early_reject_enabled()) {
-        jq_lock();
-        const JqState* q = &s_queues[slot];
-        const int full = q->in_use && q->accepting &&
-            (q->jobCount >= q->maxJobs || q->jobCount >= CELL_SPURS_JQ_MAX_JOBS);
-        jq_unlock();
-        if (full) {
-            *error = (s32)CELL_SPURS_JQ_ERROR_QUEUE_FULL;
-            return NULL;
-        }
-    }
 
     /* One allocation instead of a header allocation plus a binary allocation.
      * Keep a private byte-for-byte snapshot for every in-flight job. No
@@ -655,9 +660,8 @@ static s32 jq_push_slot_mode_flags(u32 slot, u32 job_ea, u32 jobSize,
         if(atomic_fetch_add_explicit(&records,1,memory_order_relaxed)<32)
             fprintf(stderr,"[jq-order] queue=%u tag=%u flags=%u copy=%d job=%08X\n",slot,tag,flags,copy_push,job_ea);
     }
-    s32 prepare_error;
-    JqTask* t = jq_prepare(job_ea, jobSize, slot, flags, &prepare_error);
-    if (!t) return prepare_error;
+    JqTask* t = jq_prepare(job_ea, jobSize);
+    if (!t) return (s32)CELL_SPURS_JQ_ERROR_INVALID_ARGUMENT;
     static int async_copy_enabled = -1;
     if (async_copy_enabled < 0) {
         const char* setting=getenv("SPURS_JQ_ASYNC_COPY");
@@ -683,15 +687,18 @@ static s32 jq_push_slot_mode_flags(u32 slot, u32 job_ea, u32 jobSize,
         if(flags & JQ_FLAG_NON_BLOCKING) {
             const s32 result = q->jobCount>=q->maxJobs || q->jobCount>=CELL_SPURS_JQ_MAX_JOBS
                 ? (s32)CELL_SPURS_JQ_ERROR_QUEUE_FULL : (s32)CELL_SPURS_JQ_ERROR_BUSY;
+            jq_note_rejected_locked(t, flags, result);
             jq_unlock();jq_free_task(t);return result;
         }
         jq_await();
     }
     if (!q->in_use || !q->accepting ||
         atomic_load_explicit(&s_queue_shutdown_requested, memory_order_acquire)) {
+        jq_note_rejected_locked(t, flags, (s32)CELL_SPURS_JQ_ERROR_ABORT);
         jq_unlock(); jq_free_task(t); return (s32)CELL_SPURS_JQ_ERROR_ABORT;
     }
     if (q->jobCount >= q->maxJobs || q->jobCount >= CELL_SPURS_JQ_MAX_JOBS) {
+        jq_note_rejected_locked(t, flags, (s32)CELL_SPURS_JQ_ERROR_QUEUE_FULL);
         jq_unlock(); jq_free_task(t); return (s32)CELL_SPURS_JQ_ERROR_QUEUE_FULL;
     }
     if (synchronous_copy) q->copy_sync_active = 1;
