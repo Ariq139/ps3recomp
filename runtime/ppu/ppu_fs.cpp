@@ -1548,6 +1548,7 @@ struct AioAsyncManager {
     size_t bytes = 0;
     unsigned pending = 0;
     bool starting = false, running = false, stopping = false, io_active = false;
+    bool callback_admitted = false;
 };
 static std::atomic<AioAsyncManager*> s_aio_manager{nullptr};
 static std::atomic<bool> s_aio_process_stopping{false};
@@ -1640,6 +1641,7 @@ static void fs_aio_service_cleanup(void*)
     std::lock_guard<std::mutex> hold(m->mutex);
     // Also reached after a nonlocal guest thread exit. Never retry a callback.
     m->stopping = true; m->starting = false; m->running = false; m->io_active = false;
+    m->callback_admitted = false;
     if (m->active) { fs_aio_free_locked(*m,m->active); m->active = nullptr; }
     fs_aio_discard_queue_locked(*m);
     m->cv.notify_all();
@@ -1653,7 +1655,7 @@ static void fs_aio_service_entry(void* opaque)
     {
         std::lock_guard<std::mutex> hold(m->mutex);
         m->starting = false;
-        if (m->stopping) { m->cv.notify_all(); return; }
+        if (m->stopping || s_aio_process_stopping.load()) { m->cv.notify_all(); return; }
         m->running = true; m->cv.notify_all();
     }
     for (;;) {
@@ -1661,7 +1663,7 @@ static void fs_aio_service_entry(void* opaque)
         {
             std::unique_lock<std::mutex> hold(m->mutex);
             m->cv.wait(hold,[&]{ return m->stopping || m->head; });
-            if (m->stopping) return;
+            if (m->stopping || s_aio_process_stopping.load()) return;
             q = m->head; m->head = q->next; if (!m->head) m->tail = nullptr;
             m->active = q; m->io_active = true;
         }
@@ -1669,7 +1671,11 @@ static void fs_aio_service_entry(void* opaque)
         {
             std::lock_guard<std::mutex> hold(m->mutex);
             m->io_active = false; m->cv.notify_all();
-            if (m->stopping) return;
+            if (m->stopping || s_aio_process_stopping.load()) return;
+            // Admission is serialized with shutdown under the manager lock.
+            // Once admitted, completion is in flight and shutdown will not
+            // join it, even if guest dispatch has not begun executing yet.
+            m->callback_admitted = true;
             // Guest must retain aio and buffer until completion. Never use a
             // different VM mapping if the host changed it while I/O was pending.
             if (vm_base != q->vm || ppu_vm_size != q->vm_size ||
@@ -1695,8 +1701,9 @@ static void fs_aio_service_entry(void* opaque)
         }
         {
             std::lock_guard<std::mutex> hold(m->mutex);
+            m->callback_admitted = false;
             fs_aio_free_locked(*m,q); m->active = nullptr; m->cv.notify_all();
-            if (!delivered || m->stopping) return;
+            if (!delivered || m->stopping || s_aio_process_stopping.load()) return;
         }
     }
 }
@@ -1719,7 +1726,7 @@ static int32_t fs_aio_async_init(const char* mount)
         if (rc != CELL_OK) { m->starting = false; m->cv.notify_all(); return rc; }
     }
     m->cv.wait(hold,[&]{return !m->starting;});
-    if (!m->running || m->stopping) return (int32_t)CELL_EAGAIN;
+    if (!m->running || m->stopping || s_aio_process_stopping.load()) return (int32_t)CELL_EAGAIN;
     if (fs_aio_mount_index(*m,name) >= 0) return (int32_t)CELL_OK;
     for (auto& slot : m->mounts) if (!slot.name[0]) {
         strcpy(slot.name,name); return (int32_t)CELL_OK;
@@ -1763,7 +1770,8 @@ static void fs_aio_process_stop()
     m->stopping = true;
     fs_aio_discard_queue_locked(*m); m->cv.notify_all();
     // Host I/O and service startup may be awaited; arbitrary guest callbacks
-    // must NOT be joined here. This is process termination, not VM reset.
+    // (including callbacks admitted but not yet executing) must NOT be joined
+    // here. This is process termination, not VM reset.
     m->cv.wait(hold,[&]{return !m->io_active && !m->starting;});
 }
 
@@ -1777,7 +1785,7 @@ static void fs_aio_async_submit(ppu_context* ctx, bool write)
     auto* m = s_aio_manager.load();
     if (!m) { result(CELL_ENXIO); return; }
     std::lock_guard<std::mutex> hold(m->mutex);
-    if (!m->running || m->stopping) { result(CELL_ENXIO); return; }
+    if (!m->running || m->stopping || s_aio_process_stopping.load()) { result(CELL_ENXIO); return; }
     const int fd = (int)guest_be32(aio);
     const uint64_t offset = guest_be64(aio+8), size = guest_be64(aio+0x18);
     const uint32_t buf = guest_be32(aio+0x10);

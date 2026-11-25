@@ -31,7 +31,8 @@ cancellation/finish ABI. Do not use the mode for titles requiring another
 policy without verification.
 
 Process shutdown stops acceptance, drops undelivered queued requests, and
-waits only for host I/O/startup, never for an active guest callback. The
+waits only for host I/O/startup, never for a guest callback admitted before
+shutdown (even one not yet executing). The
 existing standalone process termination model is required; this is not a
 safe reusable-VM teardown protocol. Callback exceptions or nonlocal thread
 exit quarantine the queue instead of retrying a possibly executed callback.

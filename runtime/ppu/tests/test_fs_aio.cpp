@@ -44,8 +44,8 @@ static void wr32(uint32_t a, uint32_t v) { vm_write32(a, v); }
 static void wr64(uint32_t a, uint64_t v) { vm_write64(a, v); }
 
 static int fails = 0;
-#define CHECK(c, ...) do { printf((c) ? "[PASS] " : "[FAIL] "); printf(__VA_ARGS__); printf("\n"); \
-                           if (!(c)) fails++; } while (0)
+#define CHECK(c, ...) do { const bool passed = !!(c); printf(passed ? "[PASS] " : "[FAIL] "); \
+                           printf(__VA_ARGS__); printf("\n"); if (!passed) fails++; } while (0)
 
 static const uint32_t WORDS = 1u << 16;   /* 256 KiB file */
 
@@ -189,6 +189,9 @@ static void test_async_queue(int fd)
         }
     }
     CHECK(holds(0x6000,0x1000,16),"guest bytes published before callback");
+    { std::lock_guard<std::mutex> hold(manager->mutex);
+      CHECK(manager->callback_admitted, "callback admitted before dispatch"); }
+    CHECK(fs_aio_async_cancel((int32_t)rd32(0x290))==(int32_t)CELL_EBUSY,"active cancellation rejected");
     CHECK(aio_fixture_submit(0x840,fd,0x2000,0x6100,16,0x294)==CELL_OK,"second request queued during callback");
     CHECK(aio_fixture_submit(0x880,fd,0x3000,0x6200,16,0x298)==CELL_OK,"third request queued during callback");
     CHECK(fs_aio_async_cancel((int32_t)rd32(0x298))==CELL_OK,"queued cancellation accepted");
@@ -243,7 +246,11 @@ int main(int argc, char** argv)
     }
 
     ppu_vfs_root = dir;
-    ppu_context ctx;
+    ppu_context ctx{};
+    strcpy((char*)mem + 0x100, "/dev_hdd1");
+    ctx.gpr[3] = 0x100;
+    cellFsAioInit(&ctx);
+    CHECK((uint32_t)ctx.gpr[3] == CELL_OK, "initialize legacy AIO fixture");
 
     /* 1. An AIO write lands at its own offset and leaves the fd's position;
      *    reads and writes never share an id. First, so neither has drawn an
