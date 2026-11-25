@@ -8009,7 +8009,7 @@ static void render_frame_impl(void)
              * Invalidate on alternate draw paths and target changes. */
             const char* state_cache_env = getenv("RSX_D3D12_STATE_CACHE");
             const int state_cache = state_cache_env && !strcmp(state_cache_env, "1");
-            int raster_valid = 0, output_valid = 0, root_valid = 0;
+            int raster_valid = 0, output_valid = 0, root_valid = 0, fpcb_valid = 0;
             D3D12_VIEWPORT last_vp = {0};
             D3D12_RECT last_sc = {0};
             UINT last_stencil = 0;
@@ -8029,7 +8029,7 @@ static void render_frame_impl(void)
                     else if (seen_small_vp && !captured &&
                              dr->vp_w == s_d3d.width && is_display_target_key(dr->rt_off)) {
                         captured = 1;
-                        raster_valid = output_valid = root_valid = 0;
+                        raster_valid = output_valid = root_valid = fpcb_valid = 0;
                         screen_copy_capture(fi, cur_rt);
                         subvp_capture(fi, cur_rt);
                         s_d3d.cmd_list->lpVtbl->OMSetRenderTargets(
@@ -8055,7 +8055,7 @@ static void render_frame_impl(void)
                     want_ds_readonly != cur_ds_readonly ||
                     wantm[0] != cur_m[0] ||
                     wantm[1] != cur_m[1] || wantm[2] != cur_m[2]) {
-                    raster_valid = output_valid = root_valid = 0;
+                    raster_valid = output_valid = root_valid = fpcb_valid = 0;
                     D3D12_CPU_DESCRIPTOR_HANDLE rh[4];
                     UINT nrt = want_none ? 0u : 1u;
                     if (nrt) rh[0] = rtv_handle;
@@ -8140,6 +8140,7 @@ static void render_frame_impl(void)
                     for (int _m = 0; _m < 3; _m++) cur_m[_m] = wantm[_m];
                 }
                 if (dr->is_clear) {
+                    raster_valid = output_valid = root_valid = fpcb_valid = 0;
                     D3D12_CPU_DESCRIPTOR_HANDLE rh =
                         (cur_rt >= 0) ? off_rt_rtv(cur_rt) : rtv_handle;
                     /* RT_CLEARDBG=1: clear offscreen targets to magenta rather
@@ -8283,13 +8284,13 @@ static void render_frame_impl(void)
                     dvp_w = dvp.Width;    dvp_h = dvp.Height;
                     if (!state_cache || !raster_valid || memcmp(&last_vp, &dvp, sizeof(dvp))) {
                         s_d3d.cmd_list->lpVtbl->RSSetViewports(s_d3d.cmd_list, 1, &dvp);
-                        last_vp = dvp;
+                        if (state_cache) last_vp = dvp;
                     }
                     if (!state_cache || !raster_valid || memcmp(&last_sc, &dsc, sizeof(dsc))) {
                         s_d3d.cmd_list->lpVtbl->RSSetScissorRects(s_d3d.cmd_list, 1, &dsc);
-                        last_sc = dsc;
+                        if (state_cache) last_sc = dsc;
                     }
-                    raster_valid = 1;
+                    raster_valid = state_cache;
                 }
                 /* Per-draw descriptor table: fragment SRVs occupy t0-t15,
                  * vertex SRVs t16-t19. Transition sampled offscreen targets
@@ -8332,24 +8333,25 @@ static void render_frame_impl(void)
                 if (!state_cache || !root_valid || last_sampler != draw_sampler_table.ptr) {
                     s_d3d.cmd_list->lpVtbl->SetGraphicsRootDescriptorTable(
                         s_d3d.cmd_list, 3, draw_sampler_table);
-                    last_sampler = draw_sampler_table.ptr;
+                    if (state_cache) last_sampler = draw_sampler_table.ptr;
                 }
                 /* Compare the actual GPU address, never guest slot identity. */
                 const UINT64 vpcb = s_d3d.vp_cb->lpVtbl->GetGPUVirtualAddress(s_d3d.vp_cb)
                     + ((u64)s_d3d.vp_parity * MAX_DRAWS + dr->vp_cb_slot) * VP_CB_STRIDE;
                 if (!state_cache || !root_valid || last_vpcb != vpcb) {
                     s_d3d.cmd_list->lpVtbl->SetGraphicsRootConstantBufferView(s_d3d.cmd_list, 0, vpcb);
-                    last_vpcb = vpcb;
+                    if (state_cache) last_vpcb = vpcb;
                 }
                 if (s_d3d.vp_fpcb) {
                     const UINT64 fpcb = s_d3d.vp_fpcb->lpVtbl->GetGPUVirtualAddress(s_d3d.vp_fpcb)
                         + ((u64)s_d3d.vp_parity * MAX_DRAWS + dr->cb_slot) * VP_FPCB_STRIDE;
-                    if (!state_cache || !root_valid || last_fpcb != fpcb) {
+                    if (!state_cache || !fpcb_valid || last_fpcb != fpcb) {
                         s_d3d.cmd_list->lpVtbl->SetGraphicsRootConstantBufferView(s_d3d.cmd_list, 2, fpcb);
-                        last_fpcb = fpcb;
+                        if (state_cache) last_fpcb = fpcb;
                     }
                 }
-                root_valid = 1;
+                fpcb_valid = state_cache && s_d3d.vp_fpcb != NULL;
+                root_valid = state_cache;
                 /* DRAWARGS=<N>: the arguments actually handed to the GPU, plus
                  * the target they are aimed at. A zero vertex count, or a start
                  * vertex past the buffer, rasterises nothing while every other
@@ -8388,13 +8390,13 @@ static void render_frame_impl(void)
                 const UINT stencil_ref = dr->stencil.front_ref & 0xFFu;
                 if (!state_cache || !output_valid || last_stencil != stencil_ref) {
                     s_d3d.cmd_list->lpVtbl->OMSetStencilRef(s_d3d.cmd_list, stencil_ref);
-                    last_stencil = stencil_ref;
+                    if (state_cache) last_stencil = stencil_ref;
                 }
                 if (!state_cache || !output_valid || memcmp(last_blend, dr->blend_color, sizeof(last_blend))) {
                     s_d3d.cmd_list->lpVtbl->OMSetBlendFactor(s_d3d.cmd_list, dr->blend_color);
-                    memcpy(last_blend, dr->blend_color, sizeof(last_blend));
+                    if (state_cache) memcpy(last_blend, dr->blend_color, sizeof(last_blend));
                 }
-                output_valid = 1;
+                output_valid = state_cache;
                 d3d12_apply_flat_vertex_order(dr);
                 const u32 draw_stride = dr->vp_stride ? dr->vp_stride : VP_VERT_STRIDE;
                 D3D12_VERTEX_BUFFER_VIEW draw_vbv;
