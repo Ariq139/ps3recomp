@@ -21,6 +21,16 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <math.h>
+
+/* x86-64 has SSE2 by default. Other hosts retain the portable scalar path.
+ * AUDIO_FORCE_SCALAR_MIX is a compile-time diagnostic/reference option. */
+#if !defined(AUDIO_FORCE_SCALAR_MIX) && !defined(_M_ARM64EC) && \
+    (defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2))
+# include <emmintrin.h>
+# define AUDIO_MIX_SSE2 1
+#else
+# define AUDIO_MIX_SSE2 0
+#endif
 #include "ps3emu/log_first.h"
 #include "ps3emu/thread_name.h"
 
@@ -447,6 +457,35 @@ static inline float ld_be_f32(const float* p)
     return f;
 }
 
+/* A stable stereo gain is clamped once per block instead of once per
+ * sample frame. Each output lane keeps the same multiply/add order and
+ * ports are still accumulated in the original order. Guest PCM is BE.
+ * Ramping gains and other channel layouts use the original mixer. */
+static inline void audio_mix_stereo_constant(float* dst, const float* src,
+                                             u32 frames, float level)
+{
+    if (!isfinite(level) || level < 0.0f) level = 0.0f;
+    if (level > 1.0f) level = 1.0f;
+    const u32 count = frames * 2u;
+    u32 i = 0;
+#if AUDIO_MIX_SSE2
+    const __m128 gain = _mm_set1_ps(level);
+    for (; i + 4u <= count; i += 4u) {
+        __m128i x;
+        memcpy(&x, src + i, sizeof(x));
+        /* Swap bytes within each halfword, then swap halfwords within
+         * each word. This preserves the original IEEE float bit patterns. */
+        x = _mm_or_si128(_mm_slli_epi16(x, 8), _mm_srli_epi16(x, 8));
+        x = _mm_or_si128(_mm_slli_epi32(x, 16), _mm_srli_epi32(x, 16));
+        const __m128 old = _mm_loadu_ps(dst + i);
+        const __m128 scaled = _mm_mul_ps(_mm_castsi128_ps(x), gain);
+        _mm_storeu_ps(dst + i, _mm_add_ps(old, scaled));
+    }
+#endif
+    for (; i < count; ++i)
+        dst[i] += ld_be_f32(src + i) * level;
+}
+
 /* Mix one block from all active ports into s_mix_buffer (stereo float) */
 static void audio_mix_one_block(void)
 {
@@ -513,7 +552,10 @@ static void audio_mix_one_block(void)
             prev_nz[p] = nz; } }
 #endif
 
-        for (u32 s = 0; s < CELL_AUDIO_BLOCK_SAMPLES; s++) {
+        if (nch == 2 && !port->level_remaining) {
+            audio_mix_stereo_constant(s_mix_buffer, src,
+                                      CELL_AUDIO_BLOCK_SAMPLES, port->level_current);
+        } else for (u32 s = 0; s < CELL_AUDIO_BLOCK_SAMPLES; s++) {
             if (port->level_remaining) {
                 port->level_current += port->level_step;
                 if (--port->level_remaining == 0)
