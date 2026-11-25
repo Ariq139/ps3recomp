@@ -1877,8 +1877,14 @@ static inline void ppu_null_read_report(uint32_t a, int width, void* ra)
  * stores (vm_write*_inl) likewise for the store diagnostics. */
 extern "C" int vm_inline_ok = 0;
 extern "C" int vm_inline_st_ok = 0;
+/* Consecutive-read logging is diagnostic only. Keep it off the ordinary
+ * out-of-line memory path unless explicitly requested before launch. */
+static bool s_hotread_enabled = false;
 static struct VmInlineInit {
     VmInlineInit() {
+        /* Preserve presence-based diagnostic semantics; SPINBT needs the
+         * same consecutive-read detector even without PPU_HOTREAD. */
+        s_hotread_enabled = getenv("PPU_HOTREAD") || getenv("PPU_SPINBT");
         static const char* const vars[] = {
             "PPU_RWATCH", "PPU_FORCE_READ_ADDR", "YDKJ_RWATCH", "PPU_RVAL", "PPU_RVAL64",
             "PPU_HOTMAP", "PPU_HOTREAD", "PPU_SPINBT", 0 };
@@ -1920,7 +1926,7 @@ uint8_t  vm_read8 (uint64_t a) { if (vm_oob((uint32_t)a,1)) return 0; vm_hotmap(
      * Every width shares one window so a byte-at-a-time strcmp is caught as
      * readily as a word load. */
     ppu_rwatch_hit((uint32_t)a, 1, __builtin_return_address(0));
-    { static PPU_THREAD_LOCAL uint32_t last=0xFFFFFFFFu; static PPU_THREAD_LOCAL uint32_t n=0;
+    if (s_hotread_enabled) { static PPU_THREAD_LOCAL uint32_t last=0xFFFFFFFFu; static PPU_THREAD_LOCAL uint32_t n=0;
       if ((uint32_t)a==last) { if (++n==200000) {
           fprintf(stderr, "[HOTREAD8] spinning on 0x%08X val=0x%02X tid=%lu guest-fn=0x%08X\n",
                   (uint32_t)a, vm_base[(uint32_t)a], GetCurrentThreadId(),
@@ -1929,7 +1935,7 @@ uint8_t  vm_read8 (uint64_t a) { if (vm_oob((uint32_t)a,1)) return 0; vm_hotmap(
       else { last=(uint32_t)a; n=0; } }
     return vm_base[(uint32_t)a]; }
 uint16_t vm_read16(uint64_t a) { if (vm_oob((uint32_t)a,2)) return 0; ppu_rwatch_hit((uint32_t)a, 2, __builtin_return_address(0)); vm_hotmap((uint32_t)a,2); uint16_t v; memcpy(&v, vm_base + (uint32_t)a, 2);
-    { static PPU_THREAD_LOCAL uint32_t last=0xFFFFFFFFu; static PPU_THREAD_LOCAL uint32_t n=0;
+    if (s_hotread_enabled) { static PPU_THREAD_LOCAL uint32_t last=0xFFFFFFFFu; static PPU_THREAD_LOCAL uint32_t n=0;
       if ((uint32_t)a==last) { if (++n==200000) {
           fprintf(stderr, "[HOTREAD16] spinning on 0x%08X tid=%lu guest-fn=0x%08X\n",
                   (uint32_t)a, GetCurrentThreadId(),
@@ -2016,7 +2022,7 @@ uint32_t vm_read32(uint64_t a) { if (vm_oob((uint32_t)a,4)) return 0; ppu_rwatch
           for(uint32_t i=0;i<NB;i++) cnt[i]=0; } } }
     /* Hot-poll detector: a thread spinning on the same address (e.g. a GCM FIFO
      * get-pointer / label waiting on RSX) reads it thousands of times in a row. */
-    { static PPU_THREAD_LOCAL uint32_t last=0xFFFFFFFFu; static PPU_THREAD_LOCAL uint32_t n=0;
+    if (s_hotread_enabled) { static PPU_THREAD_LOCAL uint32_t last=0xFFFFFFFFu; static PPU_THREAD_LOCAL uint32_t n=0;
       if ((uint32_t)a==last) { if (++n==200000) { if (((uint32_t)a & ~0xFFFu) == (VM_HLE_INJECT_BASE + 0x2000u)) {
               /* A spin on the GCM control block is a fence/FIFO wait. Print the
                * WHOLE block: put vs get says whether the RSX side is behind or
@@ -2055,7 +2061,7 @@ uint64_t vm_read64(uint64_t a) { if (vm_oob((uint32_t)a,8)) return 0; vm_hotmap(
 #ifdef VM_SAMPLE_READS
     { static uint64_t c=0; if ((++c % 2000000ull)==0) fprintf(stderr, "[sample] read64 0x%08X\n", (uint32_t)a); }
 #endif
-    { static PPU_THREAD_LOCAL uint32_t last=0xFFFFFFFFu; static PPU_THREAD_LOCAL uint32_t n=0;
+    if (s_hotread_enabled) { static PPU_THREAD_LOCAL uint32_t last=0xFFFFFFFFu; static PPU_THREAD_LOCAL uint32_t n=0;
       if ((uint32_t)a==last) { if (++n==200000) { fprintf(stderr, "[HOTREAD64] spinning on 0x%08X (=0x%016llX) guest-fn=0x%08X\n", (uint32_t)a, (unsigned long long)__builtin_bswap64(v), ppu_prof_resolve_host(__builtin_return_address(0))); n=0;
 #ifdef _WIN32
         { static int64_t wa=-2; if(wa==-2){const char*e=getenv("PPU_SPINBT"); wa=e?(int64_t)strtoul(e,0,0):-1;}
