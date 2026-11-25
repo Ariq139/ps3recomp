@@ -457,6 +457,7 @@ static inline float ld_be_f32(const float* p)
     return f;
 }
 
+#if AUDIO_MIX_SSE2
 /* A stable stereo gain is clamped once per block instead of once per
  * sample frame. Each output lane keeps the same multiply/add order and
  * ports are still accumulated in the original order. Guest PCM is BE.
@@ -485,6 +486,8 @@ static inline void audio_mix_stereo_constant(float* dst, const float* src,
     for (; i < count; ++i)
         dst[i] += ld_be_f32(src + i) * level;
 }
+
+#endif /* AUDIO_MIX_SSE2 */
 
 /* Mix one block from all active ports into s_mix_buffer (stereo float) */
 static void audio_mix_one_block(void)
@@ -552,10 +555,13 @@ static void audio_mix_one_block(void)
             prev_nz[p] = nz; } }
 #endif
 
+#if AUDIO_MIX_SSE2
         if (nch == 2 && !port->level_remaining) {
             audio_mix_stereo_constant(s_mix_buffer, src,
                                       CELL_AUDIO_BLOCK_SAMPLES, port->level_current);
-        } else for (u32 s = 0; s < CELL_AUDIO_BLOCK_SAMPLES; s++) {
+        } else
+#endif
+        for (u32 s = 0; s < CELL_AUDIO_BLOCK_SAMPLES; s++) {
             if (port->level_remaining) {
                 port->level_current += port->level_step;
                 if (--port->level_remaining == 0)
