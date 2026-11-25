@@ -8004,6 +8004,17 @@ static void render_frame_impl(void)
             int cur_m[3] = {-1, -1, -1};           /* MRT B/C/D: -1 = unbound   */
             double _rec0 = perf_on() ? perf_now() : 0.0;
             int seen_small_vp = 0, captured = 0;
+            /* Command-list-local, opt-in A/B: no PSO pointer caching (PSOs
+             * may be evicted during lookup), no skipped transitions/copies.
+             * Invalidate on alternate draw paths and target changes. */
+            const char* state_cache_env = getenv("RSX_D3D12_STATE_CACHE");
+            const int state_cache = state_cache_env && !strcmp(state_cache_env, "1");
+            int raster_valid = 0, output_valid = 0, root_valid = 0;
+            D3D12_VIEWPORT last_vp = {0};
+            D3D12_RECT last_sc = {0};
+            UINT last_stencil = 0;
+            float last_blend[4] = {0};
+            UINT64 last_sampler = 0, last_vpcb = 0, last_fpcb = 0;
             for (u32 d = 0; d < s_d3d.draw_count && d < MAX_DRAWS; d++) {
                 const D3D12DrawRecord* dr = &s_d3d.draws[d];
                 if (!dr->is_vp) continue;
@@ -8018,6 +8029,7 @@ static void render_frame_impl(void)
                     else if (seen_small_vp && !captured &&
                              dr->vp_w == s_d3d.width && is_display_target_key(dr->rt_off)) {
                         captured = 1;
+                        raster_valid = output_valid = root_valid = 0;
                         screen_copy_capture(fi, cur_rt);
                         subvp_capture(fi, cur_rt);
                         s_d3d.cmd_list->lpVtbl->OMSetRenderTargets(
@@ -8043,6 +8055,7 @@ static void render_frame_impl(void)
                     want_ds_readonly != cur_ds_readonly ||
                     wantm[0] != cur_m[0] ||
                     wantm[1] != cur_m[1] || wantm[2] != cur_m[2]) {
+                    raster_valid = output_valid = root_valid = 0;
                     D3D12_CPU_DESCRIPTOR_HANDLE rh[4];
                     UINT nrt = want_none ? 0u : 1u;
                     if (nrt) rh[0] = rtv_handle;
@@ -8268,8 +8281,15 @@ static void render_frame_impl(void)
                                       (LONG)sx1c, (LONG)sy1c};
                     dvp_x = dvp.TopLeftX; dvp_y = dvp.TopLeftY;
                     dvp_w = dvp.Width;    dvp_h = dvp.Height;
-                    s_d3d.cmd_list->lpVtbl->RSSetViewports(s_d3d.cmd_list, 1, &dvp);
-                    s_d3d.cmd_list->lpVtbl->RSSetScissorRects(s_d3d.cmd_list, 1, &dsc);
+                    if (!state_cache || !raster_valid || memcmp(&last_vp, &dvp, sizeof(dvp))) {
+                        s_d3d.cmd_list->lpVtbl->RSSetViewports(s_d3d.cmd_list, 1, &dvp);
+                        last_vp = dvp;
+                    }
+                    if (!state_cache || !raster_valid || memcmp(&last_sc, &dsc, sizeof(dsc))) {
+                        s_d3d.cmd_list->lpVtbl->RSSetScissorRects(s_d3d.cmd_list, 1, &dsc);
+                        last_sc = dsc;
+                    }
+                    raster_valid = 1;
                 }
                 /* Per-draw descriptor table: fragment SRVs occupy t0-t15,
                  * vertex SRVs t16-t19. Transition sampled offscreen targets
@@ -8309,16 +8329,27 @@ static void render_frame_impl(void)
                 if (dpso && !d3d12_sampler_table_for_draw(
                         dr, &draw_sampler_layout, &draw_sampler_table))
                     draw_sampler_table = default_sampler_table;
-                s_d3d.cmd_list->lpVtbl->SetGraphicsRootDescriptorTable(
-                    s_d3d.cmd_list, 3, draw_sampler_table);
-                /* Per-draw constants: this draw's vp_cb + FP texscale slots. */
-                s_d3d.cmd_list->lpVtbl->SetGraphicsRootConstantBufferView(s_d3d.cmd_list, 0,
-                    s_d3d.vp_cb->lpVtbl->GetGPUVirtualAddress(s_d3d.vp_cb)
-                    + ((u64)s_d3d.vp_parity * MAX_DRAWS + dr->vp_cb_slot) * VP_CB_STRIDE);
-                if (s_d3d.vp_fpcb)
-                    s_d3d.cmd_list->lpVtbl->SetGraphicsRootConstantBufferView(s_d3d.cmd_list, 2,
-                        s_d3d.vp_fpcb->lpVtbl->GetGPUVirtualAddress(s_d3d.vp_fpcb)
-                        + ((u64)s_d3d.vp_parity * MAX_DRAWS + dr->cb_slot) * VP_FPCB_STRIDE);
+                if (!state_cache || !root_valid || last_sampler != draw_sampler_table.ptr) {
+                    s_d3d.cmd_list->lpVtbl->SetGraphicsRootDescriptorTable(
+                        s_d3d.cmd_list, 3, draw_sampler_table);
+                    last_sampler = draw_sampler_table.ptr;
+                }
+                /* Compare the actual GPU address, never guest slot identity. */
+                const UINT64 vpcb = s_d3d.vp_cb->lpVtbl->GetGPUVirtualAddress(s_d3d.vp_cb)
+                    + ((u64)s_d3d.vp_parity * MAX_DRAWS + dr->vp_cb_slot) * VP_CB_STRIDE;
+                if (!state_cache || !root_valid || last_vpcb != vpcb) {
+                    s_d3d.cmd_list->lpVtbl->SetGraphicsRootConstantBufferView(s_d3d.cmd_list, 0, vpcb);
+                    last_vpcb = vpcb;
+                }
+                if (s_d3d.vp_fpcb) {
+                    const UINT64 fpcb = s_d3d.vp_fpcb->lpVtbl->GetGPUVirtualAddress(s_d3d.vp_fpcb)
+                        + ((u64)s_d3d.vp_parity * MAX_DRAWS + dr->cb_slot) * VP_FPCB_STRIDE;
+                    if (!state_cache || !root_valid || last_fpcb != fpcb) {
+                        s_d3d.cmd_list->lpVtbl->SetGraphicsRootConstantBufferView(s_d3d.cmd_list, 2, fpcb);
+                        last_fpcb = fpcb;
+                    }
+                }
+                root_valid = 1;
                 /* DRAWARGS=<N>: the arguments actually handed to the GPU, plus
                  * the target they are aimed at. A zero vertex count, or a start
                  * vertex past the buffer, rasterises nothing while every other
@@ -8354,10 +8385,16 @@ static void render_frame_impl(void)
                       s_d3d.cmd_list->lpVtbl->OMSetRenderTargets(
                         s_d3d.cmd_list, bn, bn ? brh : NULL, FALSE, &active_dsv);
                   } }
-                s_d3d.cmd_list->lpVtbl->OMSetStencilRef(
-                    s_d3d.cmd_list, dr->stencil.front_ref & 0xFFu);
-                s_d3d.cmd_list->lpVtbl->OMSetBlendFactor(s_d3d.cmd_list,
-                                                         dr->blend_color);
+                const UINT stencil_ref = dr->stencil.front_ref & 0xFFu;
+                if (!state_cache || !output_valid || last_stencil != stencil_ref) {
+                    s_d3d.cmd_list->lpVtbl->OMSetStencilRef(s_d3d.cmd_list, stencil_ref);
+                    last_stencil = stencil_ref;
+                }
+                if (!state_cache || !output_valid || memcmp(last_blend, dr->blend_color, sizeof(last_blend))) {
+                    s_d3d.cmd_list->lpVtbl->OMSetBlendFactor(s_d3d.cmd_list, dr->blend_color);
+                    memcpy(last_blend, dr->blend_color, sizeof(last_blend));
+                }
+                output_valid = 1;
                 d3d12_apply_flat_vertex_order(dr);
                 const u32 draw_stride = dr->vp_stride ? dr->vp_stride : VP_VERT_STRIDE;
                 D3D12_VERTEX_BUFFER_VIEW draw_vbv;
