@@ -32,6 +32,7 @@
 #  include "../platform/win32_compat.h"   /* _Interlocked*, YieldProcessor, Sleep */
 #endif
 
+#include "ppu_thread_lifetime.h"
 #include "ppu_tls.h"   /* PPU_THREAD_LOCAL, without a second ppu_context */
 #include "ps3emu/aio_service.h"
 #include "../ps3_console.h"
@@ -954,7 +955,15 @@ static ppu_context* g_resv_ctxs[PPU_RESV_MAX];
  * below the count they see is initialized. Bound: PPU_THREAD_MAX (64) table
  * slots + the main thread = 65 distinct contexts, well under PPU_RESV_MAX. */
 static volatile LONG g_resv_ctx_n = 0;
-static volatile LONG g_resv_reg_lock = 0;
+static SRWLOCK g_resv_reg_lock=SRWLOCK_INIT;
+struct PpuResvRegistryRead {
+    PpuResvRegistryRead(){AcquireSRWLockShared(&g_resv_reg_lock);}
+    ~PpuResvRegistryRead(){ReleaseSRWLockShared(&g_resv_reg_lock);}
+};
+struct PpuResvRegistryWrite {
+    PpuResvRegistryWrite(){AcquireSRWLockExclusive(&g_resv_reg_lock);}
+    ~PpuResvRegistryWrite(){ReleaseSRWLockExclusive(&g_resv_reg_lock);}
+};
 /* Sharded by address: a single global lock convoyed all stwcx (workers spinning
  * on a descheduled holder -> loader too slow to finish jobs). Shard by the
  * 16-byte-block of ea so unrelated structures never serialize; same-structure
@@ -971,10 +980,10 @@ extern "C" int g_resv_store_active = -1;   /* -1 uninit, 0 off, 1 on */
 extern "C" void ppu_resv_register(ppu_context* c)
 {
     if (g_resv_store_active < 0) g_resv_store_active = getenv("PPU_RESV_STORE") ? 1 : 0;
-    while (_InterlockedExchange(&g_resv_reg_lock, 1)) { while (g_resv_reg_lock) YieldProcessor(); }
+    PpuResvRegistryWrite hold;
     const long n = __atomic_load_n(&g_resv_ctx_n, __ATOMIC_RELAXED);   /* only writers change it */
     for (long i = 0; i < n; i++)
-        if (g_resv_ctxs[i] == c) { _InterlockedExchange(&g_resv_reg_lock, 0); return; }
+        if (g_resv_ctxs[i] == c) return;
     if (n == PPU_RESV_MAX) {
         /* A context left out would silently lose cross-thread reservation
          * breaks (lost updates in the guest's lock-free code): stop instead. */
@@ -985,7 +994,6 @@ extern "C" void ppu_resv_register(ppu_context* c)
     }
     g_resv_ctxs[n] = c;
     __atomic_store_n(&g_resv_ctx_n, (LONG)(n + 1), __ATOMIC_RELEASE);
-    _InterlockedExchange(&g_resv_reg_lock, 0);
 }
 /* Where every guest thread is, as a GUEST address.
  *
@@ -1012,6 +1020,7 @@ extern "C" void ppu_resv_register(ppu_context* c)
  * last DIRECT call site and nothing more. */
 extern "C" void ppu_report_guest_lrs(void)
 {
+    PpuResvRegistryRead hold;
     long n = __atomic_load_n(&g_resv_ctx_n, __ATOMIC_ACQUIRE);
     for (long i = 0; i < n; i++) {
         ppu_context* c = g_resv_ctxs[i];
@@ -1115,6 +1124,19 @@ extern "C" void ppu_resv_open_done(ppu_context* ctx)
     t_resv_open_ctx = nullptr;
     __atomic_fetch_sub(ppu_resv_line_slot(t_resv_open_line), 1, __ATOMIC_RELEASE);
 }
+/* Retire on the owner host thread before any slot or stack can be reused. */
+static void ppu_retire_thread_context(void* opaque)
+{
+    auto* ctx=static_cast<ppu_context*>(opaque);
+    ppu_resv_open_done(ctx);
+    PpuResvRegistryWrite hold;
+    const long n=__atomic_load_n(&g_resv_ctx_n,__ATOMIC_RELAXED);
+    for(long i=0;i<n;++i)if(g_resv_ctxs[i]==ctx){
+        g_resv_ctxs[i]=g_resv_ctxs[n-1];g_resv_ctxs[n-1]=nullptr;
+        __atomic_store_n(&g_resv_ctx_n,(LONG)(n-1),__ATOMIC_RELEASE);break;
+    }
+    __atomic_store_n(&ctx->reserve_addr,PPU_RESV_INVALID,__ATOMIC_RELEASE);
+}
 /* True when no context but `self` (nullptr: none) can hold an open reservation
  * on ea's line: a break of that line that spares `self` has nothing to do. */
 static inline bool ppu_resv_line_clear(ppu_context* self, uint32_t ea)
@@ -1135,6 +1157,7 @@ extern "C" void ppu_resv_break_store(uint64_t ea)
 {
     if (ppu_resv_line_clear(nullptr, (uint32_t)ea)) return;   /* opt-in, see ppu_resv_open_note */
     uint32_t a = (uint32_t)ea & ~3u;
+    PpuResvRegistryRead hold;
     long n = __atomic_load_n(&g_resv_ctx_n, __ATOMIC_ACQUIRE);
     for (long i = 0; i < n; i++) {
         ppu_context* c = g_resv_ctxs[i];
@@ -1154,6 +1177,7 @@ extern "C" void ppu_resv_break_line(uint32_t ea)
     const uint32_t line = ea & ~127u;
     ppu_context* self = g_active_ctx;
     if (ppu_resv_line_clear(self, ea)) return;   /* opt-in, see ppu_resv_open_note */
+    PpuResvRegistryRead hold;
     long n = __atomic_load_n(&g_resv_ctx_n, __ATOMIC_ACQUIRE);
     for (long i = 0; i < n; i++) {
         ppu_context* c = g_resv_ctxs[i];
@@ -1172,6 +1196,7 @@ static inline void ppu_resv_break(uint64_t addr)   /* MUST hold g_resv_lock */
     ppu_context* self = g_active_ctx;
     if (ppu_resv_line_clear(self, (uint32_t)addr)) return;
     uint64_t a = (uint32_t)addr;   /* match the inline guard: reserve_addr holds (uint32_t)ea */
+    PpuResvRegistryRead hold;
     long n = __atomic_load_n(&g_resv_ctx_n, __ATOMIC_ACQUIRE);
     for (long i = 0; i < n; i++) {
         ppu_context* c = g_resv_ctxs[i];
@@ -1184,6 +1209,7 @@ static inline void ppu_resv_break(uint64_t addr)   /* MUST hold g_resv_lock */
 static inline int resv_diag() { static int v = -1; if (v < 0) v = getenv("RESV_DIAG") ? 1 : 0; return v; }
 static void resv_check_reg(ppu_context* self)
 {
+    PpuResvRegistryRead hold;
     long n = __atomic_load_n(&g_resv_ctx_n, __ATOMIC_ACQUIRE);
     for (long i = 0; i < n; i++) if (g_resv_ctxs[i] == self) return;
     static ppu_context* seen[64]; static long sn = 0;
@@ -4217,9 +4243,31 @@ extern "C" const ps3_aio_runtime_hooks* ppu_aio_runtime_hooks(void)
  * is a no-op" and exits without executing a single guest instruction. The
  * threads all report FINISHED, so nothing looks wrong; the title just never
  * gets whatever those threads were supposed to do. */
+static void ppu_zero_reclaimed_guest(uint32_t addr,uint32_t size)
+{
+    for(uint64_t off=addr,end=(uint64_t)addr+size;off<end;){
+        if(spu_coh_line_reserved((uint32_t)off)){
+            spu_lockline_lock();memset(vm_base+off,0,128);
+            spu_coh_notify_write((uint32_t)off);spu_lockline_unlock();off+=128;
+        }else{
+            uint64_t first=off;
+            do{off+=128;}while(off<end&&!spu_coh_line_reserved((uint32_t)off));
+            memset(vm_base+first,0,(size_t)(off-first));
+        }
+    }
+    PpuResvRegistryRead hold;
+    const long n=__atomic_load_n(&g_resv_ctx_n,__ATOMIC_ACQUIRE);
+    for(long i=0;i<n;++i){
+        auto* c=g_resv_ctxs[i];uint64_t a=__atomic_load_n(&c->reserve_addr,__ATOMIC_ACQUIRE);
+        if(a>=addr&&a<(uint64_t)addr+size)
+            __atomic_compare_exchange_n(&c->reserve_addr,&a,PPU_RESV_INVALID,0,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE);
+    }
+}
 extern "C" void ppu_install_thread_trampoline(void)
 {
-    g_ppu_thread_entry_trampoline = ppu_thread_entry_trampoline;
+    ps3_ppu_thread_lifetime.retire=ppu_retire_thread_context;
+    ps3_ppu_thread_lifetime.zero_guest=ppu_zero_reclaimed_guest;
+    g_ppu_thread_entry_trampoline=ppu_thread_entry_trampoline;
 }
 
 /* Call a guest function by OPD with up to 4 integer args, on a private scratch
@@ -4468,7 +4516,7 @@ extern "C" int ppu_run(uint32_t entry_opd, uint32_t stack_top)
      * PS3_STDIO_UNBUFFERED=1 restores the old unbuffered stdout. */
     ps3_stdio_init();
 
-    g_ppu_thread_entry_trampoline = ppu_thread_entry_trampoline;
+    ppu_install_thread_trampoline();
     uint32_t code = 0, toc = 0;
     ppu_opd_resolve(entry_opd, &code, &toc);
     ppu_fn fn = ppu_lookup(code);

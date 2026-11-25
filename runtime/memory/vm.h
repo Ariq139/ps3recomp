@@ -349,8 +349,8 @@ static inline int32_t vm_protect(uint32_t addr, uint32_t size, int read, int wri
 
 /* ---------------------------------------------------------------------------
  * Reusable guest PPU stacks. The thread table serializes these operations.
- * Retired extents retain their original guard address; best-fit reuse never
- * exposes a former guard page as usable stack. Do not split a retired extent.
+ * Retired extents split/coalesce; preparation reinstalls the guard and
+ * recommits former interior guards before making pages usable.
  * The bounded array covers the 240 MiB arena at the syscall's 16 KiB minimum.
  * -----------------------------------------------------------------------*/
 #define VM_STACK_RETIRED_MAX 16384u
@@ -368,55 +368,74 @@ static inline void vm_stack_alloc_init(vm_stack_alloc* sa)
     sa->retired_count = 0;
 }
 
-/* Capacity records the whole reserved usable extent, not the requested size.
- * The legacy non-recycling API remains available for external callers. */
-static inline uint32_t vm_stack_allocate_extent(vm_stack_alloc* sa, uint32_t stack_size, uint32_t* capacity)
+/* Reserve with the allocator lock held; prepare before publishing a guest
+ * thread, outside the table lock. Retired adjacent blocks coalesce. */
+static inline uint32_t vm_stack_reserve_extent(vm_stack_alloc* sa, uint32_t size, uint32_t* capacity)
 {
-    const uint32_t pg = vm_host_page_size();
-    const uint64_t rounded = ((uint64_t)stack_size + pg - 1u) & ~(uint64_t)(pg - 1u);
-    if (!rounded || rounded > UINT32_MAX - pg) return 0;
-    const uint32_t bytes = (uint32_t)rounded;
-    if (capacity) {
-        uint32_t best = sa->retired_count;
-        for (uint32_t i = 0; i < sa->retired_count; ++i)
-            if (sa->retired[i].bytes >= bytes &&
-                (best == sa->retired_count || sa->retired[i].bytes < sa->retired[best].bytes)) best = i;
-        if (best < sa->retired_count) {
-            const vm_stack_extent block = sa->retired[best];
-            sa->retired[best] = sa->retired[--sa->retired_count];
-            *capacity = block.bytes;
-            // Same guard, no new protection changes. A recycled guest stack
-            // starts with clean usable pages, as a fresh mapped stack does.
-            vm_note_write(block.addr, bytes);
-            memset(vm_base + block.addr, 0, bytes);
-            return block.addr;
+    const uint32_t pg=vm_host_page_size();
+    const uint64_t rounded=((uint64_t)size+pg-1u)&~(uint64_t)(pg-1u);
+    if (!rounded || rounded>UINT32_MAX-pg) return 0;
+    const uint32_t bytes=(uint32_t)rounded;
+    uint32_t best=sa->retired_count;
+    for(uint32_t i=0;i<sa->retired_count;++i)
+        if(sa->retired[i].bytes>=bytes&&(best==sa->retired_count||sa->retired[i].bytes<sa->retired[best].bytes))best=i;
+    if(best<sa->retired_count){
+        vm_stack_extent block=sa->retired[best];
+        if(ppu_vm_size&&(uint64_t)block.addr+block.bytes>ppu_vm_size)return 0;
+        if(block.bytes-bytes>=pg+0x4000u){
+            sa->retired[best].addr=block.addr+bytes+pg;
+            sa->retired[best].bytes=block.bytes-bytes-pg;
+            *capacity=bytes;
+        }else{
+            sa->retired[best]=sa->retired[--sa->retired_count];*capacity=block.bytes;
         }
+        return block.addr;
     }
-    const uint32_t total = bytes + pg;
-    if ((uint64_t)sa->next_addr + total > sa->region_end) return 0;
-    uint32_t base = sa->next_addr;
-    sa->next_addr += total;
-    // Preserve the existing best-effort protection on lazy-commit runners.
-    // Reuse never moves this guard or treats it as usable storage.
-    vm_protect(base, pg, 0, 0, 0);
-    if (capacity) *capacity = bytes;
-    return base + pg;
+    const uint64_t end=(uint64_t)sa->next_addr+bytes+pg;
+    if(end>sa->region_end||(ppu_vm_size&&end>ppu_vm_size))return 0;
+    uint32_t addr=sa->next_addr+pg;
+    sa->next_addr=(uint32_t)end;*capacity=bytes;return addr;
 }
-static inline uint32_t vm_stack_allocate(vm_stack_alloc* sa, uint32_t stack_size)
+static inline int vm_stack_prepare_extent(uint32_t addr,uint32_t bytes,void (*zero_guest)(uint32_t,uint32_t))
 {
-    return vm_stack_allocate_extent(sa, stack_size, NULL);
+    const uint32_t pg=vm_host_page_size();
+    if(vm_commit(addr-pg,pg)!=CELL_OK||vm_protect(addr-pg,pg,0,0,0)!=CELL_OK||
+       vm_commit(addr,bytes)!=CELL_OK)return 0;
+    vm_note_write(addr,bytes);
+    if(zero_guest)zero_guest(addr,bytes);else memset(vm_base+addr,0,bytes);
+    return 1;
 }
-static inline void vm_stack_release(vm_stack_alloc* sa, uint32_t addr, uint32_t capacity)
+static inline void vm_stack_release(vm_stack_alloc* sa,uint32_t addr,uint32_t capacity)
 {
-    const uint32_t pg = vm_host_page_size();
-    if (!addr || !capacity || (addr & (pg - 1u)) || (capacity & (pg - 1u)) ||
-        (uint64_t)addr + capacity > sa->next_addr) return;
-    for (uint32_t i = 0; i < sa->retired_count; ++i)
-        if (sa->retired[i].addr == addr) return; // never publish a duplicate extent
-    if (sa->retired_count == VM_STACK_RETIRED_MAX) return;
-    sa->retired[sa->retired_count].addr = addr;
-    sa->retired[sa->retired_count].bytes = capacity;
-    ++sa->retired_count;
+    const uint32_t pg=vm_host_page_size();
+    if(!addr||!capacity||(addr&(pg-1u))||(capacity&(pg-1u))||addr<pg||
+       (uint64_t)addr+capacity>sa->next_addr)return;
+    uint32_t begin=addr-pg,end=addr+capacity;
+    for(uint32_t i=0;i<sa->retired_count;++i){
+        vm_stack_extent b=sa->retired[i];
+        if(begin<b.addr+b.bytes&&b.addr-pg<end)return;
+    }
+    for(uint32_t i=0;i<sa->retired_count;){
+        vm_stack_extent b=sa->retired[i];uint32_t b0=b.addr-pg,b1=b.addr+b.bytes;
+        if(end==b0||b1==begin){
+            if(b0<begin)begin=b0;if(b1>end)end=b1;
+            sa->retired[i]=sa->retired[--sa->retired_count];i=0;
+        }else ++i;
+    }
+    if(end==sa->next_addr){sa->next_addr=begin;return;}
+    if(sa->retired_count==VM_STACK_RETIRED_MAX)return;
+    sa->retired[sa->retired_count].addr=begin+pg;
+    sa->retired[sa->retired_count++].bytes=end-begin-pg;
+}
+/* Boot callers retain their legacy bump-only lazy-commit contract. */
+static inline uint32_t vm_stack_allocate(vm_stack_alloc* sa,uint32_t size)
+{
+    const uint32_t pg=vm_host_page_size();
+    const uint64_t bytes=((uint64_t)size+pg-1u)&~(uint64_t)(pg-1u);
+    const uint64_t end=(uint64_t)sa->next_addr+bytes+pg;
+    if(!bytes||end>sa->region_end||(ppu_vm_size&&end>ppu_vm_size))return 0;
+    uint32_t base=sa->next_addr;sa->next_addr=(uint32_t)end;
+    vm_protect(base,pg,0,0,0);return base+pg;
 }
 
 /* ---------------------------------------------------------------------------
