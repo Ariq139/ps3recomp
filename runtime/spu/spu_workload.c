@@ -6,6 +6,9 @@
  * it with the SPURS task ABI. cellSpurs's AddWorkload/CreateTask call
  * spu_workload_dispatch(); the registry is populated by the title's lifted set.
  */
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE
+#endif
 #include "spu_workload.h"
 #include "spu_job_profile.h"
 #include "spu_image_fingerprint_tls.h"
@@ -26,8 +29,8 @@
 #include <errno.h>
 #include <unistd.h>
 #include "../platform/win32_compat.h"   /* LONG, InterlockedExchange, Sleep */
-#include "spu_task_pool.h"              /* PS3RECOMP_SPU_TASK_POOL */
 #endif
+#include "spu_task_pool.h"              /* PS3RECOMP_SPU_TASK_POOL */
 #include "ps3emu/thread_name.h"
 
 static void spu_workload_report_miss(const char* path, uint64_t fp, uint32_t size,
@@ -789,9 +792,7 @@ typedef struct {
     int                 have_r3;
     uint32_t            taskset_ea;   /* captured race-free at dispatch (globals get clobbered) */
     uint32_t            taskid;
-#ifndef _WIN32
     spu_task_pool_item  pool_item;    /* PS3RECOMP_SPU_TASK_POOL hand-off */
-#endif
 } spu_async_job;
 
 /* ---- Persistent per-taskset local store (LBP_PERSIST_LS) ------------------
@@ -1495,7 +1496,7 @@ static void spu_async_run(spu_async_job* j)
 }
 
 #ifdef _WIN32
-static DWORD WINAPI spu_async_thread(LPVOID p) {
+static void spu_async_run_windows(void* p) {
     ps3_thread_name("spu job");
     /* Reserve handler headroom so a stack overflow in lifted SPU code (e.g. a
      * runaway brsl recursion) can actually reach the STACKOVERFLOW reporter
@@ -1507,12 +1508,13 @@ static DWORD WINAPI spu_async_thread(LPVOID p) {
       extern void spu_coh_forget_range(uintptr_t, uintptr_t);
       spu_coh_forget_range((uintptr_t)lo, (uintptr_t)hi);
       spu_mfc_forget_range((uintptr_t)lo, (uintptr_t)hi); }
-    return 0;
 }
+static DWORD WINAPI spu_async_thread(LPVOID p) { spu_async_run_windows(p); return 0; }
 #else
 static void* spu_async_thread(void* p) { spu_async_run((spu_async_job*)p); return NULL; }
+#endif
 
-/* PS3RECOMP_SPU_TASK_POOL=1 (opt-in, POSIX): run async SPU tasks on reused
+/* PS3RECOMP_SPU_TASK_POOL=1 (opt-in, Windows/POSIX): run async SPU tasks on reused
  * host threads instead of one new detached thread per task. Every task still
  * starts at once on a thread of its own (see spu_task_pool.h), so a task that
  * waits for another can never be queued behind it. Pool threads keep the
@@ -1532,8 +1534,44 @@ static int spu_task_pool_enabled(void)
     }
     return v;
 }
-static void spu_async_pool_run(void* p) { spu_async_run((spu_async_job*)p); }
+static _Thread_local unsigned long long s_wait_exit_ms;
+static void spu_async_pool_run(void* p)
+{
+    s_wait_exit_ms=0;
+    /* CRI bootstrap state is per task, not per reused host thread. Reset
+     * at the outer dispatch boundary, never on a CRI resume iteration. */
+    extern void spu_async_task_reset_thread_state(void);
+    spu_async_task_reset_thread_state();
+#ifdef _WIN32
+    // The same reservation cleanup as the detached worker, before parking.
+    spu_async_run_windows(p);
+#else
+    uintptr_t lo=0,hi=0;
+#if defined(__APPLE__)
+    hi=(uintptr_t)pthread_get_stackaddr_np(pthread_self());
+    size_t bytes=pthread_get_stacksize_np(pthread_self());
+    if(bytes<=hi)lo=hi-bytes;
+#elif defined(__linux__)
+    pthread_attr_t attr;
+    if(!pthread_getattr_np(pthread_self(),&attr)){
+        void* addr=NULL;size_t bytes=0;
+        if(!pthread_attr_getstack(&attr,&addr,&bytes)){
+            lo=(uintptr_t)addr;if(bytes<=UINTPTR_MAX-lo)hi=lo+bytes;
+        }
+        pthread_attr_destroy(&attr);
+    }
 #endif
+    spu_async_run((spu_async_job*)p);
+    if(lo&&hi>lo){
+        extern void spu_coh_forget_range(uintptr_t,uintptr_t);
+        spu_coh_forget_range(lo,hi);
+        spu_mfc_forget_range(lo,hi);
+    }else{
+        // Never reuse an owner whose stack range could not be established.
+        spu_task_pool_retire_current();
+    }
+#endif
+}
 
 #define SPU_JOB_PROFILE_SLOTS 512u
 typedef struct {
@@ -2186,7 +2224,7 @@ int spu_taskset_wait_signal(uint32_t taskset_ea, uint32_t taskId)
     /* ran= is the wall time this task spent OUT of the wait (decode/mix work
      * per round) -- decisive for "is the Bink decode CPU-bound". TLS: each
      * task runs on its own host thread. */
-    static _Thread_local unsigned long long s_wait_exit_ms;
+    
     { extern unsigned long long ps3_ms_now(void);
       unsigned long long _now = ps3_ms_now();
       static unsigned _n = 0; if (_n++ < 200 || (_n % 500) == 0)   /* unsigned: periodic, wrapping is defined */
@@ -2381,6 +2419,21 @@ int spu_workload_dispatch_task_async_ex(const uint8_t* image, uint32_t image_siz
                 fprintf(stderr, "\n");
             } } }
 
+    if (spu_task_pool_enabled()) {
+        if (!spu_task_pool_submit(&s_spu_task_pool, &j->pool_item, spu_async_pool_run, j)) {
+            free(j);
+            return SPU_TASK_DISPATCH_HOST_ERROR;
+        }
+        const unsigned long long n = __atomic_add_fetch(&s_spu_task_pool_tasks, 1, __ATOMIC_RELAXED);
+        if (n == 1 || n % 2000 == 0) {
+            spu_task_pool_lock(&s_spu_task_pool);
+            fprintf(stderr, "[spu_workload] task pool: tasks=%llu reused=%llu created=%llu retired=%llu threads=%u\n",
+                    n, s_spu_task_pool.reused, s_spu_task_pool.created,
+                    s_spu_task_pool.retired, s_spu_task_pool.threads);
+            spu_task_pool_unlock(&s_spu_task_pool);
+        }
+        return 1;
+    }
 #ifdef _WIN32
     /* 256MB RESERVE (not commit): the Bink SPU decoder's per-macroblock brsl
      * chains are deep host call chains with fat lifted frames -- a 1MB stack
@@ -2395,21 +2448,6 @@ int spu_workload_dispatch_task_async_ex(const uint8_t* image, uint32_t image_siz
      * mmap'd and committed on touch, so this reserves address space rather
      * than memory. The default is 512 KB on Darwin, half the 1 MB that blew
      * the guard page above. */
-    if (spu_task_pool_enabled()) {
-        if (!spu_task_pool_submit(&s_spu_task_pool, &j->pool_item, spu_async_pool_run, j)) {
-            free(j);
-            return SPU_TASK_DISPATCH_HOST_ERROR;
-        }
-        const unsigned long long n = __atomic_add_fetch(&s_spu_task_pool_tasks, 1, __ATOMIC_RELAXED);
-        if (n == 1 || n % 2000 == 0) {
-            pthread_mutex_lock(&s_spu_task_pool.mu);
-            fprintf(stderr, "[spu_workload] task pool: tasks=%llu reused=%llu created=%llu retired=%llu threads=%u\n",
-                    n, s_spu_task_pool.reused, s_spu_task_pool.created,
-                    s_spu_task_pool.retired, s_spu_task_pool.threads);
-            pthread_mutex_unlock(&s_spu_task_pool.mu);
-        }
-        return 1;
-    }
     pthread_t th;
     pthread_attr_t attr;
     pthread_attr_init(&attr);
