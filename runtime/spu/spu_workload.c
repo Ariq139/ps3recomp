@@ -911,34 +911,109 @@ static spu_ts_ls_slot* ts_ls_get(uint32_t taskset_ea, uint32_t taskid)
  * Taskset layout: bitsets of 16 bytes at +0x10 ready, +0x20 pending,
  * +0x30 enabled (task 0 = MSB of byte 0); task_info[t] at +0x80 + 0x30*t with
  * the ELF EA at +0x14 and the context save EA at +0x1C. */
-#define TS_TRACK 8
-static struct { uint32_t ea; uint8_t running[16]; } s_ts_run[TS_TRACK];
+/* Process-lifetime hash directory; publish immutable links once. Mutable
+ * state and legacy join records are protected by ts_lock. */
+#define TS_BUCKETS 256u
+enum task_dispatch_state { TS_IDLE, TS_STARTING, TS_SUBMITTED, TS_RUNNING, TS_UNAVAILABLE, TS_FAILED };
+typedef struct ts_record {
+    uint32_t ea;
+    struct ts_record* next;
+    uint8_t state[128], legacy[128];
+    uint32_t exit_code[128];
+    int registered, v2;
+} ts_record;
+static ts_record* s_ts_run[TS_BUCKETS];
 static volatile LONG s_ts_lock;
-static _Thread_local int s_ts_held;   /* this thread holds s_ts_lock */
-static uint8_t* ts_running(uint32_t taskset_ea)
+static _Thread_local int s_ts_held;
+static void ts_lock(void) { while(InterlockedExchange(&s_ts_lock,1)) Sleep(0); }
+static void ts_unlock(void) { InterlockedExchange(&s_ts_lock,0); }
+static unsigned ts_bucket(uint32_t ea) { return ((ea>>7)*2654435761u)>>24; }
+static ts_record* ts_find(uint32_t ea)
 {
-    for (int i = 0; i < TS_TRACK; i++) if (s_ts_run[i].ea == taskset_ea) return s_ts_run[i].running;
-    for (int i = 0; i < TS_TRACK; i++) if (!s_ts_run[i].ea) { s_ts_run[i].ea = taskset_ea; return s_ts_run[i].running; }
+    for(ts_record* p=__atomic_load_n(&s_ts_run[ts_bucket(ea)],__ATOMIC_ACQUIRE);p;p=p->next)
+        if(p->ea==ea)return p;
     return NULL;
 }
-static void ts_lock(void)   { while (InterlockedExchange(&s_ts_lock, 1)) Sleep(0); }
-static void ts_unlock(void) { InterlockedExchange(&s_ts_lock, 0); }
-
-static void spu_taskset_mark(uint32_t taskset_ea, uint32_t t, int on)
+static ts_record* ts_get(uint32_t ea)
 {
-    if (!taskset_ea || t >= 128 || s_ts_held) return;   /* held: caller set it */
-    ts_lock();
-    uint8_t* r = ts_running(taskset_ea);
-    uint8_t m = (uint8_t)(0x80u >> (t & 7));
-    if (r) { if (on) r[t / 8] |= m; else r[t / 8] &= (uint8_t)~m; }
+    ts_record* p=ts_find(ea);
+    if(p)return p;
+    p=(ts_record*)calloc(1,sizeof(*p));if(!p)return NULL;
+    unsigned i=ts_bucket(ea);p->ea=ea;p->next=s_ts_run[i];
+    __atomic_store_n(&s_ts_run[i],p,__ATOMIC_RELEASE);return p;
+}
+static uint8_t* ts_states(uint32_t ea)
+{
+    ts_record* p=ts_get(ea);return p?p->state:NULL;
+}
+static int spu_taskset_state(uint32_t ea,uint32_t t,enum task_dispatch_state state)
+{
+    if(!ea)return 1;
+    if(t>=128)return 0;
+    if(!s_ts_held)ts_lock();
+    uint8_t* states=ts_states(ea);
+    if(states)states[t]=(uint8_t)state;
+    if(!s_ts_held)ts_unlock();
+    return states!=NULL;
+}
+void spu_taskset_mark_running(uint32_t ea,uint32_t t)
+{
+    (void)spu_taskset_state(ea,t,TS_STARTING);
+}
+int spu_taskset_reserve_creation(uint32_t ea,uint32_t max_tasks,uint32_t* out)
+{
+    extern uint8_t* vm_base;
+    extern void spu_lockline_lock(void),spu_lockline_unlock(void),spu_coh_notify_write(uint32_t);
+    if(!ea||!out)return -1;
+    if(max_tasks>128)max_tasks=128;
+    ts_lock();ts_record* p=ts_get(ea);
+    if(!p){ts_unlock();return -1;}
+    spu_lockline_lock();
+    uint32_t t;
+    for(t=0;t<max_tasks;++t){
+        uint8_t m=(uint8_t)(0x80u>>(t&7));
+        if((vm_base[ea+0x30+t/8]&m)||p->state[t]==TS_STARTING||
+           p->state[t]==TS_SUBMITTED||p->state[t]==TS_RUNNING)continue;
+        for(unsigned off=0;off<=0x50;off+=0x10)vm_base[ea+off+t/8]&=(uint8_t)~m;
+        p->state[t]=TS_STARTING;p->legacy[t]=1;p->exit_code[t]=0;
+        vm_base[ea+0x30+t/8]|=m;spu_coh_notify_write(ea);break;
+    }
+    spu_lockline_unlock();ts_unlock();*out=t;return t<max_tasks?1:0;
+}
+static int ts_claim_dispatch(uint32_t ea,uint32_t t)
+{
+    if(!ea)return 1;
+    if(t>=128)return -1;
+    if(!s_ts_held)ts_lock();
+    uint8_t* states=ts_states(ea);int rc=-1;
+    if(states){
+        rc=(states[t]==TS_SUBMITTED||states[t]==TS_RUNNING)?0:1;
+        if(rc)states[t]=TS_SUBMITTED;
+    }
+    if(!s_ts_held)ts_unlock();
+    return rc;
+}
+void spu_taskset_abort_creation(uint32_t ea,uint32_t t)
+{
+    if(!ea||t>=128)return;
+    extern uint8_t* vm_base;
+    extern void spu_lockline_lock(void),spu_lockline_unlock(void),spu_coh_notify_write(uint32_t);
+    ts_lock();ts_record* p=ts_find(ea);
+    if(p&&(p->state[t]==TS_STARTING||p->state[t]==TS_SUBMITTED)){
+        spu_lockline_lock();
+        uint8_t m=(uint8_t)(0x80u>>(t&7));
+        for(unsigned off=0;off<=0x50;off+=0x10)vm_base[ea+off+t/8]&=(uint8_t)~m;
+        p->state[t]=TS_IDLE;p->legacy[t]=0;p->exit_code[t]=0;
+        spu_coh_notify_write(ea);spu_lockline_unlock();
+    }
     ts_unlock();
 }
-
-/* For cellSpursCreateTask: mark the slot running BEFORE its ready/enabled
- * bits go into the taskset, or a task exiting in between starts it too. */
-void spu_taskset_mark_running(uint32_t taskset_ea, uint32_t t)
+int spu_taskset_legacy_join(uint32_t ea,uint32_t t,uint32_t* code)
 {
-    spu_taskset_mark(taskset_ea, t, 1);
+    if(t>=128)return 0;
+    ts_lock();ts_record* p=ts_find(ea);int ok=p&&p->legacy[t];
+    if(ok){*code=p->exit_code[t];p->legacy[t]=0;}
+    ts_unlock();return ok;
 }
 
 /* CellSpursTaskset2 keeps a 16-byte task_exit_code[128] at +0x1980 that the
@@ -947,16 +1022,15 @@ void spu_taskset_mark_running(uint32_t taskset_ea, uint32_t t)
      * it when a task exits; nothing here did, so a task that joins its workers
      * (Havok's master SPU task does) retried forever and the PPU waited on it.
      * Only Taskset2s have the array -- a v1 taskset ends at 0x1900. */
-static uint32_t s_ts2[16]; static int s_n_ts2;
 void spu_taskset2_register(uint32_t ea)
 {
-    for (int i = 0; i < s_n_ts2; i++) if (s_ts2[i] == ea) return;
-    if (s_n_ts2 < 16) s_ts2[s_n_ts2++] = ea;
+    ts_lock();ts_record* p=ts_get(ea);
+    if(p)__atomic_store_n(&p->v2,1,__ATOMIC_RELEASE);
+    ts_unlock();
 }
 static int spu_taskset_is_v2(uint32_t ea)
 {
-    for (int i = 0; i < s_n_ts2; i++) if (s_ts2[i] == ea) return 1;
-    return 0;
+    ts_record* p=ts_find(ea);return p&&__atomic_load_n(&p->v2,__ATOMIC_ACQUIRE);
 }
 void spu_taskset2_set_exit(uint32_t taskset_ea, uint32_t task, int exited, uint32_t code)
 {
@@ -976,7 +1050,22 @@ void spu_taskset2_set_exit(uint32_t taskset_ea, uint32_t task, int exited, uint3
     spu_lockline_unlock();
 }
 
-static void spu_taskset_task_exited(uint32_t taskset_ea, uint32_t done_task)
+static void ts_retire_locked(uint32_t ea,uint32_t task,uint32_t code)
+{
+    extern uint8_t* vm_base;
+    extern void spu_lockline_lock(void),spu_lockline_unlock(void),spu_coh_notify_write(uint32_t);
+    extern void spu_taskset_round_drop(uint32_t,uint32_t);
+    if(task>=128)return;
+    ts_record* p=ts_find(ea);
+    spu_taskset2_set_exit(ea,task,1,code);
+    spu_taskset_round_drop(ea,task);
+    spu_lockline_lock();
+    const uint8_t m=(uint8_t)(0x80u>>(task&7));
+    for(unsigned off=0;off<=0x50;off+=0x10)vm_base[ea+off+task/8]&=(uint8_t)~m;
+    if(p){p->state[task]=TS_IDLE;p->exit_code[task]=code;}
+    spu_coh_notify_write(ea);spu_lockline_unlock();
+}
+static void spu_taskset_task_exited(uint32_t taskset_ea, uint32_t done_task, uint32_t exit_code)
 {
     extern uint8_t* vm_base;
     extern uint32_t g_ydkj_real_taskset_ea, g_ydkj_real_taskid;
@@ -984,12 +1073,8 @@ static void spu_taskset_task_exited(uint32_t taskset_ea, uint32_t done_task)
     extern void spu_coh_notify_write(uint32_t);
     ts_lock(); s_ts_held = 1;
     uint8_t* ts = vm_base + taskset_ea;
-    uint8_t* run = ts_running(taskset_ea);
-    if (done_task < 128) spu_taskset2_set_exit(taskset_ea, done_task, 1, 0);
-    if (done_task < 128) {
-        extern void spu_taskset_round_drop(uint32_t, uint32_t);
-        spu_taskset_round_drop(taskset_ea, done_task);
-    }
+    uint8_t* states = ts_states(taskset_ea);
+    if(done_task<128)ts_retire_locked(taskset_ea,done_task,exit_code);
     /* The ready/pending/enabled bitsets share the taskset's first line with the
      * SPU task library (GETLLAR/PUTLLC) and with cellSpursCreateTask, which
      * update them under the lock-line lock. Update them under the same lock,
@@ -1000,16 +1085,9 @@ static void spu_taskset_task_exited(uint32_t taskset_ea, uint32_t done_task)
     size_t start_sz[128];
     int n_start = 0;
     spu_lockline_lock();
-    if (done_task < 128) {
-        uint8_t m = (uint8_t)(0x80u >> (done_task & 7));
-        ts[0x10 + done_task / 8] &= (uint8_t)~m;
-        ts[0x20 + done_task / 8] &= (uint8_t)~m;
-        ts[0x30 + done_task / 8] &= (uint8_t)~m;
-        if (run) run[done_task / 8] &= (uint8_t)~m;
-    }
-    for (uint32_t t = 0; t < 128 && run; t++) {
+    for (uint32_t t = 0; t < 128 && states; t++) {
         uint8_t m = (uint8_t)(0x80u >> (t & 7));
-        if (!(ts[0x30 + t / 8] & m) || (run[t / 8] & m)) continue;
+        if (!(ts[0x30 + t / 8] & m) || (states[t]!=TS_IDLE && states[t]!=TS_FAILED)) continue;
         if (!((ts[0x10 + t / 8] | ts[0x20 + t / 8]) & m)) continue;
         const uint8_t* ti = ts + 0x80 + 0x30 * t;
         uint32_t elf = ((uint32_t)ti[0x14] << 24) | ((uint32_t)ti[0x15] << 16) |
@@ -1023,8 +1101,8 @@ static void spu_taskset_task_exited(uint32_t taskset_ea, uint32_t done_task)
         if (!elf) continue;
         size_t sz = spu_elf_image_size(vm_base + elf, 2u * 1024 * 1024);
         if (!sz) continue;
-        ts[0x20 + t / 8] &= (uint8_t)~m;                 /* pending -> started */
-        run[t / 8] |= m;
+        ts[0x20 + t / 8] &= (uint8_t)~m;
+        states[t]=TS_STARTING;
         start_t[n_start] = t; start_elf[n_start] = elf; start_ctx[n_start] = ctx;
         start_sz[n_start] = sz; n_start++;
     }
@@ -1034,8 +1112,14 @@ static void spu_taskset_task_exited(uint32_t taskset_ea, uint32_t done_task)
         fprintf(stderr, "[taskset] start task %u of taskset 0x%08X elf=0x%08X "
                         "(after task %u exited)\n", start_t[i], taskset_ea, start_elf[i], done_task);
         g_ydkj_real_taskset_ea = taskset_ea; g_ydkj_real_taskid = start_t[i];
-        spu_workload_dispatch_task_async(vm_base + start_elf[i], (uint32_t)start_sz[i],
-                                         start_ctx[i], taskset_ea, start_t[i]);
+        int rc=spu_workload_dispatch_task_async_ex(vm_base + start_elf[i], (uint32_t)start_sz[i],
+                                                   start_ctx[i], taskset_ea, start_t[i]);
+        if(rc==SPU_TASK_DISPATCH_HOST_ERROR){
+            // No future scan is guaranteed. Publish terminal failure for
+            // the already-accepted guest task instead of leaving it pending.
+            ts_retire_locked(taskset_ea,start_t[i],0x80010004u);
+            fprintf(stderr,"[spu_workload] task %u launch failed; retired with ENOMEM\n",start_t[i]);
+        }
     }
     s_ts_held = 0; ts_unlock();
 }
@@ -1045,12 +1129,13 @@ static void spu_taskset_task_exited(uint32_t taskset_ea, uint32_t done_task)
  * last exit (Havok's master recreates its workers) was never noticed. */
 void spu_taskset_start_pending(uint32_t taskset_ea)
 {
-    if (taskset_ea) spu_taskset_task_exited(taskset_ea, 0xFFFFFFFFu);
+    if (taskset_ea) spu_taskset_task_exited(taskset_ea, 0xFFFFFFFFu, 0);
 }
 
 static void spu_async_run(spu_async_job* j)
 {
-    spu_taskset_mark(j->taskset_ea, j->taskid, 1);
+    spu_taskset_state(j->taskset_ea, j->taskid, TS_RUNNING);
+    uint32_t init_error=0;
     /* Persistent per-taskset LS: acquire (+serialize) the taskset's LS, or fall
      * back to a fresh per-dispatch LS when disabled / no taskset. */
     spu_ts_ls_slot* ts_slot = NULL;
@@ -1073,6 +1158,7 @@ static void spu_async_run(spu_async_job* j)
     } else {
         ls = (uint8_t*)calloc(1, SPU_LS_SIZE);
     }
+    if (!ls) init_error=0x80010004u; /* CELL_ENOMEM */
     if (ls) {
         uint32_t entry = 0;
         /* Load the image only on a taskset's FIRST task (or every dispatch when
@@ -1081,9 +1167,10 @@ static void spu_async_run(spu_async_job* j)
                    ? 1
                    : (did_load = 1, spu_elf_load_to_ls(j->image, j->image_size, ls, &entry));
         if (ts_slot && did_load && loaded) ts_slot->loaded = 1;
-        if (!loaded)
-            fprintf(stderr, "[spu_workload] async image=%d ELF LOAD FAILED\n",
-                    j->image_id), fflush(stderr);
+        if (!loaded) {
+            init_error=0x80010002u; /* CELL_EINVAL */
+            fprintf(stderr, "[spu_workload] async image=%d ELF LOAD FAILED\n", j->image_id);
+        }
         if (loaded) {
             /* YDKJ_CRI_POLICY (cri build experiment): the cri SPU task
              * (image 22) calls the SPURS task-API via a jump table at LS 0x2700
@@ -1125,7 +1212,9 @@ static void spu_async_run(spu_async_job* j)
                                                      j->args_ea, 23, 1, j->have_r3 ? j->r3 : 0, 0);
                 fprintf(stderr, "[cri] taskset policy RETURNED rc=%d\n", prc);
                 fflush(stderr);
-                free(ls); free(j); return;
+                free(ls);
+                if(j->taskset_ea)spu_taskset_task_exited(j->taskset_ea,j->taskid,(uint32_t)prc);
+                free(j); return;
             }
             /* YDKJ HLE cri-task path (image 22, cri_mpvps3spurs.elf): the real
              * SPURS kernel/policy would build the task's SpursTasksetContext (LS
@@ -1389,19 +1478,21 @@ static void spu_async_run(spu_async_job* j)
             fprintf(stderr, "[spu_workload] async image=%d RETURNED rc=%d "
                     "(job ran to completion, did not loop)\n", j->image_id, rc);
             spu_serial_release();
-            if (j->taskset_ea) spu_taskset_task_exited(j->taskset_ea, j->taskid);
+            /* Retire only after releasing LS ownership below. */
         }
         /* Persistent LS is retained in its taskset slot for the next task; a
          * per-dispatch LS is freed. */
         if (!ts_slot) free(ls);
     }
     if (ts_slot) {
+        free(ts_slot->ls); ts_slot->ls=NULL; ts_slot->loaded=0;
 #ifdef _WIN32
         ReleaseSRWLockExclusive(&ts_slot->lock);
 #else
         pthread_mutex_unlock(&ts_slot->lock);
 #endif
     }
+    if(j->taskset_ea)spu_taskset_task_exited(j->taskset_ea,j->taskid,init_error);
     free(j);
 }
 
@@ -2056,18 +2147,11 @@ void spu_taskset_signal_task(uint32_t taskset_ea, uint32_t taskId)
  * Ascension's particle work runs in two phases: the last of five tasks in one
  * taskset creates the next five in a sibling, and the main thread waits for
  * them. */
-#define SPU_TASKSETS_MAX 32
-static volatile uint32_t s_tasksets[SPU_TASKSETS_MAX];
-static volatile int s_n_tasksets;
-
 void spu_taskset_register(uint32_t ea)
 {
-    const int n = __atomic_load_n(&s_n_tasksets, __ATOMIC_ACQUIRE);
-    for (int i = 0; i < n; i++) if (s_tasksets[i] == ea) return;
-    if (n < SPU_TASKSETS_MAX) {
-        s_tasksets[n] = ea;
-        __atomic_store_n(&s_n_tasksets, n + 1, __ATOMIC_RELEASE);
-    }
+    ts_lock();ts_record* p=ts_get(ea);
+    if(p)__atomic_store_n(&p->registered,1,__ATOMIC_RELEASE);
+    ts_unlock();
 }
 
 void spu_taskset_line_committed(uint32_t line)
@@ -2075,9 +2159,8 @@ void spu_taskset_line_committed(uint32_t line)
     /* A commit to a taskset's first line (its bitsets) may have created a
      * task: start whatever is enabled, ready or pending, and not running. */
     {
-        const int n = __atomic_load_n(&s_n_tasksets, __ATOMIC_ACQUIRE);
-        for (int i = 0; i < n; i++)
-            if (s_tasksets[i] == line) { spu_taskset_start_pending(line); break; }
+        ts_record* p=ts_find(line);
+        if(p&&__atomic_load_n(&p->registered,__ATOMIC_ACQUIRE))spu_taskset_start_pending(line);
     }
     /* Nothing parked -- the whole run, for a title that never parks a taskset
      * task -- costs one load instead of a 64-slot scan; otherwise only the
@@ -2215,11 +2298,17 @@ int spu_workload_dispatch_async(const uint8_t* image, uint32_t image_size,
                                             g_ydkj_real_taskset_ea, g_ydkj_real_taskid);
 }
 
-int spu_workload_dispatch_task_async(const uint8_t* image, uint32_t image_size,
-                                    uint32_t args_ea, uint32_t taskset_ea,
-                                    uint32_t taskid)
+int spu_workload_dispatch_task_async_ex(const uint8_t* image, uint32_t image_size,
+                                       uint32_t args_ea, uint32_t taskset_ea,
+                                       uint32_t taskid)
 {
-    if (!image || image_size == 0) return 0;
+    int claim=ts_claim_dispatch(taskset_ea,taskid);
+    if(claim<0)return SPU_TASK_DISPATCH_HOST_ERROR;
+    if(!claim)return SPU_TASK_DISPATCH_STARTED;
+    if (!image || image_size == 0) {
+        spu_taskset_state(taskset_ea,taskid,TS_UNAVAILABLE);
+        return SPU_TASK_DISPATCH_UNAVAILABLE;
+    }
 
     uint64_t fp = spu_workload_fingerprint_cached(image, image_size);
     spu_dump_job_image(spu_job_dump_directory(), fp, image, image_size);
@@ -2240,11 +2329,12 @@ int spu_workload_dispatch_task_async(const uint8_t* image, uint32_t image_size,
         fprintf(stderr, "[spu_workload] async dispatch MISS fp=0x%016llX size=%u\n",
                 (unsigned long long)fp, image_size);
         spu_workload_report_miss("async task", fp, image_size, args_ea);
-        return 0;
+        spu_taskset_state(taskset_ea,taskid,TS_UNAVAILABLE);
+        return SPU_TASK_DISPATCH_UNAVAILABLE;
     }
 
     spu_async_job* j = (spu_async_job*)malloc(sizeof(*j));
-    if (!j) return 0;
+    if (!j) return SPU_TASK_DISPATCH_HOST_ERROR;
     j->image = image; j->image_size = image_size; j->args_ea = args_ea;
     j->fn = fn; j->image_id = image_id;
     /* Task ownership belongs to this submission, including delayed execution
@@ -2254,7 +2344,7 @@ int spu_workload_dispatch_task_async(const uint8_t* image, uint32_t image_size,
     /* Mark the task running NOW, not when its thread starts: in that gap another
      * task's exit saw it ready-but-not-running and started it a second time
      * (Twisted Metal's level-load inflate tasks each ran twice, concurrently). */
-    spu_taskset_mark(j->taskset_ea, j->taskid, 1);
+    /* SUBMITTED was claimed before host launch. */
     /* Capture the SPURS task r3 NOW (PPU thread, synchronous) from the game's
      * descriptor at eaContext+0x10 = {0x40-marker handle, workload EAs}; the
      * async SPU thread reading it later would race the PPU stack. word1 is
@@ -2305,7 +2395,7 @@ int spu_workload_dispatch_task_async(const uint8_t* image, uint32_t image_size,
      * process death) the moment the real decode path first executed. */
     HANDLE th = CreateThread(NULL, 256u << 20, spu_async_thread, j,
                              STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
-    if (!th) { free(j); return 0; }
+    if (!th) { free(j); return SPU_TASK_DISPATCH_HOST_ERROR; }
     CloseHandle(th);   /* detached */
 #else
     /* Same 256 MB reservation, for the same reason: pthread stacks are
@@ -2315,7 +2405,7 @@ int spu_workload_dispatch_task_async(const uint8_t* image, uint32_t image_size,
     if (spu_task_pool_enabled()) {
         if (!spu_task_pool_submit(&s_spu_task_pool, &j->pool_item, spu_async_pool_run, j)) {
             free(j);
-            return 0;
+            return SPU_TASK_DISPATCH_HOST_ERROR;
         }
         const unsigned long long n = __atomic_add_fetch(&s_spu_task_pool_tasks, 1, __ATOMIC_RELAXED);
         if (n == 1 || n % 2000 == 0) {
@@ -2339,8 +2429,20 @@ int spu_workload_dispatch_task_async(const uint8_t* image, uint32_t image_size,
      * beats never dispatching at all. */
     if (prc != 0)
         prc = pthread_create(&th, NULL, spu_async_thread, j);
-    if (prc != 0) { free(j); return 0; }
+    if (prc != 0) { free(j); return SPU_TASK_DISPATCH_HOST_ERROR; }
     pthread_detach(th);
 #endif
     return 1;
+}
+
+/* Preserve the bool API. A caller without creation ownership may retry on a
+ * later scheduler scan; it may not destroy someone else's guest task. */
+int spu_workload_dispatch_task_async(const uint8_t* image, uint32_t image_size,
+                                     uint32_t args_ea, uint32_t taskset_ea, uint32_t taskid)
+{
+    int rc=spu_workload_dispatch_task_async_ex(image,image_size,args_ea,taskset_ea,taskid);
+    if(rc==SPU_TASK_DISPATCH_HOST_ERROR&&taskset_ea&&taskid<128){
+        ts_lock();ts_retire_locked(taskset_ea,taskid,0x80010004u);ts_unlock();
+    }
+    return rc==SPU_TASK_DISPATCH_STARTED;
 }

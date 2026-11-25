@@ -21,7 +21,9 @@ static uint32_t dispatched_size, dispatched_context, dispatched_taskset, dispatc
 void spu_lockline_lock(void) {}
 void spu_lockline_unlock(void) {}
 void spu_coh_notify_write(uint32_t ea) { (void)ea; }
-static int spu_workload_dispatch_task_async(const uint8_t* image, uint32_t size, uint32_t context,
+enum { SPU_TASK_DISPATCH_HOST_ERROR=-1, SPU_TASK_DISPATCH_STARTED=1 };
+static int dispatch_result=SPU_TASK_DISPATCH_STARTED;
+static int spu_workload_dispatch_task_async_ex(const uint8_t* image, uint32_t size, uint32_t context,
                                             uint32_t taskset_ea, uint32_t taskid)
 {
     /* Model another PPU's CreateTask overwriting the legacy handoff before
@@ -31,7 +33,7 @@ static int spu_workload_dispatch_task_async(const uint8_t* image, uint32_t size,
     dispatched_taskset = taskset_ea; dispatched_task = taskid;
     tasksets_seen[dispatches] = taskset_ea; tasks_seen[dispatches] = taskid;
     dispatches++; dispatched_image = image; dispatched_size = size;
-    dispatched_context = context; return 1;
+    dispatched_context = context; return dispatch_result;
 }
 /* Taskset2 exit-code slot: these tasksets are not registered as Taskset2,
  * where production returns without touching memory. */
@@ -49,7 +51,9 @@ static void be32(uint8_t* p, uint32_t v)
 { p[0] = v >> 24; p[1] = v >> 16; p[2] = v >> 8; p[3] = v; }
 static void setup(uint32_t flags, int pending)
 {
-    memset(vm_base, 0, 0x400000); memset(s_ts_run, 0, sizeof(s_ts_run));
+    memset(vm_base,0,0x400000);
+    for(unsigned i=0;i<TS_BUCKETS;i++){while(s_ts_run[i]){ts_record* p=s_ts_run[i];s_ts_run[i]=p->next;free(p);}}
+    dispatch_result=SPU_TASK_DISPATCH_STARTED;
     s_ts_lock = 0; dispatches = 0; dispatched_image = NULL;
     dispatched_size = dispatched_context = 0;
     g_ydkj_real_taskset_ea = g_ydkj_real_taskid = 0;
@@ -74,7 +78,7 @@ int main(void)
     for (uint32_t flags = 0; flags < 8; flags++) for (int pending = 0; pending < 2; pending++) {
         setup(flags, pending); uint8_t before[48];
         memcpy(before, vm_base + TASKSET + 0x80, sizeof(before));
-        spu_taskset_task_exited(TASKSET, 127);
+        spu_taskset_task_exited(TASKSET, 127, 0);
         CHECK(dispatches == 1, "ready/pending task dispatches with ELF metadata tags");
         CHECK(dispatched_image == vm_base + ELF, "dispatch uses ELF base, not tagged address");
         CHECK(dispatched_size == 100, "real parser receives synthetic ELF header");
@@ -83,41 +87,46 @@ int main(void)
               "requeued task keeps its identity despite concurrent CreateTask handoff");
         CHECK(memcmp(before, vm_base + TASKSET + 0x80, sizeof(before)) == 0,
               "TaskInfo flags and all other metadata remain unchanged");
-        CHECK((s_ts_run[0].running[0] & 0x80) != 0, "submitted task is marked in host run table");
+        CHECK(ts_states(TASKSET)[0] == TS_STARTING, "submitted task is marked in host run table");
         CHECK(vm_base[TASKSET + 0x20] == 0, "pending-ready bit consumed on submission");
     }
     setup(1, 1);
     memcpy(vm_base + TASKSET + 0x80 + 48, vm_base + TASKSET + 0x80, 48);
     vm_base[TASKSET + 0x20] = vm_base[TASKSET + 0x30] = 0xC0;
-    spu_taskset_task_exited(TASKSET, 127);
+    spu_taskset_task_exited(TASKSET, 127, 0);
     CHECK(dispatches == 2, "two pending tasks are both submitted");
     CHECK(tasksets_seen[0] == TASKSET && tasksets_seen[1] == TASKSET &&
           tasks_seen[0] == 0 && tasks_seen[1] == 1,
           "each pending task preserves its distinct slot across overwritten handoffs");
     setup(1, 0); vm_base[TASKSET + 0x30] = 0;
-    spu_taskset_task_exited(TASKSET, 127);
+    spu_taskset_task_exited(TASKSET, 127, 0);
     CHECK(dispatches == 0, "disabled task is not dispatched");
-    setup(1, 0); ts_running(TASKSET)[0] = 0x80;
-    spu_taskset_task_exited(TASKSET, 127);
+    setup(1, 0); ts_states(TASKSET)[0] = TS_RUNNING;
+    spu_taskset_task_exited(TASKSET, 127, 0);
     CHECK(dispatches == 0, "already running task is not duplicated");
     setup(1, 0); vm_base[TASKSET + 0x10] = 0;
-    spu_taskset_task_exited(TASKSET, 127);
+    spu_taskset_task_exited(TASKSET, 127, 0);
     CHECK(dispatches == 0, "enabled task without work is not dispatched");
     setup(1, 0); vm_base[ELF] = 0;
-    spu_taskset_task_exited(TASKSET, 127);
+    spu_taskset_task_exited(TASKSET, 127, 0);
     CHECK(dispatches == 0, "invalid untagged ELF is not dispatched");
-    CHECK(s_ts_run[0].running[0] == 0, "invalid ELF leaves host run table clear");
+    CHECK(ts_states(TASKSET)[0] == TS_IDLE, "invalid ELF leaves host run table clear");
     CHECK(vm_base[TASKSET + 0x10] == 0x80, "invalid ELF preserves ready state");
     setup(7, 1); be32(vm_base + TASKSET + 0x94, 7);
-    spu_taskset_task_exited(TASKSET, 127);
+    spu_taskset_task_exited(TASKSET, 127, 0);
     CHECK(dispatches == 0, "metadata-only null ELF is not dispatched");
     CHECK(vm_base[TASKSET + 0x20] == 0x80, "null ELF preserves pending state");
-    setup(1, 0); vm_base[TASKSET + 0x20] = 0x80; ts_running(TASKSET)[0] = 0x80;
-    spu_taskset_task_exited(TASKSET, 0);
+    setup(1, 0); vm_base[TASKSET + 0x20] = 0x80; ts_states(TASKSET)[0] = TS_RUNNING;
+    spu_taskset_task_exited(TASKSET, 0, 0);
     CHECK(dispatches == 0, "exiting task is not restarted");
     CHECK(vm_base[TASKSET + 0x10] == 0 && vm_base[TASKSET + 0x20] == 0 &&
-          vm_base[TASKSET + 0x30] == 0 && s_ts_run[0].running[0] == 0,
+          vm_base[TASKSET + 0x30] == 0 && ts_states(TASKSET)[0] == TS_IDLE,
           "real exiting task ready/pending/enabled/run state is cleared");
+    setup(1,1);dispatch_result=SPU_TASK_DISPATCH_HOST_ERROR;
+    spu_taskset_task_exited(TASKSET,127,0);
+    CHECK(dispatches==1&&ts_states(TASKSET)[0]==TS_IDLE,"failed pending launch retires without another scan");
+    CHECK(vm_base[TASKSET+0x20]==0&&vm_base[TASKSET+0x30]==0,"failure clears pending and enabled");
+    for(unsigned i=0;i<40;i++)CHECK(ts_states(0x1000+i*0x80)!=NULL,"more than eight tracked tasksets");
     free(vm_base);
     printf("taskset ELF address flags: %u passed, %u failed\n", passed, failed);
     return failed ? 1 : 0;
