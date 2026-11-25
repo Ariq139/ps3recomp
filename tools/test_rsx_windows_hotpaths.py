@@ -54,6 +54,7 @@ with tempfile.TemporaryDirectory(prefix="ps3recomp-rsx-tests-") as folder:
             "libs/video/rsx_vp_decompiler.c"], ["-ld3d12", "-ldxgi", "-ld3dcompiler"]),
         ("vertex_fetch_prepared", ["libs/video/rsx_vertex_fetch.c"], []),
         ("d3d12_srv_cache", [], []),
+        ("d3d12_shadow_border", [], []),
         ("d3d12_srv_cache_gpu", [], ["-ld3d12", "-ldxgi"]),
         ("d3d12_retire_gpu", [], ["-ld3d12", "-ldxgi"]),
         ("fp_runtime_analysis", ["libs/video/rsx_fp_decompiler.c"], []),
