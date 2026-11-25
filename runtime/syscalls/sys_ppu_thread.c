@@ -152,6 +152,16 @@ static int32_t creator_priority(uint64_t tid)
     return c->priority;
 }
 
+/* Condition notification chooses using current guest priorities, not the
+ * host's scheduling policy or a stale priority captured on enqueue. */
+int32_t ppu_thread_priority_snapshot(uint64_t tid)
+{
+    table_lock();
+    const int32_t priority = creator_priority(tid);
+    table_unlock();
+    return priority;
+}
+
 /* Called without the table lock, right after the creator made `t`. The acquire load pairs with the release store in
  * ppu_thread_note_block, so whatever `t` wrote before it blocked (the event queue key above) is visible here. */
 static void wait_first_block(const ppu_thread_info* t, uint64_t tid)
