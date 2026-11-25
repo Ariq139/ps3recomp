@@ -414,7 +414,9 @@ static inline void vm_stack_release(vm_stack_alloc* sa, uint32_t addr, uint32_t 
     for (uint32_t i = 0; i < sa->retired_count; ++i)
         if (sa->retired[i].addr == addr) return; // never publish a duplicate extent
     if (sa->retired_count == VM_STACK_RETIRED_MAX) return;
-    sa->retired[sa->retired_count++] = (vm_stack_extent){addr, capacity};
+    sa->retired[sa->retired_count].addr = addr;
+    sa->retired[sa->retired_count].bytes = capacity;
+    ++sa->retired_count;
 }
 
 /* ---------------------------------------------------------------------------
