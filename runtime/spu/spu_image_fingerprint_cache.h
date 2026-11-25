@@ -18,6 +18,7 @@ typedef struct {
 typedef struct {
     spu_image_fingerprint_entry entries[SPU_IMAGE_FINGERPRINT_SLOTS];
     uint64_t clock;
+    unsigned recent; /* index of last successful lookup or insertion */
 } spu_image_fingerprint_cache;
 
 static inline uint64_t spu_image_fingerprint_cached(
@@ -27,6 +28,18 @@ static inline uint64_t spu_image_fingerprint_cached(
     if (!data || !size || size > 0x40000u) return hash(data, size);
     unsigned slot = 0;
     unsigned changed = SPU_IMAGE_FINGERPRINT_SLOTS;
+    /* Consecutive jobs frequently share the same binary, even if their
+     * immutable snapshots have different host addresses. One complete
+     * comparison against the most recent image can avoid both table scans.
+     * A miss still uses the original address/content/LRU search below. */
+    const unsigned recent = cache->recent;
+    spu_image_fingerprint_entry* hot = &cache->entries[recent];
+    if (hot->snapshot && hot->size == size &&
+        !memcmp(hot->snapshot, data, size)) {
+        hot->source = data;
+        hot->last_use = ++cache->clock;
+        return hot->fingerprint;
+    }
     /* Prefer the original address fast path, but a fresh asynchronous job
      * snapshot need not have the previous job's host address. Address is an
      * accelerator only: every hit still validates ALL bytes. */
@@ -34,7 +47,8 @@ static inline uint64_t spu_image_fingerprint_cached(
         spu_image_fingerprint_entry* e = &cache->entries[i];
         if (e->last_use < cache->entries[slot].last_use) slot = i;
         if (e->snapshot && e->source == data && e->size == size) {
-            if (!memcmp(e->snapshot, data, size)) {
+            if (i != recent && !memcmp(e->snapshot, data, size)) {
+                cache->recent = i;
                 e->last_use = ++cache->clock;
                 return e->fingerprint;
             }
@@ -47,8 +61,9 @@ static inline uint64_t spu_image_fingerprint_cached(
      * in another slot. */
     for (unsigned i = 0; i < SPU_IMAGE_FINGERPRINT_SLOTS; ++i) {
         spu_image_fingerprint_entry* e = &cache->entries[i];
-        if (i != changed && e->snapshot && e->size == size &&
+        if (i != recent && i != changed && e->snapshot && e->size == size &&
             !memcmp(e->snapshot, data, size)) {
+            cache->recent = i;
             e->source = data;
             e->last_use = ++cache->clock;
             return e->fingerprint;
@@ -68,6 +83,7 @@ static inline uint64_t spu_image_fingerprint_cached(
     e->size = size;
     e->fingerprint = fingerprint;
     e->last_use = ++cache->clock;
+    cache->recent = slot;
     return fingerprint;
 }
 #endif
