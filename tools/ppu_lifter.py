@@ -19,12 +19,12 @@ import sys
 import time
 from collections import Counter
 from dataclasses import dataclass, field
-from register_regions import promote_register_regions
 
 # ---------------------------------------------------------------------------
 # We import the disassembler from the same directory.
 # ---------------------------------------------------------------------------
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from register_regions import promote_register_regions
 
 try:
     from ppu_disasm import (Instruction, disassemble_bytes, detect_functions,
