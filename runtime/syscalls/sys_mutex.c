@@ -47,6 +47,24 @@ static void mtx_table_unlock(void)
 #endif
 }
 
+sys_mutex_info* sys_mutex_pin(uint32_t id)
+{
+    if (!id || id > SYS_MUTEX_MAX) return NULL;
+    mtx_table_lock();
+    sys_mutex_info* m = &g_sys_mutexes[id - 1];
+    if (!m->active) m = NULL;
+    else ++m->refs;
+    mtx_table_unlock();
+    return m;
+}
+
+void sys_mutex_unpin(sys_mutex_info* m)
+{
+    mtx_table_lock();
+    --m->refs;
+    mtx_table_unlock();
+}
+
 static int mtx_find_free(void)
 {
     for (int i = 0; i < SYS_MUTEX_MAX; i++) {
@@ -170,12 +188,12 @@ int64_t sys_mutex_destroy(ppu_context* ctx)
      * and the next sys_mutex_create in the same slot initialised a new one
      * over it: everyone else then used the new mutex and the blocked thread
      * waited on the dead one for good. */
-    if (m->lock_count > 0 || __atomic_load_n(&m->waiters, __ATOMIC_SEQ_CST) > 0) {
+    if (m->refs || sys_mutex_depth(m) > 0 || __atomic_load_n(&m->waiters, __ATOMIC_SEQ_CST) > 0) {
         static int n = 0;
         if (n++ < 16)
             fprintf(stderr, "[mutex] destroy of mutex %u '%.8s' refused: owner tid=%llu "
                     "count=%d waiters=%d (EBUSY)\n", mutex_id, m->name,
-                    (unsigned long long)m->owner_tid, m->lock_count,
+                    (unsigned long long)sys_mutex_owner(m), sys_mutex_depth(m),
                     __atomic_load_n(&m->waiters, __ATOMIC_SEQ_CST));
         mtx_table_unlock();
         return (int64_t)(int32_t)CELL_EBUSY;
@@ -220,7 +238,7 @@ static void* mutex_watch_reporter(void* arg)
             fprintf(stderr, "[mutex] tid=%llu blocked %lds on mutex %u '%.8s' lr=0x%08X; "
                     "owner tid=%llu count=%d\n",
                     (unsigned long long)s_mw[i].tid, waited, s_mw[i].id, m->name,
-                    s_mw[i].lr, (unsigned long long)m->owner_tid, m->lock_count);
+                    s_mw[i].lr, (unsigned long long)sys_mutex_owner(m), sys_mutex_depth(m));
         }
     }
     return NULL;
@@ -265,14 +283,14 @@ int64_t sys_mutex_lock(ppu_context* ctx)
     if (mutex_id == 0 || mutex_id > SYS_MUTEX_MAX)
         return (int64_t)(int32_t)CELL_ESRCH;
 
-    sys_mutex_info* m = &g_sys_mutexes[mutex_id - 1];
-    if (!m->active)
-        return (int64_t)(int32_t)CELL_ESRCH;
+    sys_mutex_info* m = sys_mutex_pin(mutex_id);
+    if (!m) return (int64_t)(int32_t)CELL_ESRCH;
 
     uint64_t caller_tid = ctx->thread_id;
 
     /* Check for deadlock on non-recursive mutex */
-    if (!m->recursive && m->owner_tid == caller_tid && m->lock_count > 0) {
+    if (!m->recursive && sys_mutex_owner(m) == caller_tid && sys_mutex_depth(m) > 0) {
+        sys_mutex_unpin(m);
         return (int64_t)(int32_t)CELL_EDEADLK;
     }
 
@@ -291,8 +309,8 @@ int64_t sys_mutex_lock(ppu_context* ctx)
             fprintf(stderr,
                     "[mutex] tid=%llu waiting on mutex %u '%.8s' owner tid=%llu count=%d waiters=%d recursive=%d lr=0x%08X\n",
                     (unsigned long long)caller_tid, mutex_id, m->name,
-                    (unsigned long long)m->owner_tid, m->lock_count,
-                    m->waiters, m->recursive, (uint32_t)ctx->lr);
+                    (unsigned long long)sys_mutex_owner(m), sys_mutex_depth(m),
+                    __atomic_load_n(&m->waiters, __ATOMIC_RELAXED), m->recursive, (uint32_t)ctx->lr);
             fflush(stderr);
         }
         /* Infinite wait */
@@ -309,6 +327,7 @@ int64_t sys_mutex_lock(ppu_context* ctx)
         while (!TryEnterCriticalSection(&m->cs)) {
             if (lv2_deadline_passed(deadline)) {
                 __atomic_sub_fetch(&m->waiters, 1, __ATOMIC_SEQ_CST);
+                sys_mutex_unpin(m);
                 return (int64_t)(int32_t)CELL_ETIMEDOUT;
             }
             if (timeout_us < 1000) SwitchToThread();
@@ -318,12 +337,13 @@ int64_t sys_mutex_lock(ppu_context* ctx)
 #else
     static int s_watch = -1;
     if (s_watch < 0) { const char* e = getenv("MUTEX_WATCH"); s_watch = e ? atoi(e) : 0; }
+    int host_rc = 0;
     if (timeout_us == 0 && s_watch == 2) {
         /* MUTEX_WATCH=2: the wait stays a real blocking lock (the polling of
          * =1 changes the timing enough to hide some hangs), and a reporter
          * thread names every waiter older than 5 s and the mutex's owner. */
         int slot = mutex_watch_enter(caller_tid, mutex_id, (uint32_t)ctx->lr);
-        pthread_mutex_lock(&m->mtx);
+        host_rc = pthread_mutex_lock(&m->mtx);
         mutex_watch_leave(slot);
     } else if (timeout_us == 0 && s_watch) {
         /* MUTEX_WATCH=1: an infinite lock waits in 5 s slices and says who it
@@ -333,16 +353,17 @@ int64_t sys_mutex_lock(ppu_context* ctx)
             struct timespec ts;
             clock_gettime(CLOCK_REALTIME, &ts);
             ts.tv_sec += 5;
-            if (pthread_mutex_timedlock(&m->mtx, &ts) == 0) break;
+            host_rc = pthread_mutex_timedlock(&m->mtx, &ts);
+            if (host_rc != ETIMEDOUT) break;
             waited += 5;
             fprintf(stderr, "[mutex] tid=%llu waiting %us on mutex %u '%.8s' "
                     "owner tid=%llu count=%u lr=0x%08X\n",
                     (unsigned long long)caller_tid, waited, mutex_id, m->name,
-                    (unsigned long long)m->owner_tid, (unsigned)m->lock_count,
+                    (unsigned long long)sys_mutex_owner(m), (unsigned)sys_mutex_depth(m),
                     (uint32_t)ctx->lr);
         }
     } else if (timeout_us == 0) {
-        pthread_mutex_lock(&m->mtx);
+        host_rc = pthread_mutex_lock(&m->mtx);
     } else {
         struct timespec ts;
         clock_gettime(CLOCK_REALTIME, &ts);
@@ -352,17 +373,18 @@ int64_t sys_mutex_lock(ppu_context* ctx)
             ts.tv_sec++;
             ts.tv_nsec -= 1000000000L;
         }
-        int rc = pthread_mutex_timedlock(&m->mtx, &ts);
-        if (rc == ETIMEDOUT) {
-            __atomic_sub_fetch(&m->waiters, 1, __ATOMIC_SEQ_CST);
-            return (int64_t)(int32_t)CELL_ETIMEDOUT;
-        }
+        host_rc = pthread_mutex_timedlock(&m->mtx, &ts);
+    }
+    if (host_rc) {
+        __atomic_sub_fetch(&m->waiters, 1, __ATOMIC_SEQ_CST);
+        sys_mutex_unpin(m);
+        return (int64_t)(int32_t)(host_rc == ETIMEDOUT ? CELL_ETIMEDOUT : host_rc == EDEADLK ? CELL_EDEADLK : CELL_EFAULT);
     }
 #endif
     __atomic_sub_fetch(&m->waiters, 1, __ATOMIC_SEQ_CST);
 
-    m->owner_tid = caller_tid;
-    m->lock_count++;
+    sys_mutex_publish_owner(m, caller_tid, sys_mutex_depth(m) + 1);
+    sys_mutex_unpin(m);
     return CELL_OK;
 }
 
@@ -378,9 +400,8 @@ int64_t sys_mutex_trylock(ppu_context* ctx)
     if (mutex_id == 0 || mutex_id > SYS_MUTEX_MAX)
         return (int64_t)(int32_t)CELL_ESRCH;
 
-    sys_mutex_info* m = &g_sys_mutexes[mutex_id - 1];
-    if (!m->active)
-        return (int64_t)(int32_t)CELL_ESRCH;
+    sys_mutex_info* m = sys_mutex_pin(mutex_id);
+    if (!m) return (int64_t)(int32_t)CELL_ESRCH;
 
     uint64_t caller_tid = ctx->thread_id;
 
@@ -393,7 +414,7 @@ int64_t sys_mutex_trylock(ppu_context* ctx)
      * the CS and causes random forever-blocks on later Enters).
      * EnterCriticalSection by the current owner is itself recursive and
      * never blocks, so this is safe and cheap. */
-    if (m->recursive && m->owner_tid == caller_tid && m->lock_count > 0) {
+    if (m->recursive && sys_mutex_owner(m) == caller_tid && sys_mutex_depth(m) > 0) {
 #ifdef _WIN32
         EnterCriticalSection(&m->cs);
 #else
@@ -405,9 +426,10 @@ int64_t sys_mutex_trylock(ppu_context* ctx)
          * acquisition behind two guest ones: the first guest unlock then
          * dropped the host mutex entirely and another thread could enter
          * while the guest still believed it held the mutex. */
-        pthread_mutex_lock(&m->mtx);
+        if (pthread_mutex_lock(&m->mtx)) { sys_mutex_unpin(m); return (int32_t)CELL_EFAULT; }
 #endif
-        m->lock_count++;
+        sys_mutex_publish_owner(m, caller_tid, sys_mutex_depth(m) + 1);
+        sys_mutex_unpin(m);
         return CELL_OK;
     }
 
@@ -416,22 +438,26 @@ int64_t sys_mutex_trylock(ppu_context* ctx)
      * a CRITICAL_SECTION (and a recursive pthread mutex) is always re-enterable
      * by its owner -- so the guest was told it had taken a second level of a
      * mutex that has none. */
-    if (!m->recursive && m->owner_tid == caller_tid && m->lock_count > 0)
+    if (!m->recursive && sys_mutex_owner(m) == caller_tid && sys_mutex_depth(m) > 0) {
+        sys_mutex_unpin(m);
         return (int64_t)(int32_t)CELL_EDEADLK;
+    }
 
 #ifdef _WIN32
     if (!TryEnterCriticalSection(&m->cs)) {
+        sys_mutex_unpin(m);
         return (int64_t)(int32_t)CELL_EBUSY;
     }
 #else
     int rc = pthread_mutex_trylock(&m->mtx);
     if (rc != 0) {
+        sys_mutex_unpin(m);
         return (int64_t)(int32_t)CELL_EBUSY;
     }
 #endif
 
-    m->owner_tid = caller_tid;
-    m->lock_count++;
+    sys_mutex_publish_owner(m, caller_tid, sys_mutex_depth(m) + 1);
+    sys_mutex_unpin(m);
     return CELL_OK;
 }
 
@@ -447,25 +473,23 @@ int64_t sys_mutex_unlock(ppu_context* ctx)
     if (mutex_id == 0 || mutex_id > SYS_MUTEX_MAX)
         return (int64_t)(int32_t)CELL_ESRCH;
 
-    sys_mutex_info* m = &g_sys_mutexes[mutex_id - 1];
-    if (!m->active)
-        return (int64_t)(int32_t)CELL_ESRCH;
+    sys_mutex_info* m = sys_mutex_pin(mutex_id);
+    if (!m) return (int64_t)(int32_t)CELL_ESRCH;
 
     uint64_t caller_tid = ctx->thread_id;
 
-    if (m->owner_tid != caller_tid) {
+    if (sys_mutex_owner(m) != caller_tid || sys_mutex_depth(m) <= 0) {
         /* Real lv2 returns EPERM for a non-owner unlock (RPCS3
          * sys_mutex.h's lv2_mutex::try_unlock, oracle, no code copied:
          * "if (it.owner != cpu.id) return CELL_EPERM;"), not a made up
          * CELL_EMUTEX_NOT_OWNED code that guest branches on this
          * contract would never match. */
+        sys_mutex_unpin(m);
         return (int64_t)(int32_t)CELL_EPERM;
     }
 
-    m->lock_count--;
-    if (m->lock_count == 0) {
-        m->owner_tid = 0;
-    }
+    int depth = sys_mutex_depth(m) - 1;
+    sys_mutex_publish_owner(m, depth ? caller_tid : 0, depth);
 
 #ifdef _WIN32
     LeaveCriticalSection(&m->cs);
@@ -473,6 +497,7 @@ int64_t sys_mutex_unlock(ppu_context* ctx)
     pthread_mutex_unlock(&m->mtx);
 #endif
 
+    sys_mutex_unpin(m);
     return CELL_OK;
 }
 

@@ -63,6 +63,7 @@ typedef struct sys_mutex_info {
     uint64_t owner_tid;   /* thread_id of current owner (for recursive/error checking) */
     int      lock_count;  /* recursive lock count */
     volatile int waiters; /* threads blocked acquiring it (sys_mutex_lock, cond re-lock) */
+    unsigned refs;        /* operation/condition pins, protected by mutex table lock */
 
 #ifdef _WIN32
     CRITICAL_SECTION cs;
@@ -74,6 +75,18 @@ typedef struct sys_mutex_info {
 } sys_mutex_info;
 
 extern sys_mutex_info g_sys_mutexes[SYS_MUTEX_MAX];
+
+/* Pin under the table lock before inspecting/using a slot. A successful pin
+ * prevents destruction/reinitialization until unpin, including native lock
+ * acquisition and release. Each live condition retains a pin. */
+sys_mutex_info* sys_mutex_pin(uint32_t id);
+void sys_mutex_unpin(sys_mutex_info* m);
+static inline uint64_t sys_mutex_owner(const sys_mutex_info* m) { return __atomic_load_n(&m->owner_tid, __ATOMIC_ACQUIRE); }
+static inline int sys_mutex_depth(const sys_mutex_info* m) { return __atomic_load_n(&m->lock_count, __ATOMIC_ACQUIRE); }
+static inline void sys_mutex_publish_owner(sys_mutex_info* m, uint64_t tid, int depth) {
+    __atomic_store_n(&m->owner_tid, tid, __ATOMIC_RELEASE);
+    __atomic_store_n(&m->lock_count, depth, __ATOMIC_RELEASE);
+}
 
 /* Syscall handlers */
 int64_t sys_mutex_create(ppu_context* ctx);

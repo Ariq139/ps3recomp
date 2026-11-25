@@ -20,12 +20,8 @@ static DWORD WINAPI signaler(void* raw) {
     ppu_context c={0}; c.thread_id=2;
     Sleep(20);
     if (raw) {
-        /* Host spurious wake: no guest signal has selected this waiter. */
-#ifdef _WIN32
-        WakeAllConditionVariable(&g_sys_conds[cid-1].cv);
-#else
-        pthread_cond_broadcast(&g_sys_conds[cid-1].cv);
-#endif
+        /* Signal a non-waiting thread: must not wake another guest waiter. */
+        CHECK(call(sys_cond_signal_to,&c,cid,999,0)==(int32_t)CELL_EPERM);
     } else {
         int32_t rc=call(sys_mutex_lock,&c,mid,200000,0);
         if (rc==CELL_OK) {
@@ -43,6 +39,7 @@ int main(int argc, char** argv) {
     mid=be_read(0x200);
     CHECK(call(sys_cond_create,&c,0x204,mid,0)==CELL_OK);
     cid=be_read(0x204);
+    CHECK(call(sys_mutex_destroy,&c,mid,0,0)==(int32_t)CELL_EBUSY);
     const char* mode=argc>1?argv[1]:"recursive";
     if (!strcmp(mode,"owner")) {
         CHECK(call(sys_cond_wait,&c,cid,1000,0)==(int32_t)CELL_EPERM);
@@ -61,6 +58,8 @@ int main(int argc, char** argv) {
         CHECK(WaitForSingleObject(h,1000)==WAIT_OBJECT_0);
         CloseHandle(h);
     }
+    CHECK(call(sys_cond_destroy,&c,cid,0,0)==CELL_OK);
+    CHECK(call(sys_mutex_destroy,&c,mid,0,0)==CELL_OK);
     printf("condition %s: %s\n",mode,failures?"FAIL":"PASS");
     return failures?1:0;
 }
