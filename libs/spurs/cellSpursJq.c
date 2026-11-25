@@ -37,7 +37,7 @@ struct JqTask {
     u32 owned_descriptor, flags;
     uint64_t sequence;
     uint8_t descriptor[256];
-    uint8_t* binary;
+    const uint8_t* binary;
     JqImage* image;
 };
 typedef struct {
@@ -588,7 +588,7 @@ static JqTask* jq_prepare(u32 job_ea, u32 descriptor_size)
         if (!t->image) { free(t); return NULL; }
         t->binary = t->image->bytes;
     } else {
-        memcpy(t->binary, vm_base + (u32)ea64, binary_size);
+        memcpy((uint8_t*)(t + 1), vm_base + (u32)ea64, binary_size);
     }
     return t;
 }

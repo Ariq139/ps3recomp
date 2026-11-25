@@ -33,7 +33,6 @@ int spu_workload_dispatch_job_snapshot(const uint8_t* image,uint32_t size,uint32
  assert(WaitForSingleObject(release_job,3000)==WAIT_OBJECT_0);assert(vm_read32(ea+0x60)==0x12345678);return 1;
 }
 static void test_shared_images(void) {
- assert(_putenv_s("SPURS_JQ_SHARE_IMAGES","1")==0);
  vm_write64(0x1400,0x1800);vm_write16(0x1408,1);guest[0x1800]=0x11;
  JqTask* a=jq_prepare(0x1400,128);
  JqTask* b=jq_prepare(0x1400,128);
@@ -51,7 +50,8 @@ static void test_shared_images(void) {
 }
 int main(int argc,char** argv) {
  (void)argv;
- test_shared_images();
+ const char* share = getenv("SPURS_JQ_SHARE_IMAGES");
+ if (share && !strcmp(share,"1")) test_shared_images();
  assert(_putenv_s("SPURS_JQ_ASYNC_COPY",argc>1 ? "0" : "1")==0);
  entered=CreateEvent(NULL,TRUE,FALSE,NULL);release_job=CreateEvent(NULL,TRUE,FALSE,NULL);assert(jq_create_state(0x1000,4)==0);
  vm_write64(0x1400,0x1800);vm_write16(0x1408,1);vm_write32(0x1460,0x12345678);guest[0x1800]=0xCC;
