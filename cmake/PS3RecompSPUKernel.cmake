@@ -100,6 +100,9 @@ function(ps3recomp_outline_spu_loop target source kernel start entry exit_pc mod
                 endif()
                 list(APPEND verification_args --verify-capture "${capture_abs}")
                 list(APPEND verification_deps "${capture_abs}")
+                file(SHA256 "${capture_abs}" capture_sha)
+                list(APPEND verification_identity "${capture_abs}=${capture_sha}")
+                set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${capture_abs}")
             endforeach()
             if(VERIFY_COMPILER)
                 list(APPEND verification_args --replay-compiler "${VERIFY_COMPILER}")
@@ -107,7 +110,16 @@ function(ps3recomp_outline_spu_loop target source kernel start entry exit_pc mod
             foreach(flag IN LISTS VERIFY_CFLAGS)
                 list(APPEND verification_args "--replay-cflag=${flag}")
             endforeach()
+            list(APPEND verification_deps
+                "${PS3RECOMP_DIR}/runtime/spu/spu_context.h"
+                "${PS3RECOMP_DIR}/runtime/spu/spu_kernel_capture.h"
+                "${PS3RECOMP_DIR}/runtime/spu/tests/spu_ls_watch_fixture.h"
+                "${PS3RECOMP_DIR}/include/ps3emu/ps3types.h")
         endif()
+        # Makefile generators may not rebuild solely on a changed command
+        # line. Distinguish cache paths by verification inputs and options.
+        string(SHA256 verification_key "${input};${verification_args};${verification_identity}")
+        set(output "${CMAKE_CURRENT_BINARY_DIR}/cache/spu/loops/verified_${verification_key}/${kernel}_${start}_${exit_pc}_${mode}/${filename}")
     endif()
     get_target_property(sources "${target}" SOURCES)
     set(updated "")
