@@ -33,7 +33,7 @@ struct JqTask {
     JqTask* next;
     u32 queue_slot, tag, id, job_ea, descriptor_size, binary_size;
     uint64_t tag_serial;
-    u32 owned_descriptor, flags;
+    u32 owned_descriptor, flags, pending_index;
     uint64_t sequence;
     uint8_t descriptor[256];
     uint8_t* binary;
@@ -44,6 +44,8 @@ typedef struct {
     u32 completedIds[CELL_SPURS_JQ_MAX_JOBS];
     s32 completionCodes[CELL_SPURS_JQ_MAX_JOBS];
     u32 completedHead;
+    /* Dense, unordered set of queued and executing jobs. Sequence and tag
+     * serials, not array positions, define guest-visible ordering. */
     JqTask* pending[CELL_SPURS_JQ_MAX_JOBS];
 } JqState;
 typedef struct { int in_use; u32 port_ea, queue_slot; } JqPortState;
@@ -112,18 +114,36 @@ static s32 jq_status_for_id(const JqState* q, u32 id)
         if (q->completedIds[i] == id) return q->completionCodes[i];
     return (s32)CELL_SPURS_JQ_ERROR_JOB_NOT_FOUND;
 }
+/* Pool lock held; callers have checked capacity. Each pending task stores
+ * its own index so completion can compact the set in constant time. */
+static void jq_pending_insert(JqState* q, JqTask* t)
+{
+    t->pending_index = q->jobCount;
+    q->pending[q->jobCount++] = t;
+}
+static void jq_pending_remove(JqState* q, JqTask* t)
+{
+    const u32 last = --q->jobCount;
+    const u32 index = t->pending_index;
+    if (index != last) {
+        JqTask* moved = q->pending[last];
+        q->pending[index] = moved;
+        moved->pending_index = index;
+    }
+    q->pending[last] = NULL;
+}
 static int jq_pending_id(const JqState* q, u32 id)
 {
-    for (u32 i = 0; i < CELL_SPURS_JQ_MAX_JOBS; ++i)
-        if (q->pending[i] && q->pending[i]->id == id) return 1;
+    for (u32 i = 0; i < q->jobCount; ++i)
+        if (q->pending[i]->id == id) return 1;
     return 0;
 }
 static int jq_pending_tag_before(u32 slot, u32 mask, const uint64_t target[32])
 {
     const JqState* q = &s_queues[slot];
-    for (u32 i = 0; i < CELL_SPURS_JQ_MAX_JOBS; ++i) {
+    for (u32 i = 0; i < q->jobCount; ++i) {
         const JqTask* t = q->pending[i];
-        if (t && (mask & (1u << t->tag)) && t->tag_serial <= target[t->tag])
+        if ((mask & (1u << t->tag)) && t->tag_serial <= target[t->tag])
             return 1;
     }
     return 0;
@@ -132,13 +152,11 @@ static int jq_pending_tag_before(u32 slot, u32 mask, const uint64_t target[32])
 static void jq_finish_locked(JqTask* t, s32 status)
 {
     JqState* q = &s_queues[t->queue_slot];
-    for (u32 i = 0; i < CELL_SPURS_JQ_MAX_JOBS; ++i)
-        if (q->pending[i] == t) { q->pending[i] = NULL; break; }
+    jq_pending_remove(q, t);
     q->completedIds[q->completedHead] = t->id;
     q->completionCodes[q->completedHead] = status;
     q->completedHead = (q->completedHead + 1u) % CELL_SPURS_JQ_MAX_JOBS;
     q->completeCount++;
-    if (q->jobCount) q->jobCount--;
     atomic_fetch_add_explicit(&s_tag_completed[t->queue_slot][t->tag], 1,
                               memory_order_release);
     atomic_fetch_sub_explicit(&s_active_job_dispatches, 1,
@@ -169,9 +187,9 @@ enum { JQ_FLAG_SYNC_JOB=1u, JQ_FLAG_EXCLUSIVE_JOB=2u, JQ_FLAG_NON_BLOCKING=4u };
 static int jq_task_runnable(const JqTask* task)
 {
     const JqState* q=&s_queues[task->queue_slot];
-    for(u32 i=0;i<CELL_SPURS_JQ_MAX_JOBS;++i) {
+    for(u32 i=0;i<q->jobCount;++i) {
         const JqTask* earlier=q->pending[i];
-        if(!earlier || earlier==task || earlier->sequence>=task->sequence) continue;
+        if(earlier==task || earlier->sequence>=task->sequence) continue;
         if((task->flags | earlier->flags) & (JQ_FLAG_SYNC_JOB|JQ_FLAG_EXCLUSIVE_JOB)) return 0;
     }
     return 1;
@@ -580,12 +598,6 @@ static s32 jq_push_slot_mode_flags(u32 slot, u32 job_ea, u32 jobSize,
     if (q->jobCount >= q->maxJobs || q->jobCount >= CELL_SPURS_JQ_MAX_JOBS) {
         jq_unlock(); jq_free_task(t); return (s32)CELL_SPURS_JQ_ERROR_QUEUE_FULL;
     }
-    u32 free_slot;
-    for (free_slot = 0; free_slot < CELL_SPURS_JQ_MAX_JOBS; ++free_slot)
-        if (!q->pending[free_slot]) break;
-    if (free_slot == CELL_SPURS_JQ_MAX_JOBS) {
-        jq_unlock(); jq_free_task(t); return (s32)CELL_SPURS_JQ_ERROR_QUEUE_FULL;
-    }
     if (synchronous_copy) q->copy_sync_active = 1;
     t->queue_slot = slot;
     t->flags=flags;
@@ -595,8 +607,7 @@ static s32 jq_push_slot_mode_flags(u32 slot, u32 job_ea, u32 jobSize,
     if (q->nextJobId == 0) q->nextJobId = 1;
     t->tag_serial = atomic_fetch_add_explicit(&s_tag_submitted[slot][tag], 1,
                                                memory_order_acq_rel) + 1u;
-    q->pending[free_slot] = t;
-    q->jobCount++;
+    jq_pending_insert(q, t);
     q->submitCount++;
     atomic_fetch_add_explicit(&s_active_job_dispatches, 1, memory_order_acq_rel);
     if (id_ea) vm_write32(id_ea, t->id);
