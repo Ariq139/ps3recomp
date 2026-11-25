@@ -188,6 +188,84 @@ def test_vmx_big_endian_lanes():
     print(f"  {len(OPS)} ops x {CASES_PER_OP} cases agree with the reference model")
 
 
+
+def test_packed_integer_helpers():
+    """Compare native and forced-scalar helpers to an independent byte model."""
+    cc = shutil.which(os.environ.get("CC", "cc")) or shutil.which("clang") or shutil.which("gcc")
+    if cc is None:
+        if os.environ.get("CI"):
+            raise SystemExit("FAIL: no C compiler found")
+        print("skip test_packed_integer_helpers: no C compiler")
+        return
+    comparisons = [(f"vcmpequ{w}", n, False, "eq") for w, n in (("b", 1), ("h", 2), ("w", 4))]
+    comparisons += [(f"vcmpgt{s}{w}", n, s == "s", "gt")
+                    for s in ("u", "s") for w, n in (("b", 1), ("h", 2), ("w", 4))]
+    saturating = [(f"v{op}{s}{w}s", n, s == "s", op)
+                  for op in ("add", "sub") for s in ("u", "s") for w, n in (("b", 1), ("h", 2))]
+    rng = random.Random(582)
+    pairs = [(a, b) for a in EDGE for b in EDGE]
+    # All-equal random inputs exercise CR6=all; independent pairs exercise mixed/none.
+    for _ in range(256):
+        a = rng.randbytes(16)
+        pairs.extend(((a, a), (a, rng.randbytes(16))))
+    src = ['#include <stdint.h>', '#include <stdio.h>', '#include <string.h>',
+           '#include "ppu_vmx.h"',
+           'static const unsigned char IN[][2][16] = {' +
+           ','.join('{' + _carr(a) + ',' + _carr(b) + '}' for a, b in pairs) + '};',
+           'int main(void) {',
+           'unsigned char storage[80];',
+           'for (unsigned i=0; i<sizeof(IN)/sizeof(IN[0]); ++i) {']
+    expected = []
+    for a, b in pairs:
+        for name, n, signed, op in comparisons + saturating:
+            xs = [int.from_bytes(a[i:i+n], "big", signed=signed) for i in range(0, 16, n)]
+            ys = [int.from_bytes(b[i:i+n], "big", signed=signed) for i in range(0, 16, n)]
+            mask = (1 << (8*n)) - 1
+            if op in ("eq", "gt"):
+                flags = [x == y if op == "eq" else x > y for x, y in zip(xs, ys)]
+                result = b"".join((mask if f else 0).to_bytes(n, "big") for f in flags)
+                cr = (8 if all(flags) else 0) | (2 if not any(flags) else 0)
+                expected.extend([f"{result.hex()} {cr:08x}"] * 4)
+            else:
+                lo, hi = (-(1 << (8*n-1)), (1 << (8*n-1))-1) if signed else (0, mask)
+                exact = [x+y if op == "add" else x-y for x, y in zip(xs, ys)]
+                clipped = [sat(x, lo, hi) for x in exact]
+                result = b"".join((x & mask).to_bytes(n, "big") for x in clipped)
+                for alias in range(4):
+                    vscr = 0x10000 | (alias & 1)
+                    if clipped != exact:
+                        vscr |= 1
+                    expected.append(f"{result.hex()} {vscr:08x}")
+    for name, n, signed, op in comparisons + saturating:
+        # All pointers deliberately unaligned; test distinct output, d==a,
+        # d==b and partial overlap. Restore source bytes before each call.
+        src += ['for (unsigned alias=0; alias<4; ++alias) {',
+                'unsigned char *a=storage+1, *b=storage+33;',
+                'unsigned char *d=alias==0?storage+57:alias==1?a:alias==2?b:a+1;',
+                'memcpy(a,IN[i][0],16); memcpy(b,IN[i][1],16);',
+                'uint32_t flags=0x10000u | (alias & 1u);']
+        if op in ("eq", "gt"):
+            src.append(f'flags=vmx_{name}(d,a,b);')
+        else:
+            src.append(f'vmx_{name}(d,a,b,&flags);')
+        src += ['for (unsigned k=0; k<16; ++k) printf("%02x", (unsigned)d[k]);',
+                'printf(" %08x\\n", (unsigned)flags);', '}']
+    src += ['}', 'return 0;', '}']
+    with tempfile.TemporaryDirectory() as td:
+        cpath = Path(td) / "packed.c"
+        cpath.write_text("\n".join(src))
+        for mode, flags in (("native", []), ("scalar", ["-DPPU_VMX_FORCE_SCALAR=1"])):
+            exe = Path(td) / ("packed.exe" if os.name == "nt" else "packed")
+            subprocess.run([cc, "-std=c11", "-O2", "-I" + str(ROOT / "runtime" / "ppu"),
+                            *flags, str(cpath), "-o", str(exe)], check=True)
+            actual = subprocess.run([str(exe)], check=True, capture_output=True,
+                                    text=True, timeout=30).stdout.splitlines()
+            assert len(actual) == len(expected), (mode, len(actual), len(expected))
+            for i, (got, want) in enumerate(zip(actual, expected)):
+                assert got == want, (mode, i, got, want)
+            print(f"  {mode}: {len(expected)} packed integer results/flags agree")
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):
