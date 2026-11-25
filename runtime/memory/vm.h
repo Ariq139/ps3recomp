@@ -348,49 +348,95 @@ static inline int32_t vm_protect(uint32_t addr, uint32_t size, int read, int wri
 }
 
 /* ---------------------------------------------------------------------------
- * Stack allocation for PPU threads
- *
- * Simple bump allocator within the stack region.  Each thread gets
- * a fixed-size stack with a guard page at the bottom.
+ * Reusable guest PPU stacks. The thread table serializes these operations.
+ * Retired extents split/coalesce; preparation reinstalls the guard and
+ * recommits former interior guards before making pages usable.
+ * The bounded array covers the 240 MiB arena at the syscall's 16 KiB minimum.
  * -----------------------------------------------------------------------*/
+#define VM_STACK_RETIRED_MAX 16384u
+typedef struct vm_stack_extent { uint32_t addr, bytes; } vm_stack_extent;
 typedef struct vm_stack_alloc {
-    uint32_t next_addr;     /* next stack base to allocate */
-    uint32_t region_end;    /* end of the stack region */
+    uint32_t next_addr, region_end;
+    uint32_t retired_count;
+    vm_stack_extent retired[VM_STACK_RETIRED_MAX];
 } vm_stack_alloc;
 
 static inline void vm_stack_alloc_init(vm_stack_alloc* sa)
 {
-    sa->next_addr  = VM_STACK_BASE;
-    sa->region_end = VM_CB_STACK_BASE;   /* callback stacks above, see VM_CB_STACK_REGION */
+    sa->next_addr = VM_STACK_BASE;
+    sa->region_end = VM_CB_STACK_BASE;
+    sa->retired_count = 0;
 }
 
-/*
- * Allocate a stack.  Returns the BASE address of the stack region (lowest address).
- * The usable stack top = base + size.
- * Returns 0 on failure.
- */
-static inline uint32_t vm_stack_allocate(vm_stack_alloc* sa, uint32_t stack_size)
+/* Reserve with the allocator lock held; prepare before publishing a guest
+ * thread, outside the table lock. Retired adjacent blocks coalesce. */
+static inline uint32_t vm_stack_reserve_extent(vm_stack_alloc* sa, uint32_t size, uint32_t* capacity)
 {
-    /* Host page granularity throughout: the guard must be exactly one host
-     * page, and the stack above it must start on a host page boundary, or a
-     * 16 KB host would either refuse the mprotect or protect part of the
-     * stack itself. On a 4 KB host this is the layout it always was. */
-    uint32_t pg = vm_host_page_size();
-    stack_size = VM_ALIGN_UP(stack_size, pg);
-
-    /* Add a guard page */
-    uint32_t total = stack_size + pg;
-
-    if (sa->next_addr + total > sa->region_end)
-        return 0; /* out of stack space */
-
-    uint32_t base = sa->next_addr;
-    sa->next_addr += total;
-
-    /* Guard page at the bottom (no access) */
-    vm_protect(base, pg, 0, 0, 0);
-
-    return base + pg; /* skip the guard page */
+    const uint32_t pg=vm_host_page_size();
+    const uint64_t rounded=((uint64_t)size+pg-1u)&~(uint64_t)(pg-1u);
+    if (!rounded || rounded>UINT32_MAX-pg) return 0;
+    const uint32_t bytes=(uint32_t)rounded;
+    uint32_t best=sa->retired_count;
+    for(uint32_t i=0;i<sa->retired_count;++i)
+        if(sa->retired[i].bytes>=bytes&&(best==sa->retired_count||sa->retired[i].bytes<sa->retired[best].bytes))best=i;
+    if(best<sa->retired_count){
+        vm_stack_extent block=sa->retired[best];
+        if(ppu_vm_size&&(uint64_t)block.addr+block.bytes>ppu_vm_size)return 0;
+        if(block.bytes-bytes>=pg+0x4000u){
+            sa->retired[best].addr=block.addr+bytes+pg;
+            sa->retired[best].bytes=block.bytes-bytes-pg;
+            *capacity=bytes;
+        }else{
+            sa->retired[best]=sa->retired[--sa->retired_count];*capacity=block.bytes;
+        }
+        return block.addr;
+    }
+    const uint64_t end=(uint64_t)sa->next_addr+bytes+pg;
+    if(end>sa->region_end||(ppu_vm_size&&end>ppu_vm_size))return 0;
+    uint32_t addr=sa->next_addr+pg;
+    sa->next_addr=(uint32_t)end;*capacity=bytes;return addr;
+}
+static inline int vm_stack_prepare_extent(uint32_t addr,uint32_t bytes,void (*zero_guest)(uint32_t,uint32_t))
+{
+    const uint32_t pg=vm_host_page_size();
+    if(vm_commit(addr-pg,pg)!=CELL_OK||vm_protect(addr-pg,pg,0,0,0)!=CELL_OK||
+       vm_commit(addr,bytes)!=CELL_OK||vm_protect(addr,bytes,1,1,0)!=CELL_OK)return 0;
+    vm_note_write(addr,bytes);
+    if(zero_guest)zero_guest(addr,bytes);else memset(vm_base+addr,0,bytes);
+    return 1;
+}
+static inline void vm_stack_release(vm_stack_alloc* sa,uint32_t addr,uint32_t capacity)
+{
+    const uint32_t pg=vm_host_page_size();
+    if(!addr||!capacity||(addr&(pg-1u))||(capacity&(pg-1u))||addr<pg||
+       (uint64_t)addr+capacity>sa->next_addr)return;
+    uint32_t begin=addr-pg,end=addr+capacity;
+    for(uint32_t i=0;i<sa->retired_count;++i){
+        vm_stack_extent b=sa->retired[i];
+        if(begin<b.addr+b.bytes&&b.addr-pg<end)return;
+    }
+    for(uint32_t i=0;i<sa->retired_count;){
+        vm_stack_extent b=sa->retired[i];uint32_t b0=b.addr-pg,b1=b.addr+b.bytes;
+        if(end==b0||b1==begin){
+            if(b0<begin)begin=b0;
+            if(b1>end)end=b1;
+            sa->retired[i]=sa->retired[--sa->retired_count];i=0;
+        }else ++i;
+    }
+    if(end==sa->next_addr){sa->next_addr=begin;return;}
+    if(sa->retired_count==VM_STACK_RETIRED_MAX)return;
+    sa->retired[sa->retired_count].addr=begin+pg;
+    sa->retired[sa->retired_count++].bytes=end-begin-pg;
+}
+/* Boot callers retain their legacy bump-only lazy-commit contract. */
+static inline uint32_t vm_stack_allocate(vm_stack_alloc* sa,uint32_t size)
+{
+    const uint32_t pg=vm_host_page_size();
+    const uint64_t bytes=((uint64_t)size+pg-1u)&~(uint64_t)(pg-1u);
+    const uint64_t end=(uint64_t)sa->next_addr+bytes+pg;
+    if(!bytes||end>sa->region_end||(ppu_vm_size&&end>ppu_vm_size))return 0;
+    uint32_t base=sa->next_addr;sa->next_addr=(uint32_t)end;
+    vm_protect(base,pg,0,0,0);return base+pg;
 }
 
 /* ---------------------------------------------------------------------------

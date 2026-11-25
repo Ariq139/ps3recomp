@@ -36,6 +36,7 @@ extern "C" {
 #define PPU_THREAD_STATE_RUNNING    1
 #define PPU_THREAD_STATE_FINISHED   2
 #define PPU_THREAD_STATE_DETACHED   3
+#define PPU_THREAD_STATE_STARTING   4 /* internal, not published */
 
 /* Thread entry point type - recompiled function pointer */
 typedef void (*ppu_thread_entry_fn)(ppu_context* ctx);
@@ -48,8 +49,11 @@ typedef struct ppu_thread_info {
     int32_t      priority;
     int64_t      exit_status;
     int          joinable;
-    int          joining;      /* a sys_ppu_thread_join is in progress: a second joiner is EINVAL */
+    int          joining;      /* exclusive join/finished-detach claimant */
+    int          exit_requested;
+    uint64_t     generation;   /* internal slot lifetime, not a guest ABI change */
     uint32_t     stack_addr;   /* guest stack base */
+    uint32_t     stack_capacity; /* original usable extent including alignment slack */
     uint32_t     stack_size;
     uint64_t     entry_addr;   /* guest entry point */
     uint64_t     tls_addr;
