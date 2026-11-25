@@ -58,6 +58,9 @@ static uint64_t s_task_sequence;
 static JqTask* s_task_head;
 static JqTask* s_task_tail;
 static int s_pool_workers, s_pool_stopping;
+/* These counts are changed with s_jq_mutex held before/after each wait.
+ * Avoid adding two needless OS broadcasts to every completion. */
+static unsigned s_jq_completion_waiters, s_jq_worker_waiters, s_jq_producer_waiters;
 #ifdef _WIN32
 static SRWLOCK s_jq_mutex = SRWLOCK_INIT;
 static CONDITION_VARIABLE s_jq_cond = CONDITION_VARIABLE_INIT;
@@ -66,16 +69,16 @@ static CONDITION_VARIABLE s_jq_producer_cond = CONDITION_VARIABLE_INIT;
 static HANDLE s_jq_threads[JQ_WORKER_MAX];
 static void jq_lock(void) { AcquireSRWLockExclusive(&s_jq_mutex); }
 static void jq_unlock(void) { ReleaseSRWLockExclusive(&s_jq_mutex); }
-static void jq_notify_workers(void) { WakeAllConditionVariable(&s_jq_worker_cond); }
-static void jq_notify_producers(void) { WakeAllConditionVariable(&s_jq_producer_cond); }
+static void jq_notify_workers(void) { if (s_jq_worker_waiters) WakeAllConditionVariable(&s_jq_worker_cond); }
+static void jq_notify_producers(void) { if (s_jq_producer_waiters) WakeAllConditionVariable(&s_jq_producer_cond); }
 static void jq_notify(void) {
-    WakeAllConditionVariable(&s_jq_cond);
+    if (s_jq_completion_waiters) WakeAllConditionVariable(&s_jq_cond);
     jq_notify_workers();
     jq_notify_producers();
 }
-static void jq_await(void) { SleepConditionVariableSRW(&s_jq_cond, &s_jq_mutex, INFINITE, 0); }
-static void jq_await_worker(void) { SleepConditionVariableSRW(&s_jq_worker_cond, &s_jq_mutex, INFINITE, 0); }
-static void jq_await_producer(void) { SleepConditionVariableSRW(&s_jq_producer_cond, &s_jq_mutex, INFINITE, 0); }
+static void jq_await(void) { ++s_jq_completion_waiters; SleepConditionVariableSRW(&s_jq_cond, &s_jq_mutex, INFINITE, 0); --s_jq_completion_waiters; }
+static void jq_await_worker(void) { ++s_jq_worker_waiters; SleepConditionVariableSRW(&s_jq_worker_cond, &s_jq_mutex, INFINITE, 0); --s_jq_worker_waiters; }
+static void jq_await_producer(void) { ++s_jq_producer_waiters; SleepConditionVariableSRW(&s_jq_producer_cond, &s_jq_mutex, INFINITE, 0); --s_jq_producer_waiters; }
 #else
 static pthread_mutex_t s_jq_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t s_jq_cond = PTHREAD_COND_INITIALIZER;
@@ -84,16 +87,16 @@ static pthread_cond_t s_jq_producer_cond = PTHREAD_COND_INITIALIZER;
 static pthread_t s_jq_threads[JQ_WORKER_MAX];
 static void jq_lock(void) { pthread_mutex_lock(&s_jq_mutex); }
 static void jq_unlock(void) { pthread_mutex_unlock(&s_jq_mutex); }
-static void jq_notify_workers(void) { pthread_cond_broadcast(&s_jq_worker_cond); }
-static void jq_notify_producers(void) { pthread_cond_broadcast(&s_jq_producer_cond); }
+static void jq_notify_workers(void) { if (s_jq_worker_waiters) pthread_cond_broadcast(&s_jq_worker_cond); }
+static void jq_notify_producers(void) { if (s_jq_producer_waiters) pthread_cond_broadcast(&s_jq_producer_cond); }
 static void jq_notify(void) {
-    pthread_cond_broadcast(&s_jq_cond);
+    if (s_jq_completion_waiters) pthread_cond_broadcast(&s_jq_cond);
     jq_notify_workers();
     jq_notify_producers();
 }
-static void jq_await(void) { pthread_cond_wait(&s_jq_cond, &s_jq_mutex); }
-static void jq_await_worker(void) { pthread_cond_wait(&s_jq_worker_cond, &s_jq_mutex); }
-static void jq_await_producer(void) { pthread_cond_wait(&s_jq_producer_cond, &s_jq_mutex); }
+static void jq_await(void) { ++s_jq_completion_waiters; pthread_cond_wait(&s_jq_cond, &s_jq_mutex); --s_jq_completion_waiters; }
+static void jq_await_worker(void) { ++s_jq_worker_waiters; pthread_cond_wait(&s_jq_worker_cond, &s_jq_mutex); --s_jq_worker_waiters; }
+static void jq_await_producer(void) { ++s_jq_producer_waiters; pthread_cond_wait(&s_jq_producer_cond, &s_jq_mutex); --s_jq_producer_waiters; }
 #endif
 
 static void jq_trace_port2(const char* op, u32 port_ea, u32 queue_ea,
