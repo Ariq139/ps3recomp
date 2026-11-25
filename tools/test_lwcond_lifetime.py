@@ -133,6 +133,21 @@ static void wait_contract() {
     b.join(); assert(done.load()==1);
     assert(call(lwc_signal_all_event,COND)==CELL_OK);
     a.join(); assert(done.load()==2);
+    // Verify single-signal selection with the queue held in a known order.
+    for (uint32_t protocol : {1u, 2u}) {
+        done.store(0);
+        vm_write32(MUTEX+LWM_ATTR,protocol);
+        std::thread first(waiter,2); wait_queued(1);
+        std::thread second(waiter,3); wait_queued(2);
+        assert(call(lwc_signal_event,COND)==CELL_OK);
+        if (protocol==1) first.join(); // FIFO: oldest first
+        else second.join();            // priority: tid 3 has lower priority number
+        assert(done.load()==1);
+        assert(call(lwc_signal_event,COND)==CELL_OK);
+        if (first.joinable()) first.join();
+        if (second.joinable()) second.join();
+        assert(done.load()==2);
+    }
     assert(call(lwc_destroy_event,COND)==CELL_OK);
     assert(call(lwc_mutex_destroy_checked,MUTEX)==CELL_OK);
     assert(call(lwc_mutex_lock_checked,MUTEX)==CELL_ESRCH);
