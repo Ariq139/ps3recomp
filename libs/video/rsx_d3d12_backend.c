@@ -4201,6 +4201,7 @@ static HRESULT d3d12_pipeline_library_get_or_create(
 
 static void d3d12_vp_fp_hash_remove(u32 entry_index)
 {
+    if (s_d3d.vp_fp_last == entry_index + 1u) s_d3d.vp_fp_last = 0;
     if (entry_index >= (u32)s_d3d.vp_fp_n)
         return;
 
@@ -4492,7 +4493,12 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
     /* Adjacent material draws frequently have the same complete key.
      * Validate the current slot's bytes, not a saved COM pointer. A slot
      * reused by ring eviction or a new generation cannot yield a false hit. */
-    const u32 last = s_d3d.vp_fp_last;
+    static int last_key_cache = -1;
+    if (last_key_cache < 0) {
+        const char* e = getenv("RSX_D3D12_LAST_PSO");
+        last_key_cache = e && !strcmp(e, "1");
+    }
+    const u32 last = last_key_cache ? s_d3d.vp_fp_last : 0u;
     if (last && last <= (u32)s_d3d.vp_fp_n) {
         VPFPEntry* cached = &s_d3d.vp_fp[last - 1u];
         if (cached->pso && !memcmp((const u8*)cached + key_begin,
@@ -4509,7 +4515,7 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
         if (cached->key_hash == key_hash &&
             memcmp((const u8*)cached + key_begin,
                    (const u8*)&key + key_begin, key_size) == 0) {
-            s_d3d.vp_fp_last = link;
+            if (last_key_cache) s_d3d.vp_fp_last = link;
             if (sampler_layout_out) *sampler_layout_out = cached->sampler_layout;
             return cached->pso;
         }
@@ -5011,7 +5017,7 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
     entry->key_hash = key_hash;
     entry->hash_next = s_d3d.vp_fp_hash[bucket];
     s_d3d.vp_fp_hash[bucket] = entry_index + 1u;
-    s_d3d.vp_fp_last = entry_index + 1u;
+    if (last_key_cache) s_d3d.vp_fp_last = entry_index + 1u;
     if (sampler_layout_out) *sampler_layout_out = sampler_layout;
     return pso;
 }
