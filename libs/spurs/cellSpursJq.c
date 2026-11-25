@@ -28,9 +28,14 @@
 #define JQ_WORKER_MAX 6
 #define CELL_SPURS_JQ_MAX_PORTS 64
 
+enum { JQ_FLAG_SYNC_JOB=1u, JQ_FLAG_EXCLUSIVE_JOB=2u, JQ_FLAG_NON_BLOCKING=4u };
+#define JQ_BARRIER_FLAGS (JQ_FLAG_SYNC_JOB | JQ_FLAG_EXCLUSIVE_JOB)
+
 typedef struct JqTask JqTask;
 struct JqTask {
-    JqTask* next;
+    JqTask* next; /* global worker dispatch list */
+    JqTask *pending_prev, *pending_next;
+    JqTask *barrier_prev, *barrier_next;
     u32 queue_slot, tag, id, job_ea, descriptor_size, binary_size;
     uint64_t tag_serial;
     u32 owned_descriptor, flags, pending_index;
@@ -47,6 +52,9 @@ typedef struct {
     /* Dense, unordered set of queued and executing jobs. Sequence and tag
      * serials, not array positions, define guest-visible ordering. */
     JqTask* pending[CELL_SPURS_JQ_MAX_JOBS];
+    /* Ordered by submission sequence, including currently executing jobs. */
+    JqTask *pending_head, *pending_tail;
+    JqTask *barrier_head, *barrier_tail;
 } JqState;
 typedef struct { int in_use; u32 port_ea, queue_slot; } JqPortState;
 
@@ -120,6 +128,20 @@ static void jq_pending_insert(JqState* q, JqTask* t)
 {
     t->pending_index = q->jobCount;
     q->pending[q->jobCount++] = t;
+
+    t->pending_prev = q->pending_tail;
+    t->pending_next = NULL;
+    if (q->pending_tail) q->pending_tail->pending_next = t;
+    else q->pending_head = t;
+    q->pending_tail = t;
+
+    if (t->flags & JQ_BARRIER_FLAGS) {
+        t->barrier_prev = q->barrier_tail;
+        t->barrier_next = NULL;
+        if (q->barrier_tail) q->barrier_tail->barrier_next = t;
+        else q->barrier_head = t;
+        q->barrier_tail = t;
+    }
 }
 static void jq_pending_remove(JqState* q, JqTask* t)
 {
@@ -131,6 +153,20 @@ static void jq_pending_remove(JqState* q, JqTask* t)
         moved->pending_index = index;
     }
     q->pending[last] = NULL;
+
+    if (t->pending_prev) t->pending_prev->pending_next = t->pending_next;
+    else q->pending_head = t->pending_next;
+    if (t->pending_next) t->pending_next->pending_prev = t->pending_prev;
+    else q->pending_tail = t->pending_prev;
+
+    if (t->flags & JQ_BARRIER_FLAGS) {
+        if (t->barrier_prev) t->barrier_prev->barrier_next = t->barrier_next;
+        else q->barrier_head = t->barrier_next;
+        if (t->barrier_next) t->barrier_next->barrier_prev = t->barrier_prev;
+        else q->barrier_tail = t->barrier_prev;
+    }
+    t->pending_prev = t->pending_next = NULL;
+    t->barrier_prev = t->barrier_next = NULL;
 }
 static int jq_pending_id(const JqState* q, u32 id)
 {
@@ -183,16 +219,16 @@ static s32 jq_execute(JqTask* t)
                                                t->descriptor)
         ? CELL_OK : (s32)CELL_SPURS_JQ_ERROR_JOB_NOT_FOUND;
 }
-enum { JQ_FLAG_SYNC_JOB=1u, JQ_FLAG_EXCLUSIVE_JOB=2u, JQ_FLAG_NON_BLOCKING=4u };
 static int jq_task_runnable(const JqTask* task)
 {
-    const JqState* q=&s_queues[task->queue_slot];
-    for(u32 i=0;i<q->jobCount;++i) {
-        const JqTask* earlier=q->pending[i];
-        if(earlier==task || earlier->sequence>=task->sequence) continue;
-        if((task->flags | earlier->flags) & (JQ_FLAG_SYNC_JOB|JQ_FLAG_EXCLUSIVE_JOB)) return 0;
-    }
-    return 1;
+    const JqState* q = &s_queues[task->queue_slot];
+    /* A barrier waits for every earlier pending job. An ordinary job waits
+     * only for earlier barriers. The ordered heads are sufficient for both
+     * predicates; arbitrary completion order does not change their meaning.
+     * Sequence numbers are assigned monotonically under the pool lock. */
+    if (task->flags & JQ_BARRIER_FLAGS)
+        return !q->pending_head || q->pending_head->sequence >= task->sequence;
+    return !q->barrier_head || q->barrier_head->sequence >= task->sequence;
 }
 static JqTask* jq_take_runnable(void)
 {
