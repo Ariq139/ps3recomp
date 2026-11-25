@@ -20,6 +20,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Options
 # ---------------------------------------------------------------------------
 option(PS3RECOMP_BUILD_TESTS "Build unit tests" OFF)
+option(PS3RECOMP_SPU_LOCKLINE_SRW "Use a native parking lock for Windows SPU coherency" OFF)
 
 # cellFiber switches host contexts with Windows fibers on Windows and the
 # ucontext routines everywhere else. Apple arm64 has a third, opt-in option: a
@@ -155,6 +156,12 @@ add_library(ps3recomp_runtime STATIC
     ${HLE_SOURCES}
     ${RUNTIME_SOURCES}
 )
+if(PS3RECOMP_SPU_LOCKLINE_SRW)
+    if(NOT WIN32)
+        message(FATAL_ERROR "PS3RECOMP_SPU_LOCKLINE_SRW requires Windows")
+    endif()
+    target_compile_definitions(ps3recomp_runtime PRIVATE PS3RECOMP_SPU_LOCKLINE_SRW=1)
+endif()
 # cellFiber picks its host context path on this; nothing else reads it.
 if(PS3RECOMP_FIBER_BACKEND STREQUAL "aarch64")
     target_compile_definitions(ps3recomp_runtime PRIVATE PS3RECOMP_FIBER_HOST_AARCH64=1)
