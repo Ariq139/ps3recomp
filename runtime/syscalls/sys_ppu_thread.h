@@ -36,6 +36,7 @@ extern "C" {
 #define PPU_THREAD_STATE_RUNNING    1
 #define PPU_THREAD_STATE_FINISHED   2
 #define PPU_THREAD_STATE_DETACHED   3
+#define PPU_THREAD_STATE_STARTING   4 /* internal, not published */
 
 /* Thread entry point type - recompiled function pointer */
 typedef void (*ppu_thread_entry_fn)(ppu_context* ctx);

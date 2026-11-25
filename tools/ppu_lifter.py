@@ -2747,8 +2747,8 @@ class PPULifter:
             note = ("if (g_resv_open_active) ppu_resv_open_note(ctx, (uint32_t)ea); "
                     if self.resv_open_count else "")
             return (f"{{ uint64_t ea = {ea}; {note}"
-                    f"ctx->gpr[{rd}] = vm_read32(ea); "
-                    f"ctx->reserve_addr = (uint32_t)ea; ctx->reserve_value = ctx->gpr[{rd}]; }}")
+                    f"__atomic_store_n(&ctx->reserve_addr, (uint32_t)ea, __ATOMIC_RELEASE); "
+                    f"ctx->gpr[{rd}] = vm_read32(ea); ctx->reserve_value = ctx->gpr[{rd}]; }}")
 
         if mn == "stwcx" or mn == "stwcx.":
             rs, ra, rb = _reg_idx(ops[0]), _reg_idx(ops[1]), _reg_idx(ops[2])
@@ -2758,10 +2758,10 @@ class PPULifter:
             # the atomic CAS). A plain conditional write loses concurrent updates
             # (lock-free free-list/refcount corruption under real host threads).
             return (f"{{ uint64_t ea = {ea}; "
-                    f"int _sc = (ctx->reserve_addr == (uint32_t)ea) && "
+                    f"int _sc = (__atomic_load_n(&ctx->reserve_addr, __ATOMIC_ACQUIRE) == (uint32_t)ea) && "
                     f"ppu_stwcx32(ea, (uint32_t)ctx->reserve_value, (uint32_t)ctx->gpr[{rs}]); "
                     f"ctx->cr = (ctx->cr & ~(0xFu << 28)) | (_sc ? (2u << 28) : 0u) | ((ctx->xer >> 31) << 28); "  # CR0 EQ = success
-                    f"ctx->reserve_addr = 0; }}")
+                    f"__atomic_store_n(&ctx->reserve_addr, 0x100000000ULL, __ATOMIC_RELEASE); }}")
 
         if mn == "ldarx":
             rd, ra, rb = _reg_idx(ops[0]), _reg_idx(ops[1]), _reg_idx(ops[2])
@@ -2769,17 +2769,17 @@ class PPULifter:
             note = ("if (g_resv_open_active) ppu_resv_open_note(ctx, (uint32_t)ea); "
                     if self.resv_open_count else "")
             return (f"{{ uint64_t ea = {ea}; {note}"
-                    f"ctx->gpr[{rd}] = vm_read64(ea); "
-                    f"ctx->reserve_addr = (uint32_t)ea; ctx->reserve_value = ctx->gpr[{rd}]; }}")
+                    f"__atomic_store_n(&ctx->reserve_addr, (uint32_t)ea, __ATOMIC_RELEASE); "
+                    f"ctx->gpr[{rd}] = vm_read64(ea); ctx->reserve_value = ctx->gpr[{rd}]; }}")
 
         if mn == "stdcx" or mn == "stdcx.":
             rs, ra, rb = _reg_idx(ops[0]), _reg_idx(ops[1]), _reg_idx(ops[2])
             ea = f"ctx->gpr[{ra}] + ctx->gpr[{rb}]" if ra != "0" else f"ctx->gpr[{rb}]"
             return (f"{{ uint64_t ea = {ea}; "
-                    f"int _sc = (ctx->reserve_addr == (uint32_t)ea) && "
+                    f"int _sc = (__atomic_load_n(&ctx->reserve_addr, __ATOMIC_ACQUIRE) == (uint32_t)ea) && "
                     f"ppu_stdcx64(ea, ctx->reserve_value, ctx->gpr[{rs}]); "
                     f"ctx->cr = (ctx->cr & ~(0xFu << 28)) | (_sc ? (2u << 28) : 0u) | ((ctx->xer >> 31) << 28); "
-                    f"ctx->reserve_addr = 0; }}")
+                    f"__atomic_store_n(&ctx->reserve_addr, 0x100000000ULL, __ATOMIC_RELEASE); }}")
 
         # ------- Data-stream hints: no architected effect -------
         if mn in ("dst", "dstst", "dss"):

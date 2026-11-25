@@ -150,9 +150,9 @@ static void fixture_stack_arena(void)
 
 int main(void)
 {
-    fixture_stack_arena();
     lv2_syscall_table_init(&g_lv2_syscalls);
     sys_ppu_thread_init(&g_lv2_syscalls);      /* clears the thread table and registers the handlers */
+    fixture_stack_arena();
     g_ppu_thread_entry_trampoline = guest_entry;
     ppu_thread_register_main();
 

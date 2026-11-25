@@ -13,8 +13,8 @@ def main():
     if os.name=='nt': print('SKIP standalone POSIX C++ fixture');return
     legacy=function('uint64_t ppu_guest_call_ct(')
     checked=function('int ppu_guest_call_ct_checked(') if 'int ppu_guest_call_ct_checked(' in s else ''
-    registry=s[s.index('struct ppu_callback_frame {'):s.index('static ppu_context* g_resv_ctxs')]
-    scope=s[s.index('static std::atomic<uint64_t> s_cb_slots_used'):s.index('static uint64_t ppu_guest_call_impl')]
+    registry=s[s.index('struct ppu_callback_frame {'):s.index('/* Sharded by address: a single global lock')]
+    scope=s[s.index('static std::atomic<uint64_t> s_cb_slots_used'):s.index('static int ppu_guest_call_impl')]
     baseline="""// Baseline preserves the old ambiguous return contract so RED is behavioral.
 extern "C" int ppu_guest_call_ct_checked(uint32_t c,uint32_t t,uint64_t a,uint64_t b,uint64_t d,uint64_t e,uint64_t f,uint64_t g,uint64_t h,uint64_t i,uint64_t*out){*out=ppu_guest_call_ct(c,t,a,b,d,e,f,g,h,i);return 1;}
 """
@@ -25,6 +25,9 @@ extern "C" int ppu_guest_call_ct_checked(uint32_t c,uint32_t t,uint64_t a,uint64
 #include <atomic>
 #include <new>
 #include <thread>
+#include <shared_mutex>
+static std::shared_mutex fixture_lock;
+struct PpuResvRegistryWrite { PpuResvRegistryWrite(){fixture_lock.lock();} ~PpuResvRegistryWrite(){fixture_lock.unlock();} };
 using ppu_fn=void(*)(ppu_context*);
 static ppu_context* g_active_ctx=nullptr;
 static void(*g_trampoline_fn)(void*)=nullptr;
@@ -37,10 +40,11 @@ static unsigned g_tls_memsz=0;
 static uint32_t ppu_tls_new_block() { return 0; }
 static void ppu_resv_open_done(ppu_context*) {}
 static void YieldProcessor() { std::this_thread::yield(); }
-static bool cb_resv_registered(const ppu_context*);
+static uint32_t ppu_vm_size=0;
+static bool cb_resv_registered_locked(const ppu_context*);
 static unsigned calls=0;static bool throwing=false,trampoline=false;
 static void tail(void*p){auto*c=(ppu_context*)p;c->gpr[3]=0xFEDCBA9876543210ULL;}
-static void guest(ppu_context*c){++calls;assert(c==g_active_ctx);assert(c->gpr[2]==0x12345678);assert(c->thread_id==99);assert(c->gpr[13]==0x74000230);assert(cb_resv_registered(c));for(unsigned i=0;i<8;++i)assert(c->gpr[3+i]==0x100000000ULL+i);if(throwing){g_trampoline_fn=tail;throw std::runtime_error("callback did not complete");}c->gpr[3]=0;if(trampoline)g_trampoline_fn=tail;}
+static void guest(ppu_context*c){++calls;assert(c==g_active_ctx);assert(c->gpr[2]==0x12345678);assert(c->thread_id==99);assert(c->gpr[13]==0x74000230);assert(cb_resv_registered_locked(c));for(unsigned i=0;i<8;++i)assert(c->gpr[3+i]==0x100000000ULL+i);if(throwing){g_trampoline_fn=tail;throw std::runtime_error("callback did not complete");}c->gpr[3]=0;if(trampoline)g_trampoline_fn=tail;}
 static ppu_fn ppu_lookup(uint32_t c){return c==0x100?guest:nullptr;}
 """
     tests="""static int invoke(uint32_t code,uint64_t*out){return ppu_guest_call_ct_checked(code,0x12345678,0x100000000ULL,0x100000001ULL,0x100000002ULL,0x100000003ULL,0x100000004ULL,0x100000005ULL,0x100000006ULL,0x100000007ULL,out);}
@@ -52,7 +56,7 @@ assert(invoke(0x100,&out)==1);assert(calls==1&&out==0&&g_active_ctx==&owner);
 trampoline=true;assert(invoke(0x100,&out)==1);assert(out==0xFEDCBA9876543210ULL&&g_active_ctx==&owner);
 g_trampoline_fn=tail;trampoline=false;assert(invoke(0x100,&out)==1&&out==0&&g_trampoline_fn==tail);g_trampoline_fn=nullptr;
 throwing=true;out=0xA5;bool escaped=false;try{invoke(0x100,&out);}catch(const std::runtime_error&){escaped=true;}
-assert(escaped&&out==0&&g_active_ctx==&owner);assert(!g_trampoline_fn);throwing=false;trampoline=false;assert(invoke(0x100,&out)==1&&out==0);assert(!s_cb_resv_count.load());s_cb_slots_used.store(~0ull);t_cb_slot.slot=-1;out=123;assert(invoke(0x100,&out)==0&&out==0);s_cb_slots_used.store(0);puts("PASS callback completion, caller TLS, reservation lifetime, trampoline, exception restore, exhausted stack");}
+assert(escaped&&out==0&&g_active_ctx==&owner);assert(!g_trampoline_fn);throwing=false;trampoline=false;assert(invoke(0x100,&out)==1&&out==0);assert(!s_cb_resv_head&&!s_cb_slots_used.load());s_cb_slots_used.store(~0ull);t_cb_slot.slot=-1;out=123;assert(invoke(0x100,&out)==0&&out==0);s_cb_slots_used.store(0);puts("PASS callback completion, caller TLS, reservation lifetime, trampoline, exception restore, exhausted stack");}
 """
     with tempfile.TemporaryDirectory(prefix='guest-call-completion-') as tmp:
         tmp=Path(tmp);cpp=tmp/'fixture.cpp';cpp.write_text(pre+registry+scope+'\n'+checked+'\n'+legacy+'\n'+('' if checked else baseline)+tests)

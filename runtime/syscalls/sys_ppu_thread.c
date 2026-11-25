@@ -21,6 +21,7 @@ static PPU_TLS int     s_exit_armed = 0;
 
 #include <stddef.h>
 #include "sys_ppu_thread.h"
+#include "../ppu/ppu_thread_lifetime.h"
 #include "../platform/win32_compat.h"   /* GetCurrentThreadId on POSIX */
 #include "ps3emu/ps3_ftrace.h"           /* PS3_FTRACE: thread names for the report */
 #include "ps3emu/ps3_tprof.h"            /* PS3_TPROF: in-process thread samples */
@@ -100,7 +101,7 @@ static ppu_thread_info* find_thread(uint64_t thread_id)
 {
     if (thread_id == 0 || thread_id > PPU_THREAD_MAX) return NULL;
     ppu_thread_info* t = &g_ppu_threads[thread_id - 1];
-    if (t->state == PPU_THREAD_STATE_FREE) return NULL;
+    if (t->state == PPU_THREAD_STATE_FREE || t->state == PPU_THREAD_STATE_STARTING) return NULL;
     return t;
 }
 
@@ -260,6 +261,7 @@ static void* ppu_host_thread_proc(void* param)
                 (unsigned long long)info->ctx.thread_id);
     }
 
+    if (ps3_ppu_thread_lifetime.retire) ps3_ppu_thread_lifetime.retire(&info->ctx);
     ps3_tprof_thread_exit();
     /* Mark as finished */
     table_lock();
@@ -502,14 +504,24 @@ static int64_t ppu_thread_create_impl(ppu_context* ctx, ps3_ppu_service_fn servi
 
     /* Allocate guest stack */
     uint32_t capacity = 0;
-    uint32_t stack_addr = vm_stack_allocate_extent(&g_vm_stack_alloc, stack_size, &capacity);
+    uint32_t stack_addr = vm_stack_reserve_extent(&g_vm_stack_alloc, stack_size, &capacity);
     if (stack_addr == 0) {
         table_unlock();
         return (int64_t)(int32_t)CELL_ENOMEM;
     }
 
+    t->state = PPU_THREAD_STATE_STARTING;
+    table_unlock();
+    int prepared=vm_stack_prepare_extent(stack_addr,capacity,ps3_ppu_thread_lifetime.zero_guest);
+    table_lock();
+    if(!prepared){
+        vm_stack_release(&g_vm_stack_alloc,stack_addr,capacity);
+        t->state=PPU_THREAD_STATE_FREE;
+        table_unlock();return (int32_t)CELL_ENOMEM;
+    }
     /* Set up the PPU context for the new thread */
     ppu_context_init(&t->ctx);
+    t->ctx.reserve_addr=0x100000000ull;
     t->ctx.cia = entry;
     t->ctx.gpr[3] = arg;
     ppu_set_stack(&t->ctx, (uint64_t)stack_addr, (uint64_t)stack_size);

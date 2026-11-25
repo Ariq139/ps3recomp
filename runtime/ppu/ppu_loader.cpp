@@ -33,6 +33,7 @@
 #  include "../platform/win32_compat.h"   /* _Interlocked*, YieldProcessor, Sleep */
 #endif
 
+#include "ppu_thread_lifetime.h"
 #include "ppu_tls.h"   /* PPU_THREAD_LOCAL, without a second ppu_context */
 #include "ps3emu/aio_service.h"
 #include "../ps3_console.h"
@@ -944,67 +945,6 @@ extern "C" void spu_coh_notify_write(uint32_t addr);
 extern "C" PPU_THREAD_LOCAL ppu_context* g_active_ctx;   /* fwd (defined below) */
 #define PPU_RESV_MAX 128
 #define PPU_RESV_INVALID 0x100000000ull   /* out of (uint32_t) ea range */
-/* Scratch callbacks are not permanent thread-table slots. Protect their
- * intrusive registry for the entire scan so removing a frame cannot leave
- * an invalid pointer in a concurrent reservation break. No guest execution
- * or reservation-lock acquisition occurs while holding this registry lock. */
-struct ppu_callback_frame {
-    ppu_context ctx;
-    ppu_callback_frame* registry_next;
-    ppu_callback_frame* parent;
-    ppu_context* previous;
-    void (*previous_tail)(void*);
-    uint32_t initial_sp;
-};
-static std::atomic_flag s_cb_resv_lock = ATOMIC_FLAG_INIT;
-static std::atomic<unsigned> s_cb_resv_count{0};
-static ppu_callback_frame* s_cb_resv_head = nullptr;
-static void cb_resv_lock()
-{
-    while (s_cb_resv_lock.test_and_set(std::memory_order_acquire)) YieldProcessor();
-}
-static void cb_resv_unlock() { s_cb_resv_lock.clear(std::memory_order_release); }
-static void cb_resv_add(ppu_callback_frame* f)
-{
-    cb_resv_lock();
-    f->registry_next = s_cb_resv_head;
-    s_cb_resv_head = f;
-    s_cb_resv_count.fetch_add(1, std::memory_order_seq_cst);
-    cb_resv_unlock();
-}
-static void cb_resv_remove(ppu_callback_frame* f)
-{
-    cb_resv_lock();
-    ppu_callback_frame** p = &s_cb_resv_head;
-    while (*p && *p != f) p = &(*p)->registry_next;
-    if (*p) {
-        *p = f->registry_next;
-        s_cb_resv_count.fetch_sub(1, std::memory_order_seq_cst);
-    }
-    cb_resv_unlock();
-}
-static void cb_resv_break(uint32_t ea, uint32_t mask, const ppu_context* except)
-{
-    if (!s_cb_resv_count.load(std::memory_order_seq_cst)) return;
-    cb_resv_lock();
-    for (auto* f = s_cb_resv_head; f; f = f->registry_next) {
-        auto* c = &f->ctx;
-        if (c != except && c->reserve_addr < PPU_RESV_INVALID &&
-            ((uint32_t)c->reserve_addr & mask) == (ea & mask))
-            c->reserve_addr = PPU_RESV_INVALID;
-    }
-    cb_resv_unlock();
-}
-static bool cb_resv_registered(const ppu_context* ctx)
-{
-    bool found = false;
-    cb_resv_lock();
-    for (auto* f = s_cb_resv_head; f; f = f->registry_next)
-        if (&f->ctx == ctx) { found = true; break; }
-    cb_resv_unlock();
-    return found;
-}
-
 static ppu_context* g_resv_ctxs[PPU_RESV_MAX];
 /* One entry per distinct context. A ppu_thread_info slot (and its ctx) is
  * reused by every thread that later starts in it, so registration must be
@@ -1016,7 +956,57 @@ static ppu_context* g_resv_ctxs[PPU_RESV_MAX];
  * below the count they see is initialized. Bound: PPU_THREAD_MAX (64) table
  * slots + the main thread = 65 distinct contexts, well under PPU_RESV_MAX. */
 static volatile LONG g_resv_ctx_n = 0;
-static volatile LONG g_resv_reg_lock = 0;
+static SRWLOCK g_resv_reg_lock=SRWLOCK_INIT;
+struct PpuResvRegistryRead {
+    PpuResvRegistryRead(){AcquireSRWLockShared(&g_resv_reg_lock);}
+    ~PpuResvRegistryRead(){ReleaseSRWLockShared(&g_resv_reg_lock);}
+};
+struct PpuResvRegistryWrite {
+    PpuResvRegistryWrite(){AcquireSRWLockExclusive(&g_resv_reg_lock);}
+    ~PpuResvRegistryWrite(){ReleaseSRWLockExclusive(&g_resv_reg_lock);}
+};
+/* Callback frames share the permanent-context registry lifetime lock.
+ * Reservation writers use atomic address operations, not raw ctx writes.
+ * The lock guards ownership of frame pointers, not guest execution. */
+struct ppu_callback_frame {
+    ppu_context ctx;
+    ppu_callback_frame* registry_next;
+    ppu_callback_frame* parent;
+    ppu_context* previous;
+    void (*previous_tail)(void*);
+    uint32_t initial_sp;
+};
+static ppu_callback_frame* s_cb_resv_head=nullptr;
+static void cb_resv_add(ppu_callback_frame* f)
+{
+    PpuResvRegistryWrite hold;
+    f->registry_next=s_cb_resv_head;s_cb_resv_head=f;
+}
+static void cb_resv_remove(ppu_callback_frame* f)
+{
+    PpuResvRegistryWrite hold;
+    ppu_callback_frame** p=&s_cb_resv_head;
+    while(*p&&*p!=f)p=&(*p)->registry_next;
+    if(*p)*p=f->registry_next;
+}
+static void ppu_resv_invalidate_matching(ppu_context* c,uint32_t ea,uint32_t mask)
+{
+    uint64_t a=__atomic_load_n(&c->reserve_addr,__ATOMIC_ACQUIRE);
+    if(a<PPU_RESV_INVALID&&((uint32_t)a&mask)==(ea&mask))
+        __atomic_compare_exchange_n(&c->reserve_addr,&a,PPU_RESV_INVALID,0,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE);
+}
+/* Caller holds PpuResvRegistryRead. */
+static void cb_resv_break(uint32_t ea,uint32_t mask,const ppu_context* except)
+{
+    for(auto* f=s_cb_resv_head;f;f=f->registry_next)
+        if(&f->ctx!=except)ppu_resv_invalidate_matching(&f->ctx,ea,mask);
+}
+static bool cb_resv_registered_locked(const ppu_context* ctx)
+{
+    for(auto* f=s_cb_resv_head;f;f=f->registry_next)if(&f->ctx==ctx)return true;
+    return false;
+}
+
 /* Sharded by address: a single global lock convoyed all stwcx (workers spinning
  * on a descheduled holder -> loader too slow to finish jobs). Shard by the
  * 16-byte-block of ea so unrelated structures never serialize; same-structure
@@ -1032,11 +1022,12 @@ static volatile LONG g_resv_locks[PPU_RESV_LOCKS];
 extern "C" int g_resv_store_active = -1;   /* -1 uninit, 0 off, 1 on */
 extern "C" void ppu_resv_register(ppu_context* c)
 {
-    if (g_resv_store_active < 0) g_resv_store_active = getenv("PPU_RESV_STORE") ? 1 : 0;
-    while (_InterlockedExchange(&g_resv_reg_lock, 1)) { while (g_resv_reg_lock) YieldProcessor(); }
+    PpuResvRegistryWrite hold;
+    if (__atomic_load_n(&g_resv_store_active,__ATOMIC_RELAXED)<0)
+        __atomic_store_n(&g_resv_store_active,getenv("PPU_RESV_STORE")?1:0,__ATOMIC_RELEASE);
     const long n = __atomic_load_n(&g_resv_ctx_n, __ATOMIC_RELAXED);   /* only writers change it */
     for (long i = 0; i < n; i++)
-        if (g_resv_ctxs[i] == c) { _InterlockedExchange(&g_resv_reg_lock, 0); return; }
+        if (g_resv_ctxs[i] == c) return;
     if (n == PPU_RESV_MAX) {
         /* A context left out would silently lose cross-thread reservation
          * breaks (lost updates in the guest's lock-free code): stop instead. */
@@ -1047,7 +1038,6 @@ extern "C" void ppu_resv_register(ppu_context* c)
     }
     g_resv_ctxs[n] = c;
     __atomic_store_n(&g_resv_ctx_n, (LONG)(n + 1), __ATOMIC_RELEASE);
-    _InterlockedExchange(&g_resv_reg_lock, 0);
 }
 /* Where every guest thread is, as a GUEST address.
  *
@@ -1074,6 +1064,7 @@ extern "C" void ppu_resv_register(ppu_context* c)
  * last DIRECT call site and nothing more. */
 extern "C" void ppu_report_guest_lrs(void)
 {
+    PpuResvRegistryRead hold;
     long n = __atomic_load_n(&g_resv_ctx_n, __ATOMIC_ACQUIRE);
     for (long i = 0; i < n; i++) {
         ppu_context* c = g_resv_ctxs[i];
@@ -1177,6 +1168,21 @@ extern "C" void ppu_resv_open_done(ppu_context* ctx)
     t_resv_open_ctx = nullptr;
     __atomic_fetch_sub(ppu_resv_line_slot(t_resv_open_line), 1, __ATOMIC_RELEASE);
 }
+/* Retire on the owner host thread before any slot or stack can be reused. */
+static void ppu_cb_discard_abandoned();
+static void ppu_retire_thread_context(void* opaque)
+{
+    ppu_cb_discard_abandoned();
+    auto* ctx=static_cast<ppu_context*>(opaque);
+    ppu_resv_open_done(ctx);
+    PpuResvRegistryWrite hold;
+    const long n=__atomic_load_n(&g_resv_ctx_n,__ATOMIC_RELAXED);
+    for(long i=0;i<n;++i)if(g_resv_ctxs[i]==ctx){
+        g_resv_ctxs[i]=g_resv_ctxs[n-1];g_resv_ctxs[n-1]=nullptr;
+        __atomic_store_n(&g_resv_ctx_n,(LONG)(n-1),__ATOMIC_RELEASE);break;
+    }
+    __atomic_store_n(&ctx->reserve_addr,PPU_RESV_INVALID,__ATOMIC_RELEASE);
+}
 /* True when no context but `self` (nullptr: none) can hold an open reservation
  * on ea's line: a break of that line that spares `self` has nothing to do. */
 static inline bool ppu_resv_line_clear(ppu_context* self, uint32_t ea)
@@ -1197,13 +1203,13 @@ extern "C" void ppu_resv_break_store(uint64_t ea)
 {
     if (ppu_resv_line_clear(nullptr, (uint32_t)ea)) return;   /* opt-in, see ppu_resv_open_note */
     uint32_t a = (uint32_t)ea & ~3u;
-    cb_resv_break(a, ~3u, nullptr);
+    PpuResvRegistryRead hold;
     long n = __atomic_load_n(&g_resv_ctx_n, __ATOMIC_ACQUIRE);
     for (long i = 0; i < n; i++) {
         ppu_context* c = g_resv_ctxs[i];
-        if (c && c->reserve_addr < PPU_RESV_INVALID && ((uint32_t)c->reserve_addr & ~3u) == a)
-            c->reserve_addr = PPU_RESV_INVALID;
+        if(c)ppu_resv_invalidate_matching(c,a,~3u);
     }
+    cb_resv_break(a,~3u,nullptr);
 }
 /* Break every PPU reservation in ea's 128-byte line, except the calling
  * thread's own. The Cell reservation granule is the LINE, not the word: an SPU
@@ -1217,14 +1223,13 @@ extern "C" void ppu_resv_break_line(uint32_t ea)
     const uint32_t line = ea & ~127u;
     ppu_context* self = g_active_ctx;
     if (ppu_resv_line_clear(self, ea)) return;   /* opt-in, see ppu_resv_open_note */
-    cb_resv_break(line, ~127u, self);
+    PpuResvRegistryRead hold;
     long n = __atomic_load_n(&g_resv_ctx_n, __ATOMIC_ACQUIRE);
     for (long i = 0; i < n; i++) {
         ppu_context* c = g_resv_ctxs[i];
-        if (c && c != self && c->reserve_addr < PPU_RESV_INVALID &&
-            ((uint32_t)c->reserve_addr & ~127u) == line)
-            c->reserve_addr = PPU_RESV_INVALID;
+        if(c&&c!=self)ppu_resv_invalidate_matching(c,line,~127u);
     }
+    cb_resv_break(line,~127u,self);
 }
 static inline volatile LONG* resv_slot(uint64_t ea) { return &g_resv_locks[((uint32_t)ea >> 4) & (PPU_RESV_LOCKS - 1)]; }
 static inline void resv_lock(volatile LONG* L)   { while (_InterlockedExchange(L, 1)) { while (*L) YieldProcessor(); } }
@@ -1236,12 +1241,13 @@ static inline void ppu_resv_break(uint64_t addr)   /* MUST hold g_resv_lock */
     ppu_context* self = g_active_ctx;
     if (ppu_resv_line_clear(self, (uint32_t)addr)) return;
     uint64_t a = (uint32_t)addr;   /* match the inline guard: reserve_addr holds (uint32_t)ea */
-    cb_resv_break((uint32_t)a, ~0u, nullptr);
+    PpuResvRegistryRead hold;
     long n = __atomic_load_n(&g_resv_ctx_n, __ATOMIC_ACQUIRE);
     for (long i = 0; i < n; i++) {
         ppu_context* c = g_resv_ctxs[i];
-        if (c && c->reserve_addr == a) c->reserve_addr = PPU_RESV_INVALID;
+        if(c)ppu_resv_invalidate_matching(c,(uint32_t)a,~0u);
     }
+    cb_resv_break((uint32_t)a,~0u,nullptr);
 }
 /* RESV_DIAG: detect a stwcx whose ctx isn't in the registry -- if that fires,
  * that thread's reservations are never broken by others (ABA slips through), and
@@ -1249,9 +1255,10 @@ static inline void ppu_resv_break(uint64_t addr)   /* MUST hold g_resv_lock */
 static inline int resv_diag() { static int v = -1; if (v < 0) v = getenv("RESV_DIAG") ? 1 : 0; return v; }
 static void resv_check_reg(ppu_context* self)
 {
+    PpuResvRegistryRead hold;
     long n = __atomic_load_n(&g_resv_ctx_n, __ATOMIC_ACQUIRE);
     for (long i = 0; i < n; i++) if (g_resv_ctxs[i] == self) return;
-    if (cb_resv_registered(self)) return;
+    if(cb_resv_registered_locked(self))return;
     static ppu_context* seen[64]; static long sn = 0;
     for (long i = 0; i < sn; i++) if (seen[i] == self) return;
     if (sn < 64) seen[sn++] = self;
@@ -1296,12 +1303,12 @@ extern "C" int ppu_stwcx32(uint64_t ea, uint32_t expected, uint32_t val)
     if (resv_diag() && self) resv_check_reg(self);
     volatile LONG* L = resv_slot(ea);
     resv_lock(L);
-    if (self && self->reserve_addr != (uint32_t)ea) {
+    if (self && __atomic_load_n(&self->reserve_addr,__ATOMIC_ACQUIRE) != (uint32_t)ea) {
         if (getenv("PPU_CAS_FAIL")) {
             static PPU_THREAD_LOCAL unsigned long rejected = 0;
             if (++rejected <= 4 || rejected % 1000000 == 0)
                 fprintf(stderr, "[resv-reject] ea=%08X reserve=%08X expected=%08X actual=%08X tid=%llu lr=%08X count=%lu\n",
-                        (uint32_t)ea, (uint32_t)self->reserve_addr, expected,
+                        (uint32_t)ea, (uint32_t)__atomic_load_n(&self->reserve_addr,__ATOMIC_ACQUIRE), expected,
                         __builtin_bswap32(*(uint32_t*)(vm_base + ea)),
                         (unsigned long long)self->thread_id, (uint32_t)self->lr, rejected);
         }
@@ -1326,7 +1333,7 @@ extern "C" int ppu_stwcx32(uint64_t ea, uint32_t expected, uint32_t val)
     /* Re-check under the lock-line lock: an SPU commit to this line between
      * the check above and here has broken the reservation (SPU commits call
      * ppu_resv_break_line with this lock held). */
-    if (coh && self && self->reserve_addr != (uint32_t)ea) {
+    if (coh && self && __atomic_load_n(&self->reserve_addr,__ATOMIC_ACQUIRE) != (uint32_t)ea) {
         spu_lockline_unlock(); resv_unlock(L); return 0;
     }
     int ok = __atomic_compare_exchange_n((uint32_t*)(vm_base + ea), &exp_raw, new_raw,
@@ -1400,10 +1407,10 @@ extern "C" int ppu_stdcx64(uint64_t ea, uint64_t expected, uint64_t val)
     if (resv_diag() && self) resv_check_reg(self);
     volatile LONG* L = resv_slot(ea);   /* ea and ea+4 share a 16-byte-block slot */
     resv_lock(L);
-    if (self && self->reserve_addr != (uint32_t)ea) { resv_unlock(L); return 0; }
+    if (self && __atomic_load_n(&self->reserve_addr,__ATOMIC_ACQUIRE) != (uint32_t)ea) { resv_unlock(L); return 0; }
     int coh = spu_coh_is_reserved((uint32_t)ea);
     if (coh) spu_lockline_lock();
-    if (coh && self && self->reserve_addr != (uint32_t)ea) {   /* as in ppu_stwcx32 */
+    if (coh && self && __atomic_load_n(&self->reserve_addr,__ATOMIC_ACQUIRE) != (uint32_t)ea) {   /* as in ppu_stwcx32 */
         spu_lockline_unlock(); resv_unlock(L); return 0;
     }
     int ok = __atomic_compare_exchange_n((uint64_t*)(vm_base + ea), &exp_raw, new_raw, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST) ? 1 : 0;
@@ -4202,7 +4209,6 @@ static uint32_t ppu_tls_new_block(void)
     return 0;
 }
 
-static void ppu_cb_discard_abandoned();
 static void ppu_thread_entry_trampoline(ppu_context* ctx)
 {
     ppu_cb_discard_abandoned();
@@ -4285,9 +4291,36 @@ extern "C" const ps3_aio_runtime_hooks* ppu_aio_runtime_hooks(void)
  * is a no-op" and exits without executing a single guest instruction. The
  * threads all report FINISHED, so nothing looks wrong; the title just never
  * gets whatever those threads were supposed to do. */
+static void ppu_zero_reclaimed_guest(uint32_t addr,uint32_t size)
+{
+    for(uint64_t off=addr,end=(uint64_t)addr+size;off<end;){
+        if(spu_coh_line_reserved((uint32_t)off)){
+            spu_lockline_lock();memset(vm_base+off,0,128);
+            spu_coh_notify_write((uint32_t)off);spu_lockline_unlock();off+=128;
+        }else{
+            uint64_t first=off;
+            do{off+=128;}while(off<end&&!spu_coh_line_reserved((uint32_t)off));
+            memset(vm_base+first,0,(size_t)(off-first));
+        }
+    }
+    PpuResvRegistryRead hold;
+    const long n=__atomic_load_n(&g_resv_ctx_n,__ATOMIC_ACQUIRE);
+    for(long i=0;i<n;++i){
+        auto* c=g_resv_ctxs[i];uint64_t a=__atomic_load_n(&c->reserve_addr,__ATOMIC_ACQUIRE);
+        if(a>=addr&&a<(uint64_t)addr+size)
+            __atomic_compare_exchange_n(&c->reserve_addr,&a,PPU_RESV_INVALID,0,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE);
+    }
+    for(auto* f=s_cb_resv_head;f;f=f->registry_next){
+        auto* c=&f->ctx;uint64_t a=__atomic_load_n(&c->reserve_addr,__ATOMIC_ACQUIRE);
+        if(a>=addr&&a<(uint64_t)addr+size)
+            __atomic_compare_exchange_n(&c->reserve_addr,&a,PPU_RESV_INVALID,0,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE);
+    }
+}
 extern "C" void ppu_install_thread_trampoline(void)
 {
-    g_ppu_thread_entry_trampoline = ppu_thread_entry_trampoline;
+    ps3_ppu_thread_lifetime.retire=ppu_retire_thread_context;
+    ps3_ppu_thread_lifetime.zero_guest=ppu_zero_reclaimed_guest;
+    g_ppu_thread_entry_trampoline=ppu_thread_entry_trampoline;
 }
 
 /* Call a guest function by OPD with up to 4 integer args, on a private scratch
@@ -4338,6 +4371,10 @@ struct cb_slot_owner {
     uint64_t tid = 0;
     ppu_callback_frame* top = nullptr;
     ppu_callback_frame* free_frames = nullptr;
+    void release_stack_if_idle()
+    {
+        if(!top&&slot>=0){s_cb_slots_used.fetch_and(~(1ull<<slot),std::memory_order_acq_rel);slot=-1;}
+    }
     void discard_abandoned()
     {
         /* A guest thread exit may longjmp across the invocation. Frames are
@@ -4353,6 +4390,7 @@ struct cb_slot_owner {
             cb_resv_remove(f);
             delete f;
         }
+        release_stack_if_idle();
     }
     ~cb_slot_owner()
     {
@@ -4362,7 +4400,7 @@ struct cb_slot_owner {
             free_frames = f->parent;
             delete f;
         }
-        if (slot >= 0) s_cb_slots_used.fetch_and(~(1ull << slot), std::memory_order_acq_rel);
+        release_stack_if_idle();
     }
 };
 static thread_local cb_slot_owner t_cb_slot;
@@ -4438,8 +4476,15 @@ static void cb_frame_finish(ppu_callback_frame* f)
     t_cb_slot.top = f->parent;
     f->parent = t_cb_slot.free_frames;
     t_cb_slot.free_frames = f;
+    t_cb_slot.release_stack_if_idle();
 }
 
+static int cb_refused(const char* why)
+{
+    t_cb_slot.release_stack_if_idle();
+    fprintf(stderr,"[ppu] callback not dispatched: %s\n",why);
+    return 0;
+}
 static int ppu_execute_guest_callback(ppu_fn fn, uint32_t code, uint32_t toc,
                                      uint32_t guest_sp, const uint64_t* args, uint64_t* result)
 {
@@ -4451,22 +4496,19 @@ static int ppu_execute_guest_callback(ppu_fn fn, uint32_t code, uint32_t toc,
         if (!safe_sp || !cb_stack_owns(guest_sp) ||
             guest_sp <= cb_stack_lo() + 0x1000 || guest_sp > safe_sp) sp = 0;
     }
-    if (!sp || (sp & 15u)) {
-        fprintf(stderr, "[ppu] callback refused: no safe guest stack\n");
-        return 0;
-    }
+    if(!sp||(sp&15u)||(ppu_vm_size&&sp>=ppu_vm_size))return cb_refused("no safe guest stack");
     const uint64_t tid = cb_thread_id(previous);
-    if (!tid) return 0;
+    if (!tid) return cb_refused("guest callback ID exhausted");
     uint64_t tp = previous ? previous->gpr[13] : 0;
     if (!tp) {
         tp = ppu_tls_new_block();
-        if (!tp && g_tls_memsz) return 0;
+        if(!tp&&g_tls_memsz)return cb_refused("static TLS exhausted");
         if (!tp) tp = PPU_TLS_TP;
     }
     auto* f = t_cb_slot.free_frames;
     if (f) t_cb_slot.free_frames = f->parent;
     else f = new (std::nothrow) ppu_callback_frame;
-    if (!f) return 0;
+    if(!f)return cb_refused("host context allocation failed");
     memset(&f->ctx, 0, sizeof(f->ctx));
     f->ctx.reserve_addr = PPU_RESV_INVALID;
     f->ctx.gpr[1] = sp;
@@ -4483,7 +4525,7 @@ static int ppu_execute_guest_callback(ppu_fn fn, uint32_t code, uint32_t toc,
      * Discard the old reservation; do not restore a stale open-line count. */
     if (previous) {
         ppu_resv_open_done(previous);
-        previous->reserve_addr = PPU_RESV_INVALID;
+        __atomic_store_n(&previous->reserve_addr,PPU_RESV_INVALID,__ATOMIC_RELEASE);
         previous->reserve_valid = 0;
     }
     t_cb_slot.top = f;
@@ -4508,11 +4550,13 @@ static int ppu_execute_guest_callback(ppu_fn fn, uint32_t code, uint32_t toc,
     return 1;
 }
 
-static uint64_t ppu_guest_call_impl(uint32_t opd_addr, uint32_t guest_sp,
+static int ppu_guest_call_impl(uint32_t opd_addr, uint32_t guest_sp,
                                    uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3,
-                                   uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7)
+                                   uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7,uint64_t* result)
 {
-    if (!opd_addr) return 0;
+    if(!result)return 0;
+    *result=0;
+    if(!opd_addr||(uint64_t)opd_addr+16>0x100000000ull||(ppu_vm_size&&(uint64_t)opd_addr+16>ppu_vm_size))return 0;
     uint32_t code = 0, toc = 0;
     ppu_opd_resolve(opd_addr, &code, &toc);
     ppu_fn fn = ppu_lookup(code);
@@ -4533,19 +4577,31 @@ static uint64_t ppu_guest_call_impl(uint32_t opd_addr, uint32_t guest_sp,
         return 0; }
 
     const uint64_t args[8] = {a0,a1,a2,a3,a4,a5,a6,a7};
-    uint64_t result = 0;
-    ppu_execute_guest_callback(fn, code, toc, guest_sp, args, &result);
-    return result;
+    return ppu_execute_guest_callback(fn,code,toc,guest_sp,args,result);
 }
 
+extern "C" int ppu_guest_call_checked(uint32_t opd_addr,
+    uint64_t a0,uint64_t a1,uint64_t a2,uint64_t a3,uint64_t a4,uint64_t a5,uint64_t a6,uint64_t a7,uint64_t* result)
+{
+    return ppu_guest_call_impl(opd_addr,0,a0,a1,a2,a3,a4,a5,a6,a7,result);
+}
 extern "C" uint64_t ppu_guest_call(uint32_t opd_addr,
                                    uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3,
                                    uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7)
 {
-    return ppu_guest_call_impl(opd_addr, 0, a0, a1, a2, a3,
-                               a4, a5, a6, a7);
+    uint64_t result=0;
+    ppu_guest_call_checked(opd_addr,a0,a1,a2,a3,a4,a5,a6,a7,&result);
+    return result;
 }
 
+extern "C" int ppu_guest_call_on_stack_checked(uint32_t opd_addr,uint32_t guest_sp,
+    uint64_t a0,uint64_t a1,uint64_t a2,uint64_t a3,uint64_t a4,uint64_t a5,uint64_t a6,uint64_t a7,uint64_t* result)
+{
+    if(!result)return 0;
+    *result=0;
+    if(!guest_sp||(guest_sp&15u))return 0;
+    return ppu_guest_call_impl(opd_addr,guest_sp,a0,a1,a2,a3,a4,a5,a6,a7,result);
+}
 extern "C" uint64_t ppu_guest_call_on_stack(uint32_t opd_addr, uint32_t guest_sp,
                                             uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3,
                                             uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7)
@@ -4554,8 +4610,9 @@ extern "C" uint64_t ppu_guest_call_on_stack(uint32_t opd_addr, uint32_t guest_sp
         fprintf(stderr, "[ppu] guest_call_on_stack: invalid guest SP 0x%08X\n", guest_sp);
         return 0;
     }
-    return ppu_guest_call_impl(opd_addr, guest_sp, a0, a1, a2, a3,
-                               a4, a5, a6, a7);
+    uint64_t result=0;
+    ppu_guest_call_on_stack_checked(opd_addr,guest_sp,a0,a1,a2,a3,a4,a5,a6,a7,&result);
+    return result;
 }
 
 /* Call a guest function by an already-resolved {code, toc} pair. Used for
@@ -4603,7 +4660,7 @@ extern "C" int ppu_run(uint32_t entry_opd, uint32_t stack_top)
      * PS3_STDIO_UNBUFFERED=1 restores the old unbuffered stdout. */
     ps3_stdio_init();
 
-    g_ppu_thread_entry_trampoline = ppu_thread_entry_trampoline;
+    ppu_install_thread_trampoline();
     uint32_t code = 0, toc = 0;
     ppu_opd_resolve(entry_opd, &code, &toc);
     ppu_fn fn = ppu_lookup(code);
