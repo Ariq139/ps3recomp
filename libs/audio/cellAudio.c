@@ -22,9 +22,11 @@
 #include <stdint.h>
 #include <math.h>
 
-/* x86-64 has SSE2 by default. Other hosts retain the portable scalar path.
- * AUDIO_FORCE_SCALAR_MIX is a compile-time diagnostic/reference option. */
-#if !defined(AUDIO_FORCE_SCALAR_MIX) && !defined(_M_ARM64EC) && \
+/* Keep the exact original loop by default. Enable native stereo mixing
+ * explicitly after validating the target's FP mode. AUDIO_FORCE_SCALAR_MIX
+ * overrides the opt-in and restores the original loop. */
+#if defined(AUDIO_ENABLE_SSE2_MIX) && AUDIO_ENABLE_SSE2_MIX && \
+    !defined(AUDIO_FORCE_SCALAR_MIX) && !defined(_M_ARM64EC) && \
     (defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2))
 # include <emmintrin.h>
 # define AUDIO_MIX_SSE2 1
