@@ -25,6 +25,7 @@
 #define PS3RECOMP_SPU_TASK_POOL_H
 
 #include <stddef.h>
+#include <stdint.h>
 #ifdef _WIN32
 #include <windows.h>
 #include <process.h>

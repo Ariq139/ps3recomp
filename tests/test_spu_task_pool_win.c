@@ -34,7 +34,8 @@ static void wait_count(spu_task_pool* pool,unsigned count,int idle)
 {
     for(unsigned i=0;i<10000;i++){
         spu_task_pool_lock(pool); unsigned n=idle?pool->idle:pool->threads;spu_task_pool_unlock(pool);
-        if(n==count)return;Sleep(1);
+        if(n==count) return;
+        Sleep(1);
     }
     abort();
 }
