@@ -203,8 +203,16 @@ static void* ppu_host_thread_proc(void* param)
             (unsigned long long)info->ctx.thread_id,
             (unsigned long long)info->entry_addr, (unsigned long)GetCurrentThreadId());
 
-    /* Invoke the recompiled entry point */
-    if (g_ppu_thread_entry_trampoline) {
+    /* Native HLE services use the same real thread identity, stack and
+     * reservation registration as ordinary guest PPU threads. Cleanup runs
+     * even when a guest callback exits through sys_ppu_thread_exit. */
+    if (info->service_entry) {
+        s_exit_armed = 1;
+        if (setjmp(s_exit_jmp) == 0)
+            info->service_entry(&info->ctx);
+        s_exit_armed = 0;
+        if (info->service_cleanup) info->service_cleanup(&info->ctx);
+    } else if (g_ppu_thread_entry_trampoline) {
         s_exit_armed = 1;
         if (setjmp(s_exit_jmp) == 0)
             g_ppu_thread_entry_trampoline(&info->ctx);
@@ -451,7 +459,8 @@ void ppu_prof_stamp(void* vctx, unsigned lr)
         t->prof_pc = lr;
 }
 
-int64_t sys_ppu_thread_create(ppu_context* ctx)
+static int64_t ppu_thread_create_impl(ppu_context* ctx, ps3_ppu_service_fn service_entry,
+                                      ps3_ppu_service_fn service_cleanup)
 {
     uint32_t tid_out_addr = LV2_ARG_PTR(ctx, 0);
     uint64_t entry        = LV2_ARG_U64(ctx, 1);
@@ -502,7 +511,13 @@ int64_t sys_ppu_thread_create(ppu_context* ctx)
     t->stack_addr = stack_addr;
     t->stack_size = stack_size;
     t->entry_addr = entry;
+    t->service_entry = service_entry;
+    t->service_cleanup = service_cleanup;
 
+    if (service_entry) {
+        strcpy(t->name, "cellFsAio");
+        ps3_ft_name((uint32_t)(t - g_ppu_threads) + 1u, t->name);
+    }
     /* Copy thread name if provided */
     if (name_addr != 0) {
         const char* name = (const char*)vm_to_host(name_addr);
@@ -633,10 +648,26 @@ int64_t sys_ppu_thread_create(ppu_context* ctx)
     if (!t->joinable) pthread_detach(t->host_thread);   /* nobody pthread_joins it */
 #endif
 
-    const int preempts = prio_start_enabled() && priority < creator_priority(ctx->thread_id);
+    const int preempts = !service_entry && prio_start_enabled() && priority < creator_priority(ctx->thread_id);
     table_unlock();
     if (preempts) wait_first_block(t, thread_id);
     return CELL_OK;
+}
+
+int64_t sys_ppu_thread_create(ppu_context* ctx)
+{
+    return ppu_thread_create_impl(ctx, NULL, NULL);
+}
+
+int32_t ppu_thread_start_service(ps3_ppu_service_fn entry, ps3_ppu_service_fn cleanup)
+{
+    if (!entry || !cleanup) return (int32_t)CELL_EINVAL;
+    ppu_context ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.gpr[6] = PPU_DEFAULT_PRIORITY;
+    ctx.gpr[7] = VM_PPU_STACK_SIZE;
+    // No guest output pointer, OPD, argument or joinable flag.
+    return (int32_t)ppu_thread_create_impl(&ctx, entry, cleanup);
 }
 
 /* ---------------------------------------------------------------------------

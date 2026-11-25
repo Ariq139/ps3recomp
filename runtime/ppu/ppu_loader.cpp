@@ -33,6 +33,7 @@
 #endif
 
 #include "ppu_tls.h"   /* PPU_THREAD_LOCAL, without a second ppu_context */
+#include "ps3emu/aio_service.h"
 #include "../ps3_console.h"
 extern "C" const char* cellGame_get_boot_path(void);
 #include "ps3emu/error_codes.h"
@@ -4163,6 +4164,56 @@ static void ppu_thread_entry_trampoline(ppu_context* ctx)
     while (g_trampoline_fn) { void (*tf)(void*) = g_trampoline_fn; g_trampoline_fn = 0; tf(ctx); }
 }
 
+/* The AIO service is a real PPU thread. Do not use the generic host callback
+ * scratch context here: that would lose the registered reservation context
+ * and use the main thread's TLS. A callback is a top-level task in this
+ * service, so its register state need not be preserved for another guest
+ * caller. Restore the dedicated stack and TLS on every delivery. */
+static int ppu_aio_prepare(void* opaque)
+{
+    auto* ctx = static_cast<ppu_context*>(opaque);
+    if (!ctx || !ctx->thread_id) return 0;
+    uint32_t tp = ppu_tls_new_block();
+    if (!tp && g_tls_memsz) return 0; // never share another guest's TLS
+    ctx->gpr[13] = tp ? tp : PPU_TLS_TP;
+    g_active_ctx = ctx;
+    return 1;
+}
+static int ppu_aio_resolve(uint32_t opd, uint32_t* code, uint32_t* toc)
+{
+    return ppu_opd_resolve(opd, code, toc) && ppu_lookup(*code) != nullptr;
+}
+static int ppu_aio_deliver(void* opaque, uint64_t sp, uint64_t tp,
+                           uint32_t code, uint32_t toc, uint32_t aio,
+                           int32_t error, int32_t id, uint64_t size)
+{
+    auto* ctx = static_cast<ppu_context*>(opaque);
+    if (!ctx || g_active_ctx != ctx || !ctx->thread_id) return 0;
+    ppu_fn fn = ppu_lookup(code);
+    if (!fn) return 0;
+    ctx->gpr[1] = sp; ctx->gpr[2] = toc; ctx->gpr[13] = tp;
+    ctx->gpr[3] = aio; ctx->gpr[4] = (uint64_t)(int64_t)error;
+    ctx->gpr[5] = (uint64_t)(int64_t)id; ctx->gpr[6] = size;
+    ctx->gpr[7] = ctx->gpr[8] = ctx->gpr[9] = ctx->gpr[10] = 0;
+    ctx->cia = code; ctx->lr = 0;
+    g_trampoline_fn = nullptr;
+    fn(ctx);
+    while (g_trampoline_fn) { void (*tf)(void*) = g_trampoline_fn; g_trampoline_fn = 0; tf(ctx); }
+    return 1;
+}
+static void ppu_aio_install_stop(void (*stop)(void))
+{
+    __atomic_store_n(&g_ps3_aio_process_stop, stop, __ATOMIC_RELEASE);
+}
+extern "C" const ps3_aio_runtime_hooks* ppu_aio_runtime_hooks(void)
+{
+    static const ps3_aio_runtime_hooks hooks = {
+        ppu_thread_start_service, ppu_aio_prepare, ppu_aio_resolve,
+        ppu_aio_deliver, ppu_aio_install_stop
+    };
+    return &hooks;
+}
+
 /* Install that trampoline without going through ppu_run().
  *
  * ppu_run() sets it as a side effect of dispatching the guest entry point. A
@@ -4583,6 +4634,7 @@ extern "C" int ppu_run(uint32_t entry_opd, uint32_t stack_top)
     ppu_resv_register(&ctx);   /* main/entry thread: join the reservation set too */
     fn(&ctx);
     while (g_trampoline_fn) { void (*tf)(void*) = g_trampoline_fn; g_trampoline_fn = 0; tf(&ctx); }
+    if (auto stop = __atomic_load_n(&g_ps3_aio_process_stop, __ATOMIC_ACQUIRE)) stop();
     return 0;
 }
 
