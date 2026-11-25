@@ -204,8 +204,8 @@ class LiftedFunction:
     start_addr: int = 0
     end_addr: int = 0
     body_lines: list[str] = field(default_factory=list)
-    pure_gpr_lines: set[str] = field(default_factory=set)
     calls: list[int] = field(default_factory=list)
+    pure_gpr_lines: set[str] = field(default_factory=set)
 
 
 # Mnemonics whose last operand is a branch target address (0x...).
