@@ -254,7 +254,8 @@ def test_packed_integer_helpers():
     with tempfile.TemporaryDirectory() as td:
         cpath = Path(td) / "packed.c"
         cpath.write_text("\n".join(src))
-        for mode, flags in (("native", []), ("scalar", ["-DPPU_VMX_FORCE_SCALAR=1"])):
+        for mode, flags in (("native-if-supported", ["-DPPU_VMX_ENABLE_SSE2=1"]),
+                            ("scalar", ["-DPPU_VMX_ENABLE_SSE2=1", "-DPPU_VMX_FORCE_SCALAR=1"])):
             exe = Path(td) / ("packed.exe" if os.name == "nt" else "packed")
             subprocess.run([cc, "-std=c11", "-O2", "-I" + str(ROOT / "runtime" / "ppu"),
                             *flags, str(cpath), "-o", str(exe)], check=True)
