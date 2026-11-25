@@ -82,6 +82,7 @@ function(ps3recomp_outline_spu_loop target source kernel start entry exit_pc mod
     # continue using the original interface and build-cache transformation.
     set(verification_args "")
     set(verification_deps "")
+    set(verification_identity "")
     if(ARGC GREATER 8)
         cmake_parse_arguments(PARSE_ARGV 8 VERIFY "" "SOURCE_SHA;IMAGE;COMPILER" "CAPTURES;CFLAGS")
         if(VERIFY_UNPARSED_ARGUMENTS OR NOT VERIFY_SOURCE_SHA)
