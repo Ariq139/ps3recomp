@@ -36,6 +36,7 @@ struct JqTask {
     JqTask* next; /* global worker dispatch list */
     JqTask *pending_prev, *pending_next;
     JqTask *barrier_prev, *barrier_next;
+    JqTask *tag_prev, *tag_next;
     u32 queue_slot, tag, id, job_ea, descriptor_size, binary_size;
     uint64_t tag_serial;
     u32 owned_descriptor, flags, pending_index;
@@ -55,6 +56,10 @@ typedef struct {
     /* Ordered by submission sequence, including currently executing jobs. */
     JqTask *pending_head, *pending_tail;
     JqTask *barrier_head, *barrier_tail;
+    /* Each tag list is ordered by submission serial, including executing
+     * tasks. The oldest outstanding serial is sufficient for a snapshot wait. */
+    JqTask *tag_head[32], *tag_tail[32];
+    u32 pending_tag_mask;
 } JqState;
 typedef struct { int in_use; u32 port_ea, queue_slot; } JqPortState;
 
@@ -135,6 +140,14 @@ static void jq_pending_insert(JqState* q, JqTask* t)
     else q->pending_head = t;
     q->pending_tail = t;
 
+    const u32 tag = t->tag;
+    t->tag_prev = q->tag_tail[tag];
+    t->tag_next = NULL;
+    if (q->tag_tail[tag]) q->tag_tail[tag]->tag_next = t;
+    else q->tag_head[tag] = t;
+    q->tag_tail[tag] = t;
+    q->pending_tag_mask |= 1u << tag;
+
     if (t->flags & JQ_BARRIER_FLAGS) {
         t->barrier_prev = q->barrier_tail;
         t->barrier_next = NULL;
@@ -159,6 +172,14 @@ static void jq_pending_remove(JqState* q, JqTask* t)
     if (t->pending_next) t->pending_next->pending_prev = t->pending_prev;
     else q->pending_tail = t->pending_prev;
 
+    const u32 tag = t->tag;
+    if (t->tag_prev) t->tag_prev->tag_next = t->tag_next;
+    else q->tag_head[tag] = t->tag_next;
+    if (t->tag_next) t->tag_next->tag_prev = t->tag_prev;
+    else q->tag_tail[tag] = t->tag_prev;
+    if (!q->tag_head[tag]) q->pending_tag_mask &= ~(1u << tag);
+    t->tag_prev = t->tag_next = NULL;
+
     if (t->flags & JQ_BARRIER_FLAGS) {
         if (t->barrier_prev) t->barrier_prev->barrier_next = t->barrier_next;
         else q->barrier_head = t->barrier_next;
@@ -177,9 +198,11 @@ static int jq_pending_id(const JqState* q, u32 id)
 static int jq_pending_tag_before(u32 slot, u32 mask, const uint64_t target[32])
 {
     const JqState* q = &s_queues[slot];
-    for (u32 i = 0; i < q->jobCount; ++i) {
-        const JqTask* t = q->pending[i];
-        if ((mask & (1u << t->tag)) && t->tag_serial <= target[t->tag])
+    /* No scan of the outstanding task set. Later submissions cannot
+     * extend an existing wait; out-of-order completion only unlinks tasks. */
+    mask &= q->pending_tag_mask;
+    for (u32 tag = 0; mask; ++tag, mask >>= 1) {
+        if ((mask & 1u) && q->tag_head[tag]->tag_serial <= target[tag])
             return 1;
     }
     return 0;
