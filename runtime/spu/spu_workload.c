@@ -346,6 +346,41 @@ typedef struct {
 static spu_workload_entry s_registry[SPU_WORKLOAD_MAX];
 static unsigned           s_registry_count = 0;
 
+/* Exact fingerprints are unique by registration contract. Keep the existing
+ * array in registration order for image-id and masked matching; this index
+ * stores array positions plus one (zero is empty, including for fp == 0).
+ * Registration/ABI setup happens before dispatch, as with the original
+ * registry. No allocation, deletion or per-dispatch mutation is needed. */
+#define SPU_WORKLOAD_INDEX_SLOTS (2u * SPU_WORKLOAD_MAX)
+static unsigned s_registry_index[SPU_WORKLOAD_INDEX_SLOTS];
+
+static unsigned spu_workload_bucket(uint64_t fp)
+{
+    uint32_t h = (uint32_t)fp ^ (uint32_t)(fp >> 32);
+    h ^= h >> 16;
+    h *= UINT32_C(0x7feb352d);
+    h ^= h >> 15;
+    return h % SPU_WORKLOAD_INDEX_SLOTS;
+}
+
+/* At most SPU_WORKLOAD_MAX entries occupy the double-capacity table, so a
+ * vacant slot always exists. Compare the full original fingerprint on hits. */
+static unsigned spu_workload_index_slot(uint64_t fp)
+{
+    unsigned slot = spu_workload_bucket(fp);
+    while (s_registry_index[slot] &&
+           s_registry[s_registry_index[slot] - 1u].fp != fp) {
+        if (++slot == SPU_WORKLOAD_INDEX_SLOTS) slot = 0;
+    }
+    return slot;
+}
+
+static spu_workload_entry* spu_workload_find_exact(uint64_t fp)
+{
+    const unsigned entry = s_registry_index[spu_workload_index_slot(fp)];
+    return entry ? &s_registry[entry - 1u] : NULL;
+}
+
 typedef struct {
     const uint8_t* bytes;
     uint32_t size;
@@ -447,13 +482,13 @@ void spu_workload_register_img(uint64_t fingerprint, spu_lifted_entry_fn fn,
     if (getenv("SPU_IMAGE_MATCH_TRACE"))
         fprintf(stderr, "[SPU] workload-register fp=0x%016llX image_id=%d name=\"%s\"\n",
                 (unsigned long long)fingerprint, image_id, name ? name : "?");
-    for (unsigned i = 0; i < s_registry_count; i++) {
-        if (s_registry[i].fp == fingerprint) {     /* idempotent on fingerprint */
-            s_registry[i].fn       = fn;
-            s_registry[i].image_id = image_id;
-            s_registry[i].name     = name;
-            return;
-        }
+    const unsigned slot = spu_workload_index_slot(fingerprint);
+    if (s_registry_index[slot]) {     /* idempotent on fingerprint */
+        spu_workload_entry* e = &s_registry[s_registry_index[slot] - 1u];
+        e->fn       = fn;
+        e->image_id = image_id;
+        e->name     = name;
+        return;
     }
     if (s_registry_count >= SPU_WORKLOAD_MAX) {
         fprintf(stderr, "[spu_workload] registry full (%u); dropping '%s'\n",
@@ -467,29 +502,21 @@ void spu_workload_register_img(uint64_t fingerprint, spu_lifted_entry_fn fn,
     memset(&s_registry[s_registry_count].job_abi, 0,
            sizeof(s_registry[s_registry_count].job_abi));
     s_registry[s_registry_count].job_abi.context_tag = 20u;
-    s_registry_count++;
+    s_registry_index[slot] = ++s_registry_count;
 }
 
 void spu_workload_set_job_context_tag(uint64_t fingerprint, uint32_t value)
 {
     if (value > 31u) return;
-    for (unsigned i = 0; i < s_registry_count; ++i) {
-        if (s_registry[i].fp == fingerprint) {
-            s_registry[i].job_abi.context_tag = value;
-            return;
-        }
-    }
+    spu_workload_entry* e = spu_workload_find_exact(fingerprint);
+    if (e) e->job_abi.context_tag = value;
 }
 
 void spu_workload_set_job_abi(uint64_t fingerprint, const spu_job_abi* abi)
 {
     if (!spu_job_abi_valid(abi)) return;
-    for (unsigned i = 0; i < s_registry_count; ++i) {
-        if (s_registry[i].fp == fingerprint) {
-            s_registry[i].job_abi = *abi;
-            return;
-        }
-    }
+    spu_workload_entry* e = spu_workload_find_exact(fingerprint);
+    if (e) e->job_abi = *abi;
 }
 
 int spu_workload_get_job_abi(int image_id, spu_job_abi* abi_out)
@@ -529,23 +556,21 @@ void spu_workload_register(uint64_t fingerprint, spu_lifted_entry_fn fn,
 
 spu_lifted_entry_fn spu_workload_find(uint64_t fingerprint)
 {
-    for (unsigned i = 0; i < s_registry_count; i++)
-        if (s_registry[i].fp == fingerprint)
-            return s_registry[i].fn;
-    return NULL;
+    const spu_workload_entry* e = spu_workload_find_exact(fingerprint);
+    return e ? e->fn : NULL;
 }
 
 spu_lifted_entry_fn spu_workload_find_img(uint64_t fingerprint, int* image_id_out)
 {
-    for (unsigned i = 0; i < s_registry_count; i++)
-        if (s_registry[i].fp == fingerprint) {
-            if (image_id_out) *image_id_out = s_registry[i].image_id;
-            if (getenv("SPU_IMAGE_MATCH_TRACE"))
-                fprintf(stderr, "[SPU] workload-hit fp=0x%016llX image_id=%d name=\"%s\"\n",
-                        (unsigned long long)fingerprint, s_registry[i].image_id,
-                        s_registry[i].name ? s_registry[i].name : "?");
-            return s_registry[i].fn;
-        }
+    const spu_workload_entry* e = spu_workload_find_exact(fingerprint);
+    if (e) {
+        if (image_id_out) *image_id_out = e->image_id;
+        if (getenv("SPU_IMAGE_MATCH_TRACE"))
+            fprintf(stderr, "[SPU] workload-hit fp=0x%016llX image_id=%d name=\"%s\"\n",
+                    (unsigned long long)fingerprint, e->image_id,
+                    e->name ? e->name : "?");
+        return e->fn;
+    }
     if (getenv("SPU_IMAGE_MATCH_TRACE"))
         fprintf(stderr, "[SPU] workload-miss fp=0x%016llX registered=%u\n",
                 (unsigned long long)fingerprint, s_registry_count);
@@ -565,13 +590,12 @@ void spu_workload_register_img_masked(uint64_t fingerprint, spu_lifted_entry_fn 
         return;
     }
     spu_workload_register_img(fingerprint, fn, image_id, name);
-    for (unsigned i = 0; i < s_registry_count; i++)
-        if (s_registry[i].fp == fingerprint) {
-            s_registry[i].size    = size;
-            s_registry[i].var_off = var_off;
-            s_registry[i].var_len = var_len;
-            return;
-        }
+    spu_workload_entry* e = spu_workload_find_exact(fingerprint);
+    if (e) {
+        e->size    = size;
+        e->var_off = var_off;
+        e->var_len = var_len;
+    }
 }
 
 spu_lifted_entry_fn spu_workload_find_img_masked(const void* data, size_t n,
@@ -711,8 +735,8 @@ int spu_workload_dispatch(const uint8_t* image, uint32_t image_size,
     spu_dump_job_image(spu_job_dump_directory(), fp, image, image_size);
     spu_lifted_entry_fn fn = NULL;
     int image_id = 0;
-    for (unsigned i = 0; i < s_registry_count; i++)
-        if (s_registry[i].fp == fp) { fn = s_registry[i].fn; image_id = s_registry[i].image_id; break; }
+    const spu_workload_entry* e = spu_workload_find_exact(fp);
+    if (e) { fn = e->fn; image_id = e->image_id; }
     if (!fn) {
         fprintf(stderr,
             "[spu_workload] dispatch MISS fp=0x%016llX size=%u "
@@ -1651,13 +1675,11 @@ static int spu_workload_dispatch_job_internal(const uint8_t* image,
     spu_lifted_entry_fn fn = NULL;
     int image_id = 0;
     spu_job_abi job_abi = { 0u, 20u, 0u, 0u, 0u };
-    for (unsigned i = 0; i < s_registry_count; i++) {
-        if (s_registry[i].fp == fp) {
-            fn = s_registry[i].fn;
-            image_id = s_registry[i].image_id;
-            job_abi = s_registry[i].job_abi;
-            break;
-        }
+    const spu_workload_entry* e = spu_workload_find_exact(fp);
+    if (e) {
+        fn = e->fn;
+        image_id = e->image_id;
+        job_abi = e->job_abi;
     }
     if (!fn) fn = find_raw_region(image, image_size, &image_id, &job_abi);
     if (!fn) {
@@ -2225,8 +2247,8 @@ int spu_workload_dispatch_task_async(const uint8_t* image, uint32_t image_size,
     spu_dump_job_image(spu_job_dump_directory(), fp, image, image_size);
     spu_lifted_entry_fn fn = NULL;
     int image_id = 0;
-    for (unsigned i = 0; i < s_registry_count; i++)
-        if (s_registry[i].fp == fp) { fn = s_registry[i].fn; image_id = s_registry[i].image_id; break; }
+    const spu_workload_entry* e = spu_workload_find_exact(fp);
+    if (e) { fn = e->fn; image_id = e->image_id; }
     if (!fn) {
         /* SPU_DUMP_MISS also applies here. The sync path has written the
          * unrecognised image out for a while and the async path did not, so a
