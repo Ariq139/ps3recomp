@@ -62,7 +62,7 @@ static uint32_t rd32(uint32_t ea)
 }
 
 enum { THREADS = 2 };
-struct record { uint32_t sp, inner_sp; int outer_ok, inner_ok; };
+struct record { uint32_t sp, inner_sp; uint64_t tid, inner_tid; int outer_ok, inner_ok; };
 static record s_rec[THREADS];
 static volatile int s_inside, s_inner_inside;
 
@@ -95,12 +95,14 @@ static void callback(ppu_context* ctx)
     fill(sp, tag);
     if (ctx->gpr[4]) {
         s_rec[t].sp = sp;
+        s_rec[t].tid = ctx->thread_id;
         wait_for(&s_inside, THREADS);              // both outer frames are live now
         // Nest a callback, through the {code, toc} entry point this time.
         ppu_guest_call_ct(CODE, TOC, (uint64_t)t, 0, 0, 0, 0, 0, 0, 0);
         s_rec[t].outer_ok = intact(sp, tag);
     } else {
         s_rec[t].inner_sp = sp;
+        s_rec[t].inner_tid = ctx->thread_id;
         wait_for(&s_inner_inside, THREADS);        // and both inner ones
         s_rec[t].inner_ok = intact(sp, tag);
     }
@@ -160,6 +162,9 @@ int main()
           "after them, two host threads' callbacks still get different stacks");
     check(s_rec[0].outer_ok && s_rec[1].outer_ok,
           "each callback's frame survives the other thread's callback and its own nested one");
+    check(s_rec[0].tid && s_rec[1].tid && s_rec[0].tid != s_rec[1].tid &&
+          s_rec[0].tid == s_rec[0].inner_tid && s_rec[1].tid == s_rec[1].inner_tid,
+          "host-only callback identities are distinct; nested callbacks inherit identity");
     check(s_rec[0].inner_ok && s_rec[1].inner_ok, "each nested callback's frame survives the other thread's");
     check(s_rec[0].inner_sp + FRAME <= s_rec[0].sp && s_rec[1].inner_sp + FRAME <= s_rec[1].sp,
           "a nested callback starts below the frame of the one it is nested in");
