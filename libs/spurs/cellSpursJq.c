@@ -574,8 +574,22 @@ s32 cellSpursJoinJobQueue(void)
 /* Prepare immutable job header+image at submission time. DMA payload buffers
  * remain guest-owned and may be mutated by the title; hardware likewise
  * requires titles to synchronize those buffers with job execution. */
-static JqTask* jq_prepare(u32 job_ea, u32 descriptor_size)
+static int jq_early_reject_enabled(void)
 {
+    static atomic_int mode;
+    int value = atomic_load_explicit(&mode, memory_order_acquire);
+    if (!value) {
+        const char* e = getenv("SPURS_JQ_EARLY_REJECT");
+        value = e && !strcmp(e, "1") ? 2 : 1;
+        atomic_store_explicit(&mode, value, memory_order_release);
+    }
+    return value == 2;
+}
+
+static JqTask* jq_prepare(u32 job_ea, u32 descriptor_size,
+                          u32 slot, u32 flags, s32* error)
+{
+    *error = (s32)CELL_SPURS_JQ_ERROR_INVALID_ARGUMENT;
     if (!vm_base || !job_ea ||
         (descriptor_size != 128u && descriptor_size != 256u) ||
         job_ea > UINT32_MAX - descriptor_size) return NULL;
@@ -591,6 +605,23 @@ static JqTask* jq_prepare(u32 job_ea, u32 descriptor_size)
     if (ea64 > UINT32_MAX || ea64 == 0 || binary_size == 0 ||
         binary_size > 0x40000u || ea64 > UINT32_MAX - binary_size)
         return NULL;
+
+    /* Keep descriptor validation ahead of capacity rejection. On opt-in
+     * nonblocking submissions, observe queue state before allocating/copying
+     * the binary. Accepted submissions still take their immutable snapshot
+     * here and recheck capacity under the original lock. No reservation is
+     * held across guest reads or allocations. */
+    if ((flags & JQ_FLAG_NON_BLOCKING) && jq_early_reject_enabled()) {
+        jq_lock();
+        const JqState* q = &s_queues[slot];
+        const int full = q->in_use && q->accepting &&
+            (q->jobCount >= q->maxJobs || q->jobCount >= CELL_SPURS_JQ_MAX_JOBS);
+        jq_unlock();
+        if (full) {
+            *error = (s32)CELL_SPURS_JQ_ERROR_QUEUE_FULL;
+            return NULL;
+        }
+    }
 
     /* One allocation instead of a header allocation plus a binary allocation.
      * Keep a private byte-for-byte snapshot for every in-flight job. No
@@ -619,8 +650,9 @@ static s32 jq_push_slot_mode_flags(u32 slot, u32 job_ea, u32 jobSize,
         if(atomic_fetch_add_explicit(&records,1,memory_order_relaxed)<32)
             fprintf(stderr,"[jq-order] queue=%u tag=%u flags=%u copy=%d job=%08X\n",slot,tag,flags,copy_push,job_ea);
     }
-    JqTask* t = jq_prepare(job_ea, jobSize);
-    if (!t) return (s32)CELL_SPURS_JQ_ERROR_INVALID_ARGUMENT;
+    s32 prepare_error;
+    JqTask* t = jq_prepare(job_ea, jobSize, slot, flags, &prepare_error);
+    if (!t) return prepare_error;
     static int async_copy_enabled = -1;
     if (async_copy_enabled < 0) {
         const char* setting=getenv("SPURS_JQ_ASYNC_COPY");
