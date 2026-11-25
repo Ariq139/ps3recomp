@@ -577,15 +577,18 @@ static void sys_lwcond_wait(ppu_context* ctx)
     ctx->gpr[3] = 0;
 }
 
-/* Opt in until titles with incomplete signaling paths have been audited. */
-/* Select the handler set once during registration. "1" is a bounded
- * compatibility wait (notification or the old ~1 ms predicate recheck).
- * "strict" is an explicit experimental LV2-like timeout mode. */
+/* Select the experimental context-HLE handler set once during registration.
+ * Only bounded notification/recheck mode is offered: raw LV2 and lifted PRX
+ * signal coverage is incomplete, so never add an indefinite condition wait.
+ * A legacy "strict" setting falls back to the original handlers. */
 static int lwc_events_mode()
 {
     static const int mode = [] {
         const char* v = getenv("PS3RECOMP_LWCOND_EVENTS");
-        if (v && !strcmp(v, "strict")) return 2;
+        if (v && !strcmp(v, "strict")) {
+            fprintf(stderr, "[LWC] strict mode withdrawn: using legacy handlers\n");
+            return 0;
+        }
         return v && !strcmp(v, "1") ? 1 : 0;
     }();
     return mode;
@@ -598,12 +601,17 @@ struct LwcWaiter {
 };
 struct LwcState {
     uint32_t id, mutex_ea;
+    uint64_t mutex_generation;
     LwcWaiter* head = nullptr;
     LwcWaiter* tail = nullptr;
     unsigned active = 0; // includes waiters reacquiring the guest mutex
 };
 static std::mutex s_lwc_mutex;
 static std::unordered_map<uint32_t, LwcState> s_lwc;
+/* Logical lifetime is independent of the permanent slot table. Only the
+ * experimental context-HLE create/destroy wrappers publish these records. */
+static std::unordered_map<uint32_t, uint64_t> s_lwc_live_mutexes;
+static uint64_t s_lwc_mutex_generation;
 static uint32_t s_lwcond_id = 0x4C000000u;
 
 static void lwc_result(ppu_context* ctx, uint32_t rc)
@@ -616,6 +624,11 @@ static LwcState* lwc_find(uint32_t ea)
     auto it = s_lwc.find(ea);
     if (it == s_lwc.end() || vm_read32(ea + 4) != it->second.id ||
         vm_read32(ea) != it->second.mutex_ea) return nullptr;
+    auto live = s_lwc_live_mutexes.find(it->second.mutex_ea);
+    if (live == s_lwc_live_mutexes.end() ||
+        live->second != it->second.mutex_generation ||
+        lwm_guest_address_error(it->second.mutex_ea, LWM_SIZE))
+        return nullptr;
     return &it->second;
 }
 /* Under the same registry lock used for create/destroy/wait, protect the
@@ -630,11 +643,30 @@ static bool lwc_has_mutex_locked(uint32_t ea)
 }
 static void lwc_mutex_create_checked(ppu_context* ctx)
 {
+    const uint32_t ea = (uint32_t)ctx->gpr[3], attr = (uint32_t)ctx->gpr[4];
     std::lock_guard<std::mutex> hold(s_lwc_mutex);
-    if (lwc_has_mutex_locked((uint32_t)ctx->gpr[3])) {
+    uint32_t err = lwm_guest_address_error(ea, LWM_SIZE);
+    if (!err && attr) err = lwm_guest_address_error(attr, 8);
+    if (err) { lwc_result(ctx, err); return; }
+    if (s_lwc_live_mutexes.count(ea) || lwc_has_mutex_locked(ea)) {
         lwc_result(ctx, CELL_EBUSY); return;
     }
+    LwmSlot* sl = lwm_slot(ea);
+    if (!sl) { lwc_result(ctx, CELL_EKRESOURCE); return; }
+    if (InterlockedCompareExchange(&sl->state, 0, 0)) {
+        lwc_result(ctx, CELL_EBUSY); return;
+    }
+    if (s_lwc_mutex_generation == UINT64_MAX) {
+        lwc_result(ctx, CELL_EKRESOURCE); return;
+    }
+    try {
+        s_lwc_live_mutexes.emplace(ea, ++s_lwc_mutex_generation);
+    } catch (const std::bad_alloc&) {
+        lwc_result(ctx, CELL_ENOMEM); return;
+    }
     sys_lwmutex_create(ctx);
+    if ((uint32_t)ctx->gpr[3] != CELL_OK)
+        s_lwc_live_mutexes.erase(ea);
 }
 static void lwc_create_event(ppu_context* ctx)
 {
@@ -643,11 +675,14 @@ static void lwc_create_event(ppu_context* ctx)
     uint32_t err = lwm_guest_address_error(ea, 8);
     if (!err) err = lwm_guest_address_error(lwm, LWM_SIZE);
     if (err) { lwc_result(ctx, err); return; }
-    if (!lwm_find(lwm)) { lwc_result(ctx, CELL_ESRCH); return; }
+    const auto live = s_lwc_live_mutexes.find(lwm);
+    if (live == s_lwc_live_mutexes.end() || !lwm_find(lwm)) {
+        lwc_result(ctx, CELL_ESRCH); return;
+    }
     if (s_lwc.find(ea) != s_lwc.end()) { lwc_result(ctx, CELL_EBUSY); return; }
     const uint32_t id = ++s_lwcond_id;
     try {
-        s_lwc.emplace(ea, LwcState{id, lwm});
+        s_lwc.emplace(ea, LwcState{id, lwm, live->second});
     } catch (const std::bad_alloc&) {
         lwc_result(ctx, CELL_ENOMEM); return;
     }
@@ -696,8 +731,7 @@ static void lwc_wait_event(ppu_context* ctx)
     const uint32_t err = lwm_guest_address_error(ea, 8);
     if (err) { lwc_result(ctx, err); return; }
     const uint64_t requested = ctx->gpr[4];
-    const bool compatibility = lwc_events_mode() == 1;
-    const bool compat_recheck = compatibility && (!requested || requested > 1000);
+    const bool compat_recheck = !requested || requested > 1000;
     const uint64_t timeout = compat_recheck ? 1000 : requested;
     std::unique_lock<std::mutex> hold(s_lwc_mutex);
     LwcState* c = lwc_find(ea);
@@ -721,7 +755,6 @@ static void lwc_wait_event(ppu_context* ctx)
     lwm_release(sl);
     const auto start = std::chrono::steady_clock::now();
     while (!w.notified) {
-        if (!timeout) { w.cv.wait(hold); continue; }
         const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - start).count();
         if ((uint64_t)elapsed >= timeout) break;
@@ -928,11 +961,21 @@ static void sys_lwmutex_destroy_counted(ppu_context* ctx)
 
 static void lwc_mutex_destroy_checked(ppu_context* ctx)
 {
+    const uint32_t ea = (uint32_t)ctx->gpr[3];
     std::lock_guard<std::mutex> hold(s_lwc_mutex);
-    if (lwc_has_mutex_locked((uint32_t)ctx->gpr[3])) {
+    const uint32_t err = lwm_guest_address_error(ea, LWM_SIZE);
+    if (err) { lwc_result(ctx, err); return; }
+    const auto live = s_lwc_live_mutexes.find(ea);
+    LwmSlot* sl = lwm_find(ea);
+    if (live == s_lwc_live_mutexes.end() || !sl) {
+        lwc_result(ctx, CELL_ESRCH); return;
+    }
+    if (lwc_has_mutex_locked(ea) || InterlockedCompareExchange(&sl->state, 0, 0)) {
         lwc_result(ctx, CELL_EBUSY); return;
     }
     sys_lwmutex_destroy_counted(ctx);
+    if ((uint32_t)ctx->gpr[3] == CELL_OK)
+        s_lwc_live_mutexes.erase(live);
 }
 
 /* Real preemptive thread create/exit live in the lv2 syscall layer
