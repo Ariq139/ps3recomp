@@ -67,9 +67,72 @@ static void test_dense_pending(void) {
  assert(q->jobCount==0 && q->pending[0]==NULL);
  jq_unlock();
 }
+/* Compare the maintained frontiers against the original scan after arbitrary
+ * insertions and out-of-order removals, including multiple independent queues. */
+static u32 frontier_rng = 0x8f33d7u;
+static u32 frontier_next(void) {
+ frontier_rng ^= frontier_rng << 13;
+ frontier_rng ^= frontier_rng >> 17;
+ frontier_rng ^= frontier_rng << 5;
+ return frontier_rng;
+}
+static int scan_runnable(const JqTask* task) {
+ const JqState* q = &s_queues[task->queue_slot];
+ for (u32 i=0; i<q->jobCount; ++i) {
+  const JqTask* e=q->pending[i];
+  if (e != task && e->sequence < task->sequence &&
+      ((e->flags | task->flags) & (JQ_FLAG_SYNC_JOB | JQ_FLAG_EXCLUSIVE_JOB))) return 0;
+ }
+ return 1;
+}
+static void check_frontiers(JqState* q) {
+ u32 n=0, b=0, expected_b=0;
+ JqTask* prev=NULL;
+ for (JqTask* t=q->pending_head; t; t=t->pending_next) {
+  assert(n++ < q->jobCount);
+  assert(t->pending_prev==prev && (!prev || prev->sequence<t->sequence));
+  assert(q->pending[t->pending_index]==t);
+  assert(jq_task_runnable(t)==scan_runnable(t));
+  expected_b += !!(t->flags & (JQ_FLAG_SYNC_JOB|JQ_FLAG_EXCLUSIVE_JOB));
+  prev=t;
+ }
+ assert(n==q->jobCount && prev==q->pending_tail);
+ prev=NULL;
+ for (JqTask* t=q->barrier_head; t; t=t->barrier_next) {
+  assert(b++ < q->jobCount);
+  assert(t->barrier_prev==prev && (!prev || prev->sequence<t->sequence));
+  assert(t->flags & (JQ_FLAG_SYNC_JOB|JQ_FLAG_EXCLUSIVE_JOB));
+  prev=t;
+ }
+ assert(b==expected_b && prev==q->barrier_tail);
+}
+static void test_frontiers(void) {
+ static JqTask tasks[2][CELL_SPURS_JQ_MAX_JOBS];
+ unsigned char used[2][CELL_SPURS_JQ_MAX_JOBS]={0};
+ uint64_t seq=0;
+ jq_lock();
+ for (u32 step=0; step<20000; ++step) {
+  u32 slot=frontier_next()%2, i=frontier_next()%CELL_SPURS_JQ_MAX_JOBS;
+  JqState* q=&s_queues[slot];
+  JqTask* t=&tasks[slot][i];
+  if (used[slot][i]) { jq_pending_remove(q,t); used[slot][i]=0; }
+  else {
+   memset(t,0,sizeof(*t)); t->queue_slot=slot; t->sequence=++seq;
+   t->flags=frontier_next()&7u;
+   jq_pending_insert(q,t); used[slot][i]=1;
+  }
+  check_frontiers(q);
+ }
+ for (u32 slot=0; slot<2; ++slot) {
+  JqState* q=&s_queues[slot];
+  while(q->jobCount) { jq_pending_remove(q,q->pending[q->jobCount-1]); check_frontiers(q); }
+ }
+ jq_unlock();
+}
 int main(int argc,char** argv) {
  (void)argv;
  test_dense_pending();
+ test_frontiers();
 
  assert(_putenv_s("SPURS_JQ_WORKERS","4")==0);
  blocking_returned=CreateEvent(NULL,TRUE,FALSE,NULL);
