@@ -12,7 +12,10 @@ import os
 from pathlib import Path
 import re
 import tempfile
-from spu_kernel_replay import extract, promote_registers
+import struct
+import subprocess
+import sys
+from spu_kernel_replay import extract, promote_registers, SNAPSHOT_BYTES
 
 
 def mask(text):
@@ -120,6 +123,48 @@ def outline(data, function, start, entry, exit_pc, mode):
     return output.replace('\n', newline).encode('utf-8', 'surrogateescape'), info
 
 
+def validate_capture(data, image, entry):
+    if len(data) != 40 + 2 * SNAPSHOT_BYTES or data[:8] != b'SPUKRN01':
+        raise ValueError('incomplete or unsupported kernel capture')
+    header = struct.unpack_from('<8I', data, 8)
+    if header[0] != 1 or header[1] != SNAPSHOT_BYTES or header[6] > 3:
+        raise ValueError('unsupported capture header')
+    if header[2] != image or header[3] != entry:
+        raise ValueError('capture image/logical PC does not match selected release loop')
+
+
+def verify_native(data, native, info, args):
+    if args.capture_image is None or not args.verify_capture:
+        raise ValueError('verified native mode requires an image ID and real capture(s)')
+    reference, _ = outline(data, args.function, args.start, args.entry, args.exit, 'CAPTURE')
+    script = Path(__file__).resolve().with_name('spu_kernel_replay.py')
+    verified = []
+    with tempfile.TemporaryDirectory(prefix='verified-spu-loop-') as folder:
+        ref_path, native_path = Path(folder)/'reference.c', Path(folder)/'native.c'
+        ref_path.write_bytes(reference)
+        native_path.write_bytes(native)
+        for i, capture in enumerate(args.verify_capture):
+            captured = capture.read_bytes()
+            validate_capture(captured, args.capture_image, args.entry)
+            # Replay exactly the bytes hashed below, even if the caller's
+            # capture file changes while verification is running.
+            frozen = Path(folder)/('capture-%d.bin' % i)
+            frozen.write_bytes(captured)
+            common = [sys.executable, str(script), str(frozen), '--leaf-block']
+            if args.replay_compiler:
+                common += ['--compiler', args.replay_compiler]
+            common += ['--cflag='+flag for flag in args.replay_cflag]
+            subprocess.run(common + ['--source', str(ref_path), '--function',
+                           info['reference']], check=True, timeout=180)
+            subprocess.run(common + ['--source', str(native_path), '--function',
+                           info['helper'], '--transformed'], check=True, timeout=180)
+            verified.append(hashlib.sha256(captured).hexdigest())
+    info['verified_capture_sha256'] = verified
+    info['capture_image'] = args.capture_image
+    info['replay_compiler'] = args.replay_compiler
+    info['replay_cflags'] = args.replay_cflag
+
+
 def main():
     parser = argparse.ArgumentParser(__doc__)
     parser.add_argument('--source', type=Path, required=True)
@@ -128,13 +173,28 @@ def main():
         parser.add_argument('--'+address, type=lambda s: int(s, 0), required=True)
     parser.add_argument('--mode', choices=('OFF', 'CAPTURE', 'NATIVE'), required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--source-sha256', help='reject changed generated source')
+    parser.add_argument('--require-verified', action='store_true',
+                        help='publish native output only after real captured reference/native replay')
+    parser.add_argument('--verify-capture', type=Path, action='append', default=[])
+    parser.add_argument('--capture-image', type=lambda s: int(s, 0))
+    parser.add_argument('--replay-compiler')
+    parser.add_argument('--replay-cflag', action='append', default=[])
     args = parser.parse_args()
     if args.source.resolve() == args.output.resolve():
         parser.error('output must differ from source')
     try:
-        output, info = outline(args.source.read_bytes(), args.function, args.start,
-                               args.entry, args.exit, args.mode)
-    except ValueError as error:
+        data = args.source.read_bytes()
+        if args.source_sha256 and hashlib.sha256(data).hexdigest() != args.source_sha256.lower():
+            raise ValueError('generated source SHA256 does not match selected revision')
+        if args.require_verified and (args.mode != 'NATIVE' or not args.source_sha256):
+            raise ValueError('verified mode requires NATIVE and an exact source SHA256')
+        if args.verify_capture and not args.require_verified:
+            raise ValueError('capture verification requires --require-verified')
+        output, info = outline(data, args.function, args.start, args.entry, args.exit, args.mode)
+        if args.require_verified:
+            verify_native(data, output, info, args)
+    except (ValueError, OSError, subprocess.SubprocessError) as error:
         parser.error(str(error))
     args.output.parent.mkdir(parents=True, exist_ok=True)
     temporary = None

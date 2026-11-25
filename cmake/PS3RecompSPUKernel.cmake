@@ -78,6 +78,37 @@ function(ps3recomp_outline_spu_loop target source kernel start entry exit_pc mod
     get_filename_component(input_dir "${input}" DIRECTORY)
     get_filename_component(filename "${input}" NAME)
     set(output "${CMAKE_CURRENT_BINARY_DIR}/cache/spu/loops/${kernel}_${start}_${exit_pc}_${mode}/${filename}")
+    # Optional release-build verification arguments. Existing beta callers
+    # continue using the original interface and build-cache transformation.
+    set(verification_args "")
+    set(verification_deps "")
+    if(ARGC GREATER 8)
+        cmake_parse_arguments(PARSE_ARGV 8 VERIFY "" "SOURCE_SHA;IMAGE;COMPILER" "CAPTURES;CFLAGS")
+        if(VERIFY_UNPARSED_ARGUMENTS OR NOT VERIFY_SOURCE_SHA)
+            message(FATAL_ERROR "Invalid verified SPU loop arguments")
+        endif()
+        list(APPEND verification_args --source-sha256 "${VERIFY_SOURCE_SHA}")
+        if(mode STREQUAL "NATIVE")
+            if(NOT VERIFY_CAPTURES OR "${VERIFY_IMAGE}" STREQUAL "")
+                message(FATAL_ERROR "Native release loop requires image ID and capture files")
+            endif()
+            list(APPEND verification_args --require-verified --capture-image "${VERIFY_IMAGE}")
+            foreach(capture IN LISTS VERIFY_CAPTURES)
+                get_filename_component(capture_abs "${capture}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+                if(NOT EXISTS "${capture_abs}")
+                    message(FATAL_ERROR "SPU replay capture not found: ${capture_abs}")
+                endif()
+                list(APPEND verification_args --verify-capture "${capture_abs}")
+                list(APPEND verification_deps "${capture_abs}")
+            endforeach()
+            if(VERIFY_COMPILER)
+                list(APPEND verification_args --replay-compiler "${VERIFY_COMPILER}")
+            endif()
+            foreach(flag IN LISTS VERIFY_CFLAGS)
+                list(APPEND verification_args "--replay-cflag=${flag}")
+            endforeach()
+        endif()
+    endif()
     get_target_property(sources "${target}" SOURCES)
     set(updated "")
     set(replaced FALSE)
@@ -109,7 +140,8 @@ function(ps3recomp_outline_spu_loop target source kernel start entry exit_pc mod
         COMMAND "${Python3_EXECUTABLE}" "${PS3RECOMP_DIR}/tools/outline_spu_loop.py"
             --source "${input}" --function "${kernel}" --start "${start}"
             --entry "${entry}" --exit "${exit_pc}" --mode "${mode}" --output "${output}"
-        DEPENDS "${input}" "${PS3RECOMP_DIR}/tools/outline_spu_loop.py"
+            ${verification_args}
+        DEPENDS "${input}" ${verification_deps} "${PS3RECOMP_DIR}/tools/outline_spu_loop.py"
             "${PS3RECOMP_DIR}/tools/spu_kernel_replay.py"
             "${PS3RECOMP_DIR}/runtime/spu/spu_helpers.h"
         BYPRODUCTS "${output}.outline.json"
