@@ -16,6 +16,7 @@
 #include <string.h>
 #include <stdatomic.h>
 #include <stdint.h>
+#include <assert.h>
 #ifdef _WIN32
 # include <windows.h>
 #else
@@ -118,11 +119,15 @@ static s32 jq_status_for_id(const JqState* q, u32 id)
  * its own index so completion can compact the set in constant time. */
 static void jq_pending_insert(JqState* q, JqTask* t)
 {
+    assert(t && q->jobCount < CELL_SPURS_JQ_MAX_JOBS);
+    assert(q->pending[q->jobCount] == NULL);
     t->pending_index = q->jobCount;
     q->pending[q->jobCount++] = t;
 }
 static void jq_pending_remove(JqState* q, JqTask* t)
 {
+    assert(t && q->jobCount && t->pending_index < q->jobCount);
+    assert(q->pending[t->pending_index] == t);
     const u32 last = --q->jobCount;
     const u32 index = t->pending_index;
     if (index != last) {
