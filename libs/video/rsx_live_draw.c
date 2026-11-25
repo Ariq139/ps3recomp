@@ -2591,7 +2591,7 @@ static u32 texture_srv_slot(const rsx_dsp_texture* t)
         refresh_enabled = getenv("RSX_NO_TEX_REFRESH") ? 0 : 1;
 
     const int indexed = ld_index_cache_enabled();
-    const u32 bucket = ld_texture_bucket(t, remap);
+    const u32 bucket = indexed ? ld_texture_bucket(t, remap) : 0u;
     for (u32 link = indexed ? g.texture_heads[bucket] : 1u;
          link && link <= g.n_textures;
          link = indexed ? g.texture_next[link - 1u] : link + 1u) {
@@ -5082,7 +5082,7 @@ static ID3D12PipelineState* get_pso(
     g_ld_profile.total.pso_lookups++;
 #endif
     const int indexed = ld_index_cache_enabled();
-    const u32 bucket = (u32)(key ^ (key >> 32) ^ (key >> 16)) & (2u * MAX_PSOS - 1u);
+    const u32 bucket = indexed ? (u32)(key ^ (key >> 32) ^ (key >> 16)) & (2u * MAX_PSOS - 1u) : 0u;
     for (u32 link = indexed ? g.pso_heads[bucket] : 1u;
          link && link <= g.n_psos;
          link = indexed ? g.psos[link - 1u].hash_next : link + 1u) {
