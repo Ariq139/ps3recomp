@@ -45,7 +45,6 @@
 #include <stdlib.h>
 #include <stdatomic.h>
 #include <string.h>
-#include <stddef.h>
 #include "ps3emu/log_first.h"
 #include "ps3emu/ps3_env_once.h"   /* ps3_env_once: each switch looked up once */
 
@@ -243,19 +242,8 @@ static int spu_run_spurs_job_internal(spu_lifted_entry_fn entry, int image_id,
         if (phases) phases->reset = spu_job_profile_now() - phase_start;
         return -1;
     }
-    /* The validated binary replaces [0, size_bin) of the private local
-     * store immediately below, before the context is published or executed.
-     * Clear every other byte of the context, including the rest of LS and
-     * structure padding, exactly as spu_context_init would. Do not skip
-     * alignment padding after the image, DMA payload gaps, stack or BSS.
-     * Keep reset and image-copy phase measurements separate. */
-    const size_t ls_offset = offsetof(spu_context, ls_store);
-    const size_t after_image = ls_offset + size_bin;
-    memset(ctx, 0, ls_offset);
-    memset((uint8_t*)ctx + after_image, 0, sizeof(*ctx) - after_image);
-    ctx->ls = ctx->ls_store;
-    ctx->spu_id = 0;
-    ctx->status = SPU_STATUS_STOPPED;
+    /* The validated image immediately overwrites this private LS prefix. */
+    spu_context_init_job_prefix(ctx, 0, size_bin);
     uint8_t* ls = ctx->ls;
     if (phases) {
         double now = spu_job_profile_now();
