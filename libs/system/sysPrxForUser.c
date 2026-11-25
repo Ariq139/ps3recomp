@@ -10,6 +10,10 @@
 #include "sysPrxForUser.h"
 #include "../../runtime/memory/vm.h"
 #include <ps3emu/guest_call.h>
+#include "ps3emu/lwsync_bridge.h"
+
+/* Installed at context-HLE registration, before guest dispatch. */
+ps3_lwsync_bridge_fn g_ps3_lwsync_bridge;
 #include "../../runtime/ppu/ppu_memory.h"   /* vm_base, vm_write32: translate + byte-swap */
 #include <stdio.h>
 #include <stdarg.h>
@@ -498,6 +502,8 @@ s32 sys_ppu_thread_once(u32 once_ctrl_ea, u32 init_opd)
 
 s32 sys_lwmutex_create(sys_lwmutex_t_hle* lwmutex, const sys_lwmutex_attribute_t* attr)
 {
+    if (g_ps3_lwsync_bridge)
+        return g_ps3_lwsync_bridge(PS3_LWSYNC_MUTEX_CREATE, (u32)(uintptr_t)lwmutex, (u32)(uintptr_t)attr);
     YZ_XLAT(lwmutex, sys_lwmutex_t_hle*);
     YZ_XLAT(attr, const sys_lwmutex_attribute_t*);
     if (!lwmutex) return CELL_EFAULT;
@@ -525,6 +531,8 @@ static s32 lwmutex_ensure_registered(sys_lwmutex_t_hle* lwmutex)
 
 s32 sys_lwmutex_lock(sys_lwmutex_t_hle* lwmutex, u64 timeout)
 {
+    if (g_ps3_lwsync_bridge)
+        return g_ps3_lwsync_bridge(PS3_LWSYNC_MUTEX_LOCK, (u32)(uintptr_t)lwmutex, timeout);
     (void)timeout;
     YZ_XLAT(lwmutex, sys_lwmutex_t_hle*);
     if (!lwmutex) return CELL_EFAULT;
@@ -569,6 +577,8 @@ s32 sys_lwmutex_lock(sys_lwmutex_t_hle* lwmutex, u64 timeout)
 
 s32 sys_lwmutex_trylock(sys_lwmutex_t_hle* lwmutex)
 {
+    if (g_ps3_lwsync_bridge)
+        return g_ps3_lwsync_bridge(PS3_LWSYNC_MUTEX_TRYLOCK, (u32)(uintptr_t)lwmutex, 0);
     YZ_XLAT(lwmutex, sys_lwmutex_t_hle*);
     if (!lwmutex) return CELL_EFAULT;
 
@@ -594,6 +604,8 @@ s32 sys_lwmutex_trylock(sys_lwmutex_t_hle* lwmutex)
 
 s32 sys_lwmutex_unlock(sys_lwmutex_t_hle* lwmutex)
 {
+    if (g_ps3_lwsync_bridge)
+        return g_ps3_lwsync_bridge(PS3_LWSYNC_MUTEX_UNLOCK, (u32)(uintptr_t)lwmutex, 0);
     YZ_XLAT(lwmutex, sys_lwmutex_t_hle*);
     if (!lwmutex) return CELL_EFAULT;
 
@@ -615,6 +627,8 @@ s32 sys_lwmutex_unlock(sys_lwmutex_t_hle* lwmutex)
 
 s32 sys_lwmutex_destroy(sys_lwmutex_t_hle* lwmutex)
 {
+    if (g_ps3_lwsync_bridge)
+        return g_ps3_lwsync_bridge(PS3_LWSYNC_MUTEX_DESTROY, (u32)(uintptr_t)lwmutex, 0);
     YZ_XLAT(lwmutex, sys_lwmutex_t_hle*);
 #ifdef _WIN32
     printf("[sysPrxForUser] sys_lwmutex_destroy(guest=0x%08X) [host tid %lu]\n",
@@ -662,6 +676,8 @@ s32 sys_lwmutex_destroy(sys_lwmutex_t_hle* lwmutex)
 s32 sys_lwcond_create(sys_lwcond_t_hle* lwcond, sys_lwmutex_t_hle* lwmutex,
                       const sys_lwcond_attribute_t* attr)
 {
+    if (g_ps3_lwsync_bridge)
+        return g_ps3_lwsync_bridge(PS3_LWSYNC_COND_CREATE, (u32)(uintptr_t)lwcond, (u32)(uintptr_t)lwmutex);
     YZ_XLAT(lwcond, sys_lwcond_t_hle*);
     YZ_XLAT(lwmutex, sys_lwmutex_t_hle*);
     YZ_XLAT(attr, const sys_lwcond_attribute_t*);
@@ -698,6 +714,8 @@ s32 sys_lwcond_create(sys_lwcond_t_hle* lwcond, sys_lwmutex_t_hle* lwmutex,
 
 s32 sys_lwcond_signal(sys_lwcond_t_hle* lwcond)
 {
+    if (g_ps3_lwsync_bridge)
+        return g_ps3_lwsync_bridge(PS3_LWSYNC_COND_SIGNAL, (u32)(uintptr_t)lwcond, 0);
     YZ_XLAT(lwcond, sys_lwcond_t_hle*);
     if (!lwcond) return CELL_EFAULT;
 
@@ -715,6 +733,8 @@ s32 sys_lwcond_signal(sys_lwcond_t_hle* lwcond)
 
 s32 sys_lwcond_signal_all(sys_lwcond_t_hle* lwcond)
 {
+    if (g_ps3_lwsync_bridge)
+        return g_ps3_lwsync_bridge(PS3_LWSYNC_COND_SIGNAL_ALL, (u32)(uintptr_t)lwcond, 0);
     YZ_XLAT(lwcond, sys_lwcond_t_hle*);
     if (!lwcond) return CELL_EFAULT;
 
@@ -732,6 +752,8 @@ s32 sys_lwcond_signal_all(sys_lwcond_t_hle* lwcond)
 
 s32 sys_lwcond_wait(sys_lwcond_t_hle* lwcond, u64 timeout)
 {
+    if (g_ps3_lwsync_bridge)
+        return g_ps3_lwsync_bridge(PS3_LWSYNC_COND_WAIT, (u32)(uintptr_t)lwcond, timeout);
     YZ_XLAT(lwcond, sys_lwcond_t_hle*);
     fprintf(stderr, "[WAIT] lwcond_wait(timeout=%llu)\n", (unsigned long long)timeout);
     if (!lwcond) return CELL_EFAULT;
@@ -781,6 +803,8 @@ s32 sys_lwcond_wait(sys_lwcond_t_hle* lwcond, u64 timeout)
 
 s32 sys_lwcond_destroy(sys_lwcond_t_hle* lwcond)
 {
+    if (g_ps3_lwsync_bridge)
+        return g_ps3_lwsync_bridge(PS3_LWSYNC_COND_DESTROY, (u32)(uintptr_t)lwcond, 0);
     YZ_XLAT(lwcond, sys_lwcond_t_hle*);
     printf("[sysPrxForUser] sys_lwcond_destroy()\n");
 
