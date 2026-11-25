@@ -2230,6 +2230,7 @@ void spu_overlay_register_sig(const uint8_t sig[16], int image_id)
  * keeps in its own data can be lifted. A body larger than one DMA arrives as
  * consecutive GETs (contiguous EA and LS); those are appended to the same
  * file. One file per source EA: ovl_<ea>.bin. */
+static SPU_TLS uint32_t t_src, t_next_ea, t_next_lsa;
 static void spu_ovl_dump(spu_context* ctx, uint32_t ea, uint32_t lsa, const uint8_t* ls, uint32_t size)
 {
     static int s_on = -1; static char s_dir[400]; static uint32_t s_lsa = 0x5000;
@@ -2238,7 +2239,6 @@ static void spu_ovl_dump(spu_context* ctx, uint32_t ea, uint32_t lsa, const uint
                     char* c = strchr(s_dir, ','); if (c) { *c = 0; s_lsa = (uint32_t)strtoul(c + 1, 0, 0); } } }
     if (!s_on) return;
     static uint32_t s_seen[256]; static unsigned s_n;
-    static SPU_TLS uint32_t t_src, t_next_ea, t_next_lsa;
     FILE* f = NULL; char path[512];
     if (lsa == s_lsa && size >= 256) {
         for (unsigned i = 0; i < s_n; i++) if (s_seen[i] == ea) { t_src = 0; return; }
@@ -2402,6 +2402,7 @@ void spu_async_task_reset_thread_state(void)
     s_spu_halt_armed = 0;
     g_spu_trampoline_fn = NULL;
     t_ft_busy0 = 0;
+    t_src=t_next_ea=t_next_lsa=0;
 }
 
 void spu_spurs_taskset_syscall(spu_context* ctx)   /* non-static: also called by the pure interpreter (spu_interp.c) */

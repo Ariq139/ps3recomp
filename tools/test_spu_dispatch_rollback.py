@@ -4,11 +4,12 @@ import os, subprocess, tempfile
 from pathlib import Path
 root=Path(__file__).resolve().parents[1]
 s=(root/'runtime/spu/spu_workload.c').read_text()
-start=s.index('#define TS_TRACK 8')
+start=s.index('#define TS_BUCKETS 256u')
 end=s.index('/* CellSpursTaskset2 keeps',start)
 harness=r'''
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <assert.h>
 #include <string.h>
 #include <stdatomic.h>

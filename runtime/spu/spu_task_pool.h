@@ -79,6 +79,10 @@ static inline void spu_task_pool_unlock(spu_task_pool* p) { pthread_mutex_unlock
 static inline void spu_task_pool_signal(spu_task_pool* p) { pthread_cond_signal(&p->cv); }
 #endif
 
+/* A task that cannot establish a clean reuse boundary may retire this
+ * worker before it advertises itself idle. No queued task owns it yet. */
+static _Thread_local int s_pool_retire;
+static inline void spu_task_pool_retire_current(void) { s_pool_retire=1; }
 #ifdef _WIN32
 static unsigned __stdcall spu_task_pool_thread(void* p)
 #else
@@ -91,9 +95,12 @@ static inline void* spu_task_pool_thread(void* p)
         /* Copy out first: the task may free the record the item lives in. */
         void (*run)(void*) = it->run;
         void* arg = it->arg;
+        s_pool_retire=0;
         run(arg);
-
         spu_task_pool_lock(pool);
+        if(s_pool_retire){
+            pool->threads--;pool->retired++;spu_task_pool_unlock(pool);return 0;
+        }
         pool->idle++;
 #ifdef _WIN32
         const ULONGLONG deadline=GetTickCount64()+pool->idle_ms;
@@ -171,10 +178,10 @@ static inline int spu_task_pool_submit(spu_task_pool* pool, spu_task_pool_item* 
     int rc = EINVAL;
     if (pool->stack_size) {
         pthread_attr_t attr;
-        pthread_attr_init(&attr);
-        if (pthread_attr_setstacksize(&attr, pool->stack_size) == 0)
-            rc = pthread_create(&th, &attr, spu_task_pool_thread, it);
-        pthread_attr_destroy(&attr);
+        if(!pthread_attr_init(&attr)){
+            if(!pthread_attr_setstacksize(&attr,pool->stack_size))rc=pthread_create(&th,&attr,spu_task_pool_thread,it);
+            pthread_attr_destroy(&attr);
+        }
     }
     /* A host that will not reserve that much still gets the thread, on the
      * default stack, as the thread-per-task path does. */
