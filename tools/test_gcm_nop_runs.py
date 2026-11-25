@@ -20,8 +20,17 @@ with tempfile.TemporaryDirectory(prefix='gcm-nop-runs-') as tmp:
                     '-I' + str(root / 'include'), '-I' + str(root / 'libs/video'),
                     str(root / 'libs/video/tests/test_gcm_nop_runs.c'), *linker,
                     '-o', str(binary)], check=True)
-    result = subprocess.run([str(binary)], timeout=30, capture_output=True, text=True)
-    print(result.stdout.strip())
-    if result.returncode:
-        print(result.stderr[-2000:])
-        raise SystemExit('test_gcm_nop_runs failed')
+    base = {k: v for k, v in os.environ.items()
+            if k not in ('GCM_FIFO_HISTORY', 'GCM_WORD_STATS', 'GCM_CIRCLE_DUMP')}
+    for mode, extra in (
+        ('default', {}),
+        ('history-off', {'GCM_FIFO_HISTORY': '0'}),
+        ('word-stats', {'GCM_FIFO_HISTORY': '0', 'GCM_WORD_STATS': '1'}),
+        ('circle-dump', {'GCM_FIFO_HISTORY': '0', 'GCM_CIRCLE_DUMP': '1'}),
+    ):
+        result = subprocess.run([str(binary)], timeout=30, capture_output=True,
+                                text=True, env={**base, **extra})
+        print(f'{mode}: {result.stdout.strip()}')
+        if result.returncode:
+            print(result.stderr[-2000:])
+            raise SystemExit(f'test_gcm_nop_runs failed: {mode}')
