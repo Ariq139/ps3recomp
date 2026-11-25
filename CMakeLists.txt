@@ -181,6 +181,11 @@ target_include_directories(ps3recomp_runtime PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
 )
 
+option(PS3RECOMP_AUDIO_SSE2_MIX "Enable experimental constant-gain stereo SSE2 mixer" OFF)
+if(PS3RECOMP_AUDIO_SSE2_MIX)
+    target_compile_definitions(ps3recomp_runtime PRIVATE AUDIO_ENABLE_SSE2_MIX=1)
+endif()
+
 # Platform-specific link libraries
 if(WIN32)
     # SDL GameController adds native support for DualSense and other HID pads.
