@@ -464,13 +464,15 @@ if(NOT P5_PGO_MODE STREQUAL "OFF")
                     "No clang-cl compiler-rt profile library under ${_p5_profile_libdir}. "
                     "Install matching compiler-rt or set P5_CLANG_PROFILE_LIB_DIR.")
             endif()
-            target_link_directories(${PROJECT_NAME} PRIVATE
+            # Every executable that consumes the instrumented static runtime
+            # (including optional SDK smoke tests) needs the same search path.
+            target_link_directories(ps3recomp_runtime INTERFACE
                 "$<$<CONFIG:Release>:${_p5_profile_libdir}>")
         endif()
     else()
         set(_p5_pgo_compile "${_p5_pgo_flag}")
         if(P5_PGO_MODE STREQUAL "GENERATE")
-            target_link_options(${PROJECT_NAME} PRIVATE
+            target_link_options(ps3recomp_runtime INTERFACE
                 "$<$<CONFIG:Release>:${_p5_pgo_flag}>")
         endif()
     endif()
