@@ -390,7 +390,7 @@ endif()
 option(P5_ENABLE_IPO "Enable checked Release interprocedural optimization" OFF)
 set(P5_PGO_MODE "OFF" CACHE STRING "P5 profiling mode: OFF, GENERATE or USE")
 set_property(CACHE P5_PGO_MODE PROPERTY STRINGS OFF GENERATE USE)
-set(P5_PGO_DATA "" CACHE FILEPATH "MSVC .pgd or LLVM merged .profdata file")
+set(P5_PGO_DATA "" CACHE FILEPATH "LLVM merged .profdata file")
 if(P5_ENABLE_IPO)
     include(CheckIPOSupported)
     check_ipo_supported(RESULT _p5_ipo_ok OUTPUT _p5_ipo_error LANGUAGES C CXX)
@@ -408,56 +408,76 @@ if(NOT P5_PGO_MODE STREQUAL "OFF")
     if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE STREQUAL "Release")
         message(FATAL_ERROR "P5 PGO requires a Release build")
     endif()
-    if(CMAKE_C_COMPILER_ID STREQUAL "MSVC" AND
-       CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+    if(NOT CMAKE_C_COMPILER_ID MATCHES "^(Clang|AppleClang)$" OR
+       NOT CMAKE_CXX_COMPILER_ID MATCHES "^(Clang|AppleClang)$")
+        message(FATAL_ERROR
+            "P5 PGO requires Clang. Native cl.exe is not supported by the "
+            "runtime/lifted sources; GCC PGO is not configured.")
+    endif()
+
+    if(P5_PGO_MODE STREQUAL "GENERATE")
+        set(_p5_pgo_flag "-fprofile-instr-generate")
+    else()
         if(NOT P5_PGO_DATA)
-            set(_p5_profile "${CMAKE_BINARY_DIR}/P5.pgd")
-        else()
-            get_filename_component(_p5_profile "${P5_PGO_DATA}" ABSOLUTE)
+            message(FATAL_ERROR "Set P5_PGO_DATA to merged LLVM .profdata")
         endif()
-        if(P5_PGO_MODE STREQUAL "USE" AND NOT EXISTS "${_p5_profile}")
-            message(FATAL_ERROR "Missing PGO database: ${_p5_profile}")
+        get_filename_component(_p5_profile "${P5_PGO_DATA}" ABSOLUTE)
+        if(NOT EXISTS "${_p5_profile}")
+            message(FATAL_ERROR "Missing PGO data: ${_p5_profile}")
         endif()
-        foreach(_p5_t IN ITEMS ${PROJECT_NAME} ps3recomp_runtime)
-            target_compile_options(${_p5_t} PRIVATE
-                "$<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:C,CXX>>:/GL>")
-        endforeach()
+        set(_p5_pgo_flag "-fprofile-instr-use=${_p5_profile}")
+    endif()
+
+    # CMake's clang-cl link rule commonly invokes link.exe/lld-link
+    # directly, not the compiler driver. Instrumented COFF objects carry
+    # the compiler-rt default-library directive; help the linker find it.
+    if(MSVC OR CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+        if(NOT WIN32 OR NOT CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC"
+           OR NOT CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+            message(FATAL_ERROR "Use matching Windows clang-cl C and C++ compilers")
+        endif()
+        set(_p5_pgo_compile "/clang:${_p5_pgo_flag}")
         if(P5_PGO_MODE STREQUAL "GENERATE")
-            set(_p5_pgo_link "/GENPROFILE:PGD=${_p5_profile}")
-        else()
-            set(_p5_pgo_link "/USEPROFILE:PGD=${_p5_profile}")
-        endif()
-        target_link_options(${PROJECT_NAME} PRIVATE
-            "$<$<CONFIG:Release>:/LTCG>" "$<$<CONFIG:Release>:${_p5_pgo_link}>")
-    elseif(CMAKE_C_COMPILER_ID MATCHES "^(Clang|AppleClang)$" AND
-           CMAKE_CXX_COMPILER_ID MATCHES "^(Clang|AppleClang)$" AND NOT MSVC)
-        if(P5_PGO_MODE STREQUAL "GENERATE")
-            set(_p5_pgo_flag "-fprofile-instr-generate")
-        else()
-            if(NOT P5_PGO_DATA)
-                message(FATAL_ERROR "Set P5_PGO_DATA to merged LLVM .profdata")
+            set(P5_CLANG_PROFILE_LIB_DIR "" CACHE PATH
+                "Optional matching clang-cl compiler-rt profile library directory")
+            if(P5_CLANG_PROFILE_LIB_DIR)
+                get_filename_component(_p5_profile_libdir "${P5_CLANG_PROFILE_LIB_DIR}" ABSOLUTE)
+            else()
+                execute_process(COMMAND "${CMAKE_C_COMPILER}" /clang:-print-resource-dir
+                    RESULT_VARIABLE _p5_c_status OUTPUT_VARIABLE _p5_c_resource
+                    OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_VARIABLE _p5_c_error)
+                execute_process(COMMAND "${CMAKE_CXX_COMPILER}" /clang:-print-resource-dir
+                    RESULT_VARIABLE _p5_cxx_status OUTPUT_VARIABLE _p5_cxx_resource
+                    OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_VARIABLE _p5_cxx_error)
+                if(NOT _p5_c_status STREQUAL "0" OR NOT _p5_cxx_status STREQUAL "0"
+                   OR NOT _p5_c_resource STREQUAL _p5_cxx_resource)
+                    message(FATAL_ERROR
+                        "Could not locate a shared clang-cl resource directory: "
+                        "${_p5_c_error} ${_p5_cxx_error}. Use matching compilers "
+                        "or set P5_CLANG_PROFILE_LIB_DIR.")
+                endif()
+                file(TO_CMAKE_PATH "${_p5_cxx_resource}/lib/windows" _p5_profile_libdir)
             endif()
-            get_filename_component(_p5_profile "${P5_PGO_DATA}" ABSOLUTE)
-            if(NOT EXISTS "${_p5_profile}")
-                message(FATAL_ERROR "Missing PGO data: ${_p5_profile}")
+            file(GLOB _p5_profile_libs "${_p5_profile_libdir}/clang_rt.profile*.lib")
+            if(NOT _p5_profile_libs)
+                message(FATAL_ERROR
+                    "No clang-cl compiler-rt profile library under ${_p5_profile_libdir}. "
+                    "Install matching compiler-rt or set P5_CLANG_PROFILE_LIB_DIR.")
             endif()
-            set(_p5_pgo_flag "-fprofile-instr-use=${_p5_profile}")
+            target_link_directories(${PROJECT_NAME} PRIVATE
+                "$<$<CONFIG:Release>:${_p5_profile_libdir}>")
         endif()
-        foreach(_p5_t IN ITEMS ${PROJECT_NAME} ps3recomp_runtime)
-            target_compile_options(${_p5_t} PRIVATE
-                "$<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:C,CXX>>:${_p5_pgo_flag}>")
-        endforeach()
-        # Only the training executable needs the profile runtime at link time.
+    else()
+        set(_p5_pgo_compile "${_p5_pgo_flag}")
         if(P5_PGO_MODE STREQUAL "GENERATE")
             target_link_options(${PROJECT_NAME} PRIVATE
                 "$<$<CONFIG:Release>:${_p5_pgo_flag}>")
         endif()
-    else()
-        message(FATAL_ERROR
-            "P5 PGO currently supports native MSVC and GNU-driver Clang; "
-            "clang-cl/GCC profile-runtime integration is not configured. "
-            "Use P5_ENABLE_IPO alone if supported.")
     endif()
+    foreach(_p5_t IN ITEMS ${PROJECT_NAME} ps3recomp_runtime)
+        target_compile_options(${_p5_t} PRIVATE
+            "$<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:C,CXX>>:${_p5_pgo_compile}>")
+    endforeach()
 endif()
 
 # ---------------------------------------------------------------------------
