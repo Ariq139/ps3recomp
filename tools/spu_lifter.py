@@ -49,9 +49,9 @@ import os
 import re
 import sys
 from dataclasses import dataclass, field
-from register_regions import promote_register_regions
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from register_regions import promote_register_regions
 
 try:
     from spu_disasm import SPUInstruction, disassemble_spu, spu_decode, CHANNEL_NAMES
