@@ -19,8 +19,7 @@
 sys_mutex_info g_sys_mutexes[SYS_MUTEX_MAX];
 
 #ifdef _WIN32
-static CRITICAL_SECTION s_mtx_table_lock;
-static int              s_mtx_table_lock_init = 0;
+static SRWLOCK s_mtx_table_lock = SRWLOCK_INIT;
 #else
 static pthread_mutex_t  s_mtx_table_lock = PTHREAD_MUTEX_INITIALIZER;
 #endif
@@ -28,11 +27,7 @@ static pthread_mutex_t  s_mtx_table_lock = PTHREAD_MUTEX_INITIALIZER;
 static void mtx_table_lock(void)
 {
 #ifdef _WIN32
-    if (!s_mtx_table_lock_init) {
-        InitializeCriticalSection(&s_mtx_table_lock);
-        s_mtx_table_lock_init = 1;
-    }
-    EnterCriticalSection(&s_mtx_table_lock);
+    AcquireSRWLockExclusive(&s_mtx_table_lock);
 #else
     pthread_mutex_lock(&s_mtx_table_lock);
 #endif
@@ -41,7 +36,7 @@ static void mtx_table_lock(void)
 static void mtx_table_unlock(void)
 {
 #ifdef _WIN32
-    LeaveCriticalSection(&s_mtx_table_lock);
+    ReleaseSRWLockExclusive(&s_mtx_table_lock);
 #else
     pthread_mutex_unlock(&s_mtx_table_lock);
 #endif
@@ -508,12 +503,6 @@ void sys_mutex_init(lv2_syscall_table* tbl)
 {
     memset(g_sys_mutexes, 0, sizeof(g_sys_mutexes));
 
-#ifdef _WIN32
-    if (!s_mtx_table_lock_init) {
-        InitializeCriticalSection(&s_mtx_table_lock);
-        s_mtx_table_lock_init = 1;
-    }
-#endif
 
     lv2_syscall_register(tbl, SYS_MUTEX_CREATE,  sys_mutex_create);
     lv2_syscall_register(tbl, SYS_MUTEX_DESTROY, sys_mutex_destroy);

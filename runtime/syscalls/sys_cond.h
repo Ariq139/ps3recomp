@@ -56,6 +56,10 @@ int64_t sys_cond_signal(ppu_context* ctx);
 int64_t sys_cond_signal_all(ppu_context* ctx);
 int64_t sys_cond_signal_to(ppu_context* ctx);
 
+#ifdef PS3RECOMP_COND_TEST
+void sys_cond_test_spurious(uint32_t id);
+#endif
+
 /* Registration */
 void sys_cond_init(lv2_syscall_table* tbl);
 

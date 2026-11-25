@@ -20,12 +20,13 @@ static DWORD WINAPI signaler(void* raw) {
     ppu_context c={0}; c.thread_id=2;
     Sleep(20);
     if (raw) {
+        sys_cond_test_spurious(cid);
         /* Signal a non-waiting thread: must not wake another guest waiter. */
         CHECK(call(sys_cond_signal_to,&c,cid,999,0)==(int32_t)CELL_EPERM);
     } else {
         int32_t rc=call(sys_mutex_lock,&c,mid,200000,0);
         if (rc==CELL_OK) {
-            call(sys_cond_signal,&c,cid,0,0);
+            CHECK(call(sys_cond_signal_to,&c,cid,1,0)==CELL_OK);
             call(sys_mutex_unlock,&c,mid,0,0);
         }
     }
