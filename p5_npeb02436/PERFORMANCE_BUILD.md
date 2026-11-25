@@ -43,6 +43,11 @@ objects; do not pass GNU driver-only flags directly to link.exe or lld-link.
 If the matching profile runtime is installed elsewhere, explicitly set
 -DP5_CLANG_PROFILE_LIB_DIR=C:/path/to/lib/windows. The runtime library must
 match the compiler version and target architecture.
+Configuration requires matching C and C++ Clang versions and performs a
+small compile/link probe using both languages and the selected profile library
+directory. It never runs the probe. A successful link checks architecture and
+link compatibility, not the exact provenance of an overridden compiler-rt
+library; the override still must come from the matching LLVM installation.
 
 Reference: https://clang.llvm.org/docs/UsersManual.html#finding-clang-runtime-libraries
 
