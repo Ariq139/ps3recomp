@@ -61,19 +61,39 @@ static int s_pool_workers, s_pool_stopping;
 #ifdef _WIN32
 static SRWLOCK s_jq_mutex = SRWLOCK_INIT;
 static CONDITION_VARIABLE s_jq_cond = CONDITION_VARIABLE_INIT;
+static CONDITION_VARIABLE s_jq_worker_cond = CONDITION_VARIABLE_INIT;
+static CONDITION_VARIABLE s_jq_producer_cond = CONDITION_VARIABLE_INIT;
 static HANDLE s_jq_threads[JQ_WORKER_MAX];
 static void jq_lock(void) { AcquireSRWLockExclusive(&s_jq_mutex); }
 static void jq_unlock(void) { ReleaseSRWLockExclusive(&s_jq_mutex); }
-static void jq_notify(void) { WakeAllConditionVariable(&s_jq_cond); }
+static void jq_notify_workers(void) { WakeAllConditionVariable(&s_jq_worker_cond); }
+static void jq_notify_producers(void) { WakeAllConditionVariable(&s_jq_producer_cond); }
+static void jq_notify(void) {
+    WakeAllConditionVariable(&s_jq_cond);
+    jq_notify_workers();
+    jq_notify_producers();
+}
 static void jq_await(void) { SleepConditionVariableSRW(&s_jq_cond, &s_jq_mutex, INFINITE, 0); }
+static void jq_await_worker(void) { SleepConditionVariableSRW(&s_jq_worker_cond, &s_jq_mutex, INFINITE, 0); }
+static void jq_await_producer(void) { SleepConditionVariableSRW(&s_jq_producer_cond, &s_jq_mutex, INFINITE, 0); }
 #else
 static pthread_mutex_t s_jq_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t s_jq_cond = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t s_jq_worker_cond = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t s_jq_producer_cond = PTHREAD_COND_INITIALIZER;
 static pthread_t s_jq_threads[JQ_WORKER_MAX];
 static void jq_lock(void) { pthread_mutex_lock(&s_jq_mutex); }
 static void jq_unlock(void) { pthread_mutex_unlock(&s_jq_mutex); }
-static void jq_notify(void) { pthread_cond_broadcast(&s_jq_cond); }
+static void jq_notify_workers(void) { pthread_cond_broadcast(&s_jq_worker_cond); }
+static void jq_notify_producers(void) { pthread_cond_broadcast(&s_jq_producer_cond); }
+static void jq_notify(void) {
+    pthread_cond_broadcast(&s_jq_cond);
+    jq_notify_workers();
+    jq_notify_producers();
+}
 static void jq_await(void) { pthread_cond_wait(&s_jq_cond, &s_jq_mutex); }
+static void jq_await_worker(void) { pthread_cond_wait(&s_jq_worker_cond, &s_jq_mutex); }
+static void jq_await_producer(void) { pthread_cond_wait(&s_jq_producer_cond, &s_jq_mutex); }
 #endif
 
 static void jq_trace_port2(const char* op, u32 port_ea, u32 queue_ea,
@@ -201,7 +221,7 @@ static void* jq_worker_main(void* arg)
     for (;;) {
         jq_lock();
         JqTask* t=NULL;
-        while (!(t=jq_take_runnable()) && !s_pool_stopping) jq_await();
+        while (!(t=jq_take_runnable()) && !s_pool_stopping) jq_await_worker();
         if (!t) { jq_unlock(); break; }
         jq_unlock();
         s32 result = jq_execute(t);
@@ -454,6 +474,7 @@ s32 cellSpursDestroyJobQueue(CellSpursJobQueue* jq)
         jq_unlock(); return (s32)CELL_SPURS_JQ_ERROR_INVALID_ARGUMENT;
     }
     q->accepting = 0;
+    jq_notify_producers();
     while (q->jobCount) jq_await();
     q->in_use = 0;
     for (int i = 0; i < CELL_SPURS_JQ_MAX_PORTS; ++i)
@@ -571,7 +592,7 @@ static s32 jq_push_slot_mode_flags(u32 slot, u32 job_ea, u32 jobSize,
                 ? (s32)CELL_SPURS_JQ_ERROR_QUEUE_FULL : (s32)CELL_SPURS_JQ_ERROR_BUSY;
             jq_unlock();jq_free_task(t);return result;
         }
-        jq_await();
+        jq_await_producer();
     }
     if (!q->in_use || !q->accepting ||
         atomic_load_explicit(&s_queue_shutdown_requested, memory_order_acquire)) {
@@ -605,7 +626,9 @@ static s32 jq_push_slot_mode_flags(u32 slot, u32 job_ea, u32 jobSize,
         if (s_task_tail) s_task_tail->next = t;
         else s_task_head = t;
         s_task_tail = t;
-        jq_notify();
+        /* Only workers gain runnable work on enqueue. Completion and
+         * capacity predicates cannot become true until a job finishes. */
+        jq_notify_workers();
         jq_unlock();
         return CELL_OK;
     }
@@ -619,7 +642,7 @@ static s32 jq_push_slot_mode_flags(u32 slot, u32 job_ea, u32 jobSize,
     s32 result = jq_execute(t);
     jq_lock();
     jq_finish_locked(t, result);
-    q->copy_sync_active = 0; jq_notify();
+    q->copy_sync_active = 0; jq_notify_producers();
     jq_unlock();
     jq_free_task(t);
     return result;
