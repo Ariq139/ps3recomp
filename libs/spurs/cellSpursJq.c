@@ -571,9 +571,9 @@ static JqTask* jq_prepare(u32 job_ea, u32 descriptor_size)
         binary_size > 0x40000u || ea64 > UINT32_MAX - binary_size)
         return NULL;
 
-    /* One allocation instead of a header allocation plus a binary allocation.
-     * Keep a private byte-for-byte snapshot for every in-flight job. No
-     * shared-image lifetime, guest-memory, or completion rules change. */
+    /* Disabled: one allocation containing the private snapshot. Enabled:
+     * each task holds a reference to an exact immutable binary snapshot.
+     * Guest-memory synchronization and completion rules stay unchanged. */
     const int share = jq_share_images();
     JqTask* t = (JqTask*)malloc(sizeof(*t) + (share ? 0u : (size_t)binary_size));
     if (!t) return NULL;
