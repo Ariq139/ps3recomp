@@ -19,9 +19,10 @@
 #include <string.h>
 #include <math.h>
 
-/* SSE2 is baseline on x86-64. Keep the portable implementation available
- * for other targets and for differential testing on the same host. */
-#if !defined(PPU_VMX_FORCE_SCALAR) && !defined(_M_ARM64EC) && \
+/* Retain the reference implementation by default until the native path
+ * has been validated for a target. SSE2 is baseline on x86-64. */
+#if defined(PPU_VMX_ENABLE_SSE2) && PPU_VMX_ENABLE_SSE2 && \
+    !defined(PPU_VMX_FORCE_SCALAR) && !defined(_M_ARM64EC) && \
     (defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2))
 # include <emmintrin.h>
 # define VMX_USE_SSE2 1
