@@ -19,6 +19,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stddef.h>
 
 void spu_mfc_release(spu_context* ctx);   /* spu_channels.c */
 
@@ -26,7 +27,26 @@ typedef void (*spu_lifted_entry_fn)(spu_context*);
 /* Guest RAM base, for decoding a raw SPU thread's argument block. */
 extern uint8_t* vm_base;
 
-
+/* A supplied full LS image overwrites all 256 KiB. For a private, unpublished
+ * context initialize everything outside ls_store and copy the complete image
+ * immediately. Keep ls == ls_store: several channel paths use that identity
+ * to distinguish raw-SPU guest mappings. No borrowed-storage lifetime or
+ * copy-back semantics change. The published worker path keeps full init. */
+static inline void spu_job_init_private_ls(spu_context* ctx, const uint8_t* local_store)
+{
+    if (!local_store) {
+        spu_context_init(ctx, 0);
+        return;
+    }
+    const size_t ls_offset = offsetof(spu_context, ls_store);
+    const size_t ls_end = ls_offset + sizeof(ctx->ls_store);
+    memset(ctx, 0, ls_offset);
+    memset((uint8_t*)ctx + ls_end, 0, sizeof(*ctx) - ls_end);
+    memcpy(ctx->ls_store, local_store, sizeof(ctx->ls_store));
+    ctx->ls = ctx->ls_store;
+    ctx->spu_id = 0;
+    ctx->status = SPU_STATUS_STOPPED;
+}
 
 /* Run an UN-LIFTED SPU image via the interpreter. Same context/LS/ABI bring-up
  * as spu_run_lifted_job (r1 = LS top, LS in/out, raw-thread arg EA in r3), but
@@ -45,7 +65,7 @@ static inline int32_t spu_run_interp_job(uint8_t* local_store, uint32_t entry_pc
 {
     extern uint8_t* vm_base;
     spu_context ctx;
-    spu_context_init(&ctx, 0);
+    spu_job_init_private_ls(&ctx, local_store);
     if (inmbox_val) spu_channel_write(&ctx.ch_in_mbox, inmbox_val);
     /* Identify the context as the real thread so a WrOutMbox/WrOutIntrMbox the
      * SPU issues reaches the RIGHT connected event queue: g_spu_out_mbox_hook ->
@@ -64,7 +84,6 @@ static inline int32_t spu_run_interp_job(uint8_t* local_store, uint32_t entry_pc
                           (void*)&ctx, image_id, entry_pc); fflush(stderr); } }
     ctx.image_id = image_id;
     ctx.gpr[1]._u32[0] = SPU_LS_SIZE - 0x10;       /* SPU stack top, 16B aligned */
-    if (local_store) memcpy(ctx.ls, local_store, SPU_LS_SIZE);
     /* Raw-SPU-thread ABI: sys_spu_thread_argument is 4 u64s (arg1..arg4) passed
      * in r3..r6. Each is a 64-bit effective address the SPU treats as the pair
      * {word0 = EA-low, word1 = EA-high}: DMA code writes MFC_EAL from word0 and
@@ -164,7 +183,11 @@ static inline int32_t spu_run_lifted_job_abi(spu_lifted_entry_fn entry,
 {
     if (!entry) return -1;
     spu_context ctx;
-    spu_context_init(&ctx, 0);
+    const int publish_worker = opts && opts->spu_id;
+    if (publish_worker)
+        spu_context_init(&ctx, 0);
+    else
+        spu_job_init_private_ls(&ctx, local_store);
     { static int s_cl = -1;
       if (s_cl < 0) s_cl = getenv("SPU_CTX_LOG") ? 1 : 0;
       if (s_cl) { fprintf(stderr, "[spu-ctx] new job context %p image=%d\n",
@@ -193,7 +216,8 @@ static inline int32_t spu_run_lifted_job_abi(spu_lifted_entry_fn entry,
      * this it is 0 from spu_context_init, so the first `r1 -= frame` wraps
      * negative -> garbage stack -> null function pointers -> branch to LS 0. */
     ctx.gpr[1]._u32[0] = SPU_LS_SIZE - 0x10;   /* 0x3FFF0 for a 256KB LS */
-    if (local_store) memcpy(ctx.ls, local_store, SPU_LS_SIZE);  /* job's LS in */
+    if (publish_worker && local_store)
+        memcpy(ctx.ls, local_store, SPU_LS_SIZE);  /* published worker: existing ordering */
     /* A SpursTasksetContext at LS 0x2700 (built by spurs_pm_build_context) writes
      * syscallAddr=0xA70 at STC_SYSCALL_ADDR (0x27C4). That sentinel means "this is
      * a generic SPURS taskset task" (LBP's audio SPEEX/MultiStream tasks) -- flOw
