@@ -1325,6 +1325,7 @@ s32 cellSpursCreateTask(CellSpursTaskset* taskset, CellSpursTaskId* taskId,
              * spurs_taskset_add_task() sets as the taskset's bitset bit and
              * what spu_taskset_signal_task() looks up, so the id the guest
              * signals with has to be the same number. */
+            const uint32_t previous_id = taskId ? vm_read32((u32)(uintptr_t)taskId) : 0;
             if (taskId) vm_write32((u32)(uintptr_t)taskId, i);
             (void)taskId_h;
 
@@ -1413,11 +1414,20 @@ s32 cellSpursCreateTask(CellSpursTaskset* taskset, CellSpursTaskId* taskId,
                  * as the guest EA (the SPU job's DMA uses guest EAs / r3). */
                 const uint8_t* host_elf = GUEST_PTR(elf, const uint8_t*);
                 size_t sz = spu_elf_image_size(host_elf, 2u * 1024 * 1024);
-                if (sz)
-                    /* Async: SPURS tasks are persistent workers — running them
-                     * inline would block this PPU thread forever (deadlock). */
-                    spu_workload_dispatch_task_async(host_elf, (uint32_t)sz,
-                                                (uint32_t)(uintptr_t)context, taskset_ea, i);
+                int launch = spu_workload_dispatch_task_async_ex(host_elf, (uint32_t)sz,
+                                        (uint32_t)(uintptr_t)context, taskset_ea, i);
+                if (launch==SPU_TASK_DISPATCH_HOST_ERROR) {
+                    // No host worker has started. Roll back before freeing the
+                    // enabled bit so another creation cannot take a live slot.
+                    s_tasks[i].in_use=0; s_tasks[i].active=0;
+                    if (taskId) vm_write32((u32)(uintptr_t)taskId,previous_id);
+                    spu_taskset_abort_creation(taskset_ea,i);
+                    return CELL_SPURS_TASK_ERROR_AGAIN;
+                }
+                // Unlifted images keep the established track-only contract,
+                // explicitly represented as unavailable, not running.
+            } else {
+                (void)spu_workload_dispatch_task_async_ex(NULL,0,context_ea,taskset_ea,i);
             }
             return CELL_OK;
         }

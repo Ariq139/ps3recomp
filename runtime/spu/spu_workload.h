@@ -214,6 +214,18 @@ int spu_workload_dispatch_task_async(const uint8_t* image, uint32_t image_size,
                                     uint32_t args_ea, uint32_t taskset_ea,
                                     uint32_t taskid);
 
+/* Rich result for callers owning a taskset reservation. A missing lifted
+ * image is deliberately distinct from host launch failure. The legacy bool
+ * wrapper remains ABI-compatible for callers without rollback ownership. */
+enum spu_task_dispatch_result {
+    SPU_TASK_DISPATCH_UNAVAILABLE = 0,
+    SPU_TASK_DISPATCH_STARTED = 1,
+    SPU_TASK_DISPATCH_HOST_ERROR = -1
+};
+int spu_workload_dispatch_task_async_ex(const uint8_t* image, uint32_t image_size,
+                                       uint32_t args_ea, uint32_t taskset_ea, uint32_t taskid);
+void spu_taskset_abort_creation(uint32_t taskset_ea, uint32_t taskid);
+
 /* Number of currently registered lifted SPU binaries (diagnostics/tests). */
 unsigned spu_workload_count(void);
 
