@@ -33,15 +33,14 @@ extern "C" {
 typedef struct sys_cond_info {
     int      active;
     uint32_t mutex_id;   /* associated mutex */
+    sys_mutex_info* mutex; /* live association pins the mutex slot */
     char     name[8];
     int      initialized;
     struct sys_cond_waiter* waiters;
 
 #ifdef _WIN32
-    CONDITION_VARIABLE cv;
     CRITICAL_SECTION signal_lock;
 #else
-    pthread_cond_t     cv;
     pthread_mutex_t    signal_lock;
 #endif
 
@@ -56,6 +55,10 @@ int64_t sys_cond_wait(ppu_context* ctx);
 int64_t sys_cond_signal(ppu_context* ctx);
 int64_t sys_cond_signal_all(ppu_context* ctx);
 int64_t sys_cond_signal_to(ppu_context* ctx);
+
+#ifdef PS3RECOMP_COND_TEST
+void sys_cond_test_spurious(uint32_t id);
+#endif
 
 /* Registration */
 void sys_cond_init(lv2_syscall_table* tbl);

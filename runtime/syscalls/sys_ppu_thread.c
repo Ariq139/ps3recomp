@@ -152,6 +152,14 @@ static int32_t creator_priority(uint64_t tid)
     return c->priority;
 }
 
+int ppu_thread_exists(uint64_t tid)
+{
+    table_lock();
+    const int exists = find_thread(tid) != NULL;
+    table_unlock();
+    return exists;
+}
+
 /* Condition notification chooses using current guest priorities, not the
  * host's scheduling policy or a stale priority captured on enqueue. */
 int32_t ppu_thread_priority_snapshot(uint64_t tid)
