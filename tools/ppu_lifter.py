@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 # We import the disassembler from the same directory.
 # ---------------------------------------------------------------------------
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from register_regions import promote_register_regions
+from register_regions import PPU_PURE_GPR, promote_register_regions
 
 try:
     from ppu_disasm import (Instruction, disassemble_bytes, detect_functions,
@@ -971,6 +971,7 @@ class LiftedFunction:
     body_lines: list[str] = field(default_factory=list)
     calls: list[int] = field(default_factory=list)  # addresses of bl targets
     fallthrough_to: int = 0  # if it falls off the end, the continuation address
+    pure_gpr_lines: set[str] = field(default_factory=set)
 
 
 # Max span (bytes) for a mid-function tail-entry / gap wrapper. A real interior
@@ -1155,6 +1156,7 @@ class PPULifter:
                         internal_targets.add(_c)
 
         emitted_labels: set[int] = set()
+        promote_gprs = os.environ.get("PS3RECOMP_PROMOTE_PPU_GPRS") == "1" and not self.insn_patches
         for insn in range_insns:
             # Label
             if insn.addr in internal_targets:
@@ -1167,7 +1169,10 @@ class PPULifter:
             else:
                 c_line = self._translate(insn, func)
             if c_line:
-                func.body_lines.append(f"    {c_line}")
+                emitted = f"    {c_line}"
+                func.body_lines.append(emitted)
+                if promote_gprs and patch is None and insn.mnemonic in PPU_PURE_GPR:
+                    func.pure_gpr_lines.add(emitted)
 
         # An in-range branch target with no decoded instruction at its address
         # (a branch into a data / undecoded region inside a too-large function
@@ -4212,7 +4217,7 @@ class PPULifter:
         lines.append("    PPU_MM_SNAP")
         body = _fuse_cr(func.body_lines)
         if os.environ.get("PS3RECOMP_PROMOTE_PPU_GPRS") == "1" and not self.insn_patches:
-            body = promote_register_regions(body, "ppu")
+            body = promote_register_regions(body, "ppu", func.pure_gpr_lines)
         for bline in body:
             lines.append(f"    {bline}" if not bline.endswith(":") else bline)
 
@@ -4984,7 +4989,7 @@ def _worker_lift(task):
         insns = disassemble_bytes(blob, start, _WORKER_STATE["be"]) if blob else []
         f = lifter.lift_function(insns, start, end)
         results.append((f.name, f.start_addr, f.end_addr, f.body_lines, f.calls,
-                        f.fallthrough_to))
+                        f.fallthrough_to, f.pure_gpr_lines))
     return idx0, results, lifter.call_targets, lifter.branch_targets
 
 
@@ -5028,10 +5033,10 @@ def _parallel_lift(lifter, func_bounds, segs, big_endian, jobs):
         raise
 
     for idx0 in sorted(results_by_idx):
-        for name, s, e, body, calls, ft in results_by_idx[idx0]:
+        for name, s, e, body, calls, ft, pure in results_by_idx[idx0]:
             lifter.functions.append(LiftedFunction(
                 name=name, start_addr=s, end_addr=e,
-                body_lines=body, calls=calls, fallthrough_to=ft))
+                body_lines=body, calls=calls, fallthrough_to=ft, pure_gpr_lines=pure))
 
 
 def main() -> None:
