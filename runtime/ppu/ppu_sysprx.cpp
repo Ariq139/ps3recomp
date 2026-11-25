@@ -680,6 +680,9 @@ static void lwc_create_event(ppu_context* ctx)
         lwc_result(ctx, CELL_ESRCH); return;
     }
     if (s_lwc.find(ea) != s_lwc.end()) { lwc_result(ctx, CELL_EBUSY); return; }
+    if (s_lwcond_id == UINT32_MAX) {
+        lwc_result(ctx, CELL_EKRESOURCE); return;
+    }
     const uint32_t id = ++s_lwcond_id;
     try {
         s_lwc.emplace(ea, LwcState{id, lwm, live->second});
