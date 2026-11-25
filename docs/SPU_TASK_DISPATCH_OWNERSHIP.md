@@ -1,17 +1,13 @@
-# Async SPU task submission ownership
-
-Distinguish STARTING, RUNNING, FAILED and UNAVAILABLE host states rather than
-treating every reservation as an executing worker. Completion returns the host
-entry to IDLE, and the guest taskset bitsets are retired. For the initial PPU
-create path a failed host launch returns AGAIN and clears the reserved task
-bitsets and output ID. For a scheduler scan, a failed launch restores the
-original pending bit and remains eligible on a later scan. A worker accepted
-by the host but unable to allocate/load LS retires with a nonzero Taskset2
-exit result. Unregistered images preserve the prior track-only compatibility
-policy and are explicitly unavailable.
-
-This is not a full SPURS scheduler: the taskset tracker capacity and legacy
-s_tasks per-slot bookkeeping are unchanged; an SPU-originated failed dispatch
-requires a future scheduler scan to retry. Raw lifted policy-module task
-creation remains outside the PPU transaction. No hardware equivalence or
-host resource exhaustion test is claimed until the draft is validated.
+# Async SPU task ownership
+The hash directory holds keyed taskset state and legacy join records without the
+previous eight-taskset limit. A PPU creation reserves host state and guest
+enabled together. Submission claims SUBMITTED exactly once. Initial host
+launch failure rolls back the caller's reservation. An already-accepted
+pending task is retired with ENOMEM on host launch failure without depending
+on another scan. Worker exits, including the CRI diagnostic policy path and
+LS initialization failure, retire the task. Persistent LS contents are cleared
+before task ID reuse. Legacy v1 join preserves the immediate-completion
+approximation with taskset/slot identity. Unlifted images retain track-only
+compatibility. Directory nodes are retained for process lifetime; complete
+taskset teardown/recreation and hardware-equivalent failure semantics remain
+outside this change. Fixtures model host launch failure; not executed.

@@ -225,6 +225,8 @@ enum spu_task_dispatch_result {
 int spu_workload_dispatch_task_async_ex(const uint8_t* image, uint32_t image_size,
                                        uint32_t args_ea, uint32_t taskset_ea, uint32_t taskid);
 void spu_taskset_abort_creation(uint32_t taskset_ea, uint32_t taskid);
+int spu_taskset_reserve_creation(uint32_t taskset_ea,uint32_t max_tasks,uint32_t* slot);
+int spu_taskset_legacy_join(uint32_t taskset_ea,uint32_t taskid,uint32_t* code);
 
 /* Number of currently registered lifted SPU binaries (diagnostics/tests). */
 unsigned spu_workload_count(void);

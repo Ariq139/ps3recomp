@@ -62,22 +62,10 @@ typedef struct {
     int         started;       /* its SPU program has been dispatched        */
 } SpursWorkload;
 
-typedef struct {
-    int         in_use;
-    u32         id;
-    int         active;
-    int         completed;
-    s32         exitCode;
-    void*       entryPoint;
-    u64         argA;
-} SpursTask;
-
 /* Global workload table (per-SPURS instance in a real system, simplified).
  * A CellSpurs2 instance has 32 workloads, a CellSpurs one 16. */
 #define SPURS_MAX_WID 32
 static SpursWorkload s_workloads[SPURS_MAX_WID];
-static SpursTask     s_tasks[CELL_SPURS_MAX_TASK];
-static u32           s_next_task_id = 0;
 
 /* ---------------------------------------------------------------------------
  * Event flag sync side table
@@ -1303,17 +1291,12 @@ s32 cellSpursCreateTask(CellSpursTaskset* taskset, CellSpursTaskId* taskId,
     /* The search and the enabled bit are one atomic step: a task exiting between
      * a plain read and the later bit set got its enabled bit back with no task
      * behind it, so cellSpursJoinTask2 on that id never returned. */
-    u32 free_slot = spurs_taskset_take_slot(taskset_ea, CELL_SPURS_MAX_TASK);
-    if (free_slot < CELL_SPURS_MAX_TASK) {
+    u32 free_slot=CELL_SPURS_MAX_TASK;
+    int reservation=spu_taskset_reserve_creation(taskset_ea,CELL_SPURS_MAX_TASK,&free_slot);
+    if(reservation<0)return CELL_SPURS_TASK_ERROR_NOMEM;
+    if (reservation>0) {
         u32 i = free_slot;
         {
-            s_tasks[i].in_use = 1;
-            s_tasks[i].id = s_next_task_id++;
-            s_tasks[i].active = 1;
-            s_tasks[i].completed = 0;
-            s_tasks[i].exitCode = 0;
-            s_tasks[i].entryPoint = elf;
-
             /* The guest reads this out-param BIG-ENDIAN, and a native store
              * put it in host order: task 1 came back to the game as 0x01000000,
              * which it then handed to _cellSpursSendSignal. No task by that id
@@ -1332,8 +1315,6 @@ s32 cellSpursCreateTask(CellSpursTaskset* taskset, CellSpursTaskId* taskId,
             /* Register the task in the REAL BE taskset: writes task_info[slot]
              * (args/elf/context/ls_pattern) + sets enabled+ready bits so the PM's
              * SELECT_TASK picks it. Slot index i = the SPURS taskId (bitset bit). */
-            { extern void spu_taskset_mark_running(uint32_t, uint32_t);
-              spu_taskset_mark_running(taskset_ea, i); }
             { extern void spu_taskset2_set_exit(uint32_t, uint32_t, int, uint32_t);
               spu_taskset2_set_exit(taskset_ea, i, 0, 0); }   /* fresh entry for a recycled id */
             spurs_taskset_add_task(taskset_ea, i, (uint64_t)elf_ea,
@@ -1344,7 +1325,7 @@ s32 cellSpursCreateTask(CellSpursTaskset* taskset, CellSpursTaskId* taskId,
 
             printf("[cellSpurs] CreateTask(id=%u, entry=%p, arg=%08X %08X %08X %08X"
                    " ctx=0x%08X lsp=%08X %08X %08X %08X)\n",
-                   s_tasks[i].id, elf, task_arg[0], task_arg[1], task_arg[2], task_arg[3],
+                   i, elf, task_arg[0], task_arg[1], task_arg[2], task_arg[3],
                    context_ea, task_lsp[0], task_lsp[1], task_lsp[2], task_lsp[3]);
 
             /* One-shot: dump the memory the task argument points at, to find the
@@ -1419,7 +1400,6 @@ s32 cellSpursCreateTask(CellSpursTaskset* taskset, CellSpursTaskId* taskId,
                 if (launch==SPU_TASK_DISPATCH_HOST_ERROR) {
                     // No host worker has started. Roll back before freeing the
                     // enabled bit so another creation cannot take a live slot.
-                    s_tasks[i].in_use=0; s_tasks[i].active=0;
                     if (taskId) vm_write32((u32)(uintptr_t)taskId,previous_id);
                     spu_taskset_abort_creation(taskset_ea,i);
                     return CELL_SPURS_TASK_ERROR_AGAIN;
@@ -1649,24 +1629,11 @@ s32 _cellSpursTasksetAttributeInitialize(CellSpursTasksetAttribute* attr,
 s32 cellSpursJoinTask(CellSpursTaskset* taskset, CellSpursTaskId taskId,
                       s32* exitCode)
 {
-    (void)taskset;
-    s32* exitCode_h = GUEST_PTR(exitCode, s32*);
-
-    printf("[cellSpurs] JoinTask(id=%u)\n", taskId);
-
-    /* Find the task and mark as completed */
-    for (u32 i = 0; i < CELL_SPURS_MAX_TASK; i++) {
-        if (s_tasks[i].in_use && s_tasks[i].id == taskId) {
-            s_tasks[i].completed = 1;
-            s_tasks[i].active = 0;
-            if (exitCode_h)
-                *exitCode_h = s_tasks[i].exitCode;
-            s_tasks[i].in_use = 0;
-            return CELL_OK;
-        }
-    }
-
-    return CELL_SPURS_TASK_ERROR_SRCH;
+    uint32_t code=0;
+    if(!spu_taskset_legacy_join((uint32_t)(uintptr_t)taskset,taskId,&code))
+        return CELL_SPURS_TASK_ERROR_SRCH;
+    if(exitCode)vm_write32((uint32_t)(uintptr_t)exitCode,code);
+    return CELL_OK;
 }
 
 s32 cellSpursSendSignal(CellSpursTaskset* taskset, CellSpursTaskId taskId)
