@@ -4556,7 +4556,7 @@ static int ppu_guest_call_impl(uint32_t opd_addr, uint32_t guest_sp,
 {
     if(!result)return 0;
     *result=0;
-    if(!opd_addr||(uint64_t)opd_addr+16>0x100000000ull||(ppu_vm_size&&(uint64_t)opd_addr+16>ppu_vm_size))return 0;
+    if(!opd_addr||(uint64_t)opd_addr+8>0x100000000ull||(ppu_vm_size&&(uint64_t)opd_addr+8>ppu_vm_size))return 0;
     uint32_t code = 0, toc = 0;
     ppu_opd_resolve(opd_addr, &code, &toc);
     ppu_fn fn = ppu_lookup(code);
@@ -4571,9 +4571,8 @@ static int ppu_guest_call_impl(uint32_t opd_addr, uint32_t guest_sp,
          * distinguish a CLOBBERED OPD from one the loader never populated,
          * and those need opposite fixes. */
         fprintf(stderr, "[ppu] guest_call: OPD 0x%08X -> code 0x%08X not registered"
-                        " (opd: %08X %08X %08X %08X)\n",
-                opd_addr, code, vm_read32(opd_addr), vm_read32(opd_addr + 4),
-                vm_read32(opd_addr + 8), vm_read32(opd_addr + 12));
+                        " (opd: %08X %08X)\n",
+                opd_addr, code, vm_read32(opd_addr), vm_read32(opd_addr + 4));
         return 0; }
 
     const uint64_t args[8] = {a0,a1,a2,a3,a4,a5,a6,a7};
