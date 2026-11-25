@@ -36,6 +36,23 @@ PPU_PURE_GPR = frozenset((
 SPU_PURE_GPR = frozenset(name[4:] for name in _SPU_PURE)
 
 
+class PureGprLine(str):
+    """One unchanged statement with provenance from the decoded instruction.
+
+    The string-compatible interface lets legacy peepholes inspect statements.
+    Rewriting/formatting a statement creates a plain str, conservatively
+    discarding eligibility; moving the original object preserves provenance.
+    Explicit pickle arguments preserve per-occurrence metadata in workers.
+    """
+    def __new__(cls, code, arch, guest_pc, mnemonic):
+        obj = super().__new__(cls, code)
+        obj.arch, obj.guest_pc, obj.mnemonic = arch, guest_pc, mnemonic
+        return obj
+
+    def __getnewargs__(self):
+        return str(self), self.arch, self.guest_pc, self.mnemonic
+
+
 def _candidate(line, arch):
     m = _ASSIGN.fullmatch(line)
     if not m:
@@ -69,12 +86,12 @@ def _candidate(line, arch):
     return dest, rhs
 
 
-def promote_register_regions(lines, arch, eligible_lines):
+def promote_register_regions(lines, arch):
     """Promote runs of 2–8 assignments; always commit every written GPR.
 
-    eligible_lines is produced only by lowering whitelisted decoded
-    instructions. Unknown or synthesized statements are materialization
-    barriers even if their textual shape resembles an eligible assignment.
+    Only original PureGprLine occurrences from whitelisted decoded
+    instructions are eligible. Rewritten or synthesized statements are
+    barriers even if their text equals an eligible statement elsewhere.
     Reads before a first write remain reads of ctx. Once a local is assigned,
     later reads of that register use the local. Braces keep goto targets
     outside the lifetime of declarations. Do not change input statements
@@ -103,7 +120,10 @@ def promote_register_regions(lines, arch, eligible_lines):
         run.clear()
 
     for line in lines:
-        candidate = _candidate(line, arch) if line in eligible_lines else None
+        whitelist = PPU_PURE_GPR if arch == "ppu" else SPU_PURE_GPR
+        eligible = (isinstance(line, PureGprLine) and line.arch == arch
+                    and line.mnemonic in whitelist)
+        candidate = _candidate(line, arch) if eligible else None
         if candidate is None:
             flush()
             out.append(line)
