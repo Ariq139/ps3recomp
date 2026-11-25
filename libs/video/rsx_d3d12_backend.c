@@ -2747,9 +2747,9 @@ static int vp_get_vs(const rsx_state* st)
     const u32 input_stride = input_count * 16u;
     hash ^= branch_base;
     hash *= 16777619u;
-    const u32 vs_bucket = (hash ^ (hash >> 16) ^ (vtex_mask * 31u) ^
-        (vtex_cube_mask * 131u) ^ (vtex_1d_mask * 257u) ^ input_mask) & 1023u;
     const int indexed = d3d12_index_cache_enabled();
+    const u32 vs_bucket = indexed ? (hash ^ (hash >> 16) ^ (vtex_mask * 31u) ^
+        (vtex_cube_mask * 131u) ^ (vtex_1d_mask * 257u) ^ input_mask) & 1023u : 0u;
     for (u32 link = indexed ? s_d3d.vp_vs_heads[vs_bucket] : 1u;
          link && link <= (u32)s_d3d.vp_vs_n;
          link = indexed ? s_d3d.vp_vs[link - 1u].hash_next : link + 1u) {
