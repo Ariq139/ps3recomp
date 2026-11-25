@@ -400,7 +400,7 @@ static inline int vm_stack_prepare_extent(uint32_t addr,uint32_t bytes,void (*ze
 {
     const uint32_t pg=vm_host_page_size();
     if(vm_commit(addr-pg,pg)!=CELL_OK||vm_protect(addr-pg,pg,0,0,0)!=CELL_OK||
-       vm_commit(addr,bytes)!=CELL_OK)return 0;
+       vm_commit(addr,bytes)!=CELL_OK||vm_protect(addr,bytes,1,1,0)!=CELL_OK)return 0;
     vm_note_write(addr,bytes);
     if(zero_guest)zero_guest(addr,bytes);else memset(vm_base+addr,0,bytes);
     return 1;
@@ -418,7 +418,8 @@ static inline void vm_stack_release(vm_stack_alloc* sa,uint32_t addr,uint32_t ca
     for(uint32_t i=0;i<sa->retired_count;){
         vm_stack_extent b=sa->retired[i];uint32_t b0=b.addr-pg,b1=b.addr+b.bytes;
         if(end==b0||b1==begin){
-            if(b0<begin)begin=b0;if(b1>end)end=b1;
+            if(b0<begin)begin=b0;
+            if(b1>end)end=b1;
             sa->retired[i]=sa->retired[--sa->retired_count];i=0;
         }else ++i;
     }

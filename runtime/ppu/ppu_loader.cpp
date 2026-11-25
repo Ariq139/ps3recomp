@@ -979,8 +979,9 @@ static volatile LONG g_resv_locks[PPU_RESV_LOCKS];
 extern "C" int g_resv_store_active = -1;   /* -1 uninit, 0 off, 1 on */
 extern "C" void ppu_resv_register(ppu_context* c)
 {
-    if (g_resv_store_active < 0) g_resv_store_active = getenv("PPU_RESV_STORE") ? 1 : 0;
     PpuResvRegistryWrite hold;
+    if (__atomic_load_n(&g_resv_store_active,__ATOMIC_RELAXED)<0)
+        __atomic_store_n(&g_resv_store_active,getenv("PPU_RESV_STORE")?1:0,__ATOMIC_RELEASE);
     const long n = __atomic_load_n(&g_resv_ctx_n, __ATOMIC_RELAXED);   /* only writers change it */
     for (long i = 0; i < n; i++)
         if (g_resv_ctxs[i] == c) return;
