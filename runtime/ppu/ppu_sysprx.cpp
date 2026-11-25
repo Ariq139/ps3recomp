@@ -540,14 +540,55 @@ static void sys_lwmutex_unlock(ppu_context* ctx)
  * adequate here: the CRT/SPURS paths that reach us use these for one-shot init
  * handshakes, not long-term blocking. sys_lwcond_t stores a 32-bit lwmutex
  * EA at +0x00 and the lwcond_queue id at +0x04. */
-/* Opt in until titles with incomplete signaling paths have been audited. */
-static bool lwc_events_enabled()
+static void sys_lwcond_create(ppu_context* ctx)
 {
-    static const bool enabled = [] {
+    static uint32_t s_lwcond_id = 0x4C000000u;
+    uint32_t lwcond  = (uint32_t)ctx->gpr[3];
+    uint32_t lwmutex = (uint32_t)ctx->gpr[4];
+    vm_write32(lwcond + 0x00, lwmutex);
+    vm_write32(lwcond + 0x04, ++s_lwcond_id);
+    ctx->gpr[3] = 0;
+}
+static void sys_lwcond_destroy(ppu_context* ctx)    { ctx->gpr[3] = 0; }
+static void sys_lwcond_signal(ppu_context* ctx)     { ctx->gpr[3] = 0; }
+static void sys_lwcond_signal_all(ppu_context* ctx) { ctx->gpr[3] = 0; }
+static void sys_lwcond_signal_to(ppu_context* ctx)  { ctx->gpr[3] = 0; }
+/* Now that the lwmutex is REAL, a no-op wait that keeps holding it deadlocks the
+ * signaler. Release the paired lwmutex, wait briefly, reacquire (poll-style: the
+ * guest's while(!predicate) loop re-checks; signalers stay no-ops). Handles the
+ * common single (non-recursive) hold. */
+static void sys_lwcond_wait(ppu_context* ctx)
+{
+    uint32_t lwcond  = (uint32_t)ctx->gpr[3];
+    uint32_t lwmutex = vm_read32(lwcond + 0x00);
+    struct LwmSlot* sl = lwm_slot(lwmutex);
+    if (sl) {
+        uint32_t own = vm_read32(lwmutex + LWM_OWNER);
+        uint32_t rc  = vm_read32(lwmutex + LWM_RECUR);
+        vm_write32(lwmutex + LWM_RECUR, 0);
+        vm_write32(lwmutex + LWM_OWNER, 0);
+        ppu_thread_note_block(ctx->thread_id);
+        lwm_release(sl);
+        Sleep(1);
+        lwm_acquire(sl, 0);
+        vm_write32(lwmutex + LWM_OWNER, own);
+        vm_write32(lwmutex + LWM_RECUR, rc ? rc : 1);
+    }
+    ctx->gpr[3] = 0;
+}
+
+/* Opt in until titles with incomplete signaling paths have been audited. */
+/* Select the handler set once during registration. "1" is a bounded
+ * compatibility wait (notification or the old ~1 ms predicate recheck).
+ * "strict" is an explicit experimental LV2-like timeout mode. */
+static int lwc_events_mode()
+{
+    static const int mode = [] {
         const char* v = getenv("PS3RECOMP_LWCOND_EVENTS");
-        return v && !strcmp(v, "1");
+        if (v && !strcmp(v, "strict")) return 2;
+        return v && !strcmp(v, "1") ? 1 : 0;
     }();
-    return enabled;
+    return mode;
 }
 struct LwcWaiter {
     LwcWaiter* next = nullptr;
@@ -577,32 +618,45 @@ static LwcState* lwc_find(uint32_t ea)
         vm_read32(ea) != it->second.mutex_ea) return nullptr;
     return &it->second;
 }
-static void sys_lwcond_create(ppu_context* ctx)
+/* Under the same registry lock used for create/destroy/wait, protect the
+ * paired guest mutex from HLE destroy/recreate until the condition is
+ * destroyed. This covers the context-HLE path, not raw LV2 or lifted PRX
+ * operations that bypass this registry. */
+static bool lwc_has_mutex_locked(uint32_t ea)
+{
+    for (const auto& p : s_lwc)
+        if (p.second.mutex_ea == ea) return true;
+    return false;
+}
+static void lwc_mutex_create_checked(ppu_context* ctx)
+{
+    std::lock_guard<std::mutex> hold(s_lwc_mutex);
+    if (lwc_has_mutex_locked((uint32_t)ctx->gpr[3])) {
+        lwc_result(ctx, CELL_EBUSY); return;
+    }
+    sys_lwmutex_create(ctx);
+}
+static void lwc_create_event(ppu_context* ctx)
 {
     const uint32_t ea = (uint32_t)ctx->gpr[3], lwm = (uint32_t)ctx->gpr[4];
     std::lock_guard<std::mutex> hold(s_lwc_mutex);
-    if (lwc_events_enabled()) {
-        uint32_t err = lwm_guest_address_error(ea, 8);
-        if (!err) err = lwm_guest_address_error(lwm, LWM_SIZE);
-        if (err) { lwc_result(ctx, err); return; }
-        if (s_lwc.find(ea) != s_lwc.end()) { lwc_result(ctx, CELL_EBUSY); return; }
-        const uint32_t id = ++s_lwcond_id;
-        try {
-            s_lwc.emplace(ea, LwcState{id, lwm});
-        } catch (const std::bad_alloc&) {
-            lwc_result(ctx, CELL_ENOMEM); return;
-        }
-        vm_write32(ea, lwm);
-        vm_write32(ea + 4, id);
-    } else {
-        vm_write32(ea, lwm);
-        vm_write32(ea + 4, ++s_lwcond_id);
+    uint32_t err = lwm_guest_address_error(ea, 8);
+    if (!err) err = lwm_guest_address_error(lwm, LWM_SIZE);
+    if (err) { lwc_result(ctx, err); return; }
+    if (!lwm_find(lwm)) { lwc_result(ctx, CELL_ESRCH); return; }
+    if (s_lwc.find(ea) != s_lwc.end()) { lwc_result(ctx, CELL_EBUSY); return; }
+    const uint32_t id = ++s_lwcond_id;
+    try {
+        s_lwc.emplace(ea, LwcState{id, lwm});
+    } catch (const std::bad_alloc&) {
+        lwc_result(ctx, CELL_ENOMEM); return;
     }
+    vm_write32(ea, lwm);
+    vm_write32(ea + 4, id);
     lwc_result(ctx, CELL_OK);
 }
-static void sys_lwcond_destroy(ppu_context* ctx)
+static void lwc_destroy_event(ppu_context* ctx)
 {
-    if (!lwc_events_enabled()) { lwc_result(ctx, CELL_OK); return; }
     const uint32_t ea = (uint32_t)ctx->gpr[3];
     const uint32_t err = lwm_guest_address_error(ea, 8);
     if (err) { lwc_result(ctx, err); return; }
@@ -616,7 +670,6 @@ static void sys_lwcond_destroy(ppu_context* ctx)
 }
 static void lwc_signal(ppu_context* ctx, bool all, bool targeted)
 {
-    if (!lwc_events_enabled()) { lwc_result(ctx, CELL_OK); return; }
     const uint32_t ea = (uint32_t)ctx->gpr[3];
     const uint32_t err = lwm_guest_address_error(ea, 8);
     if (err) { lwc_result(ctx, err); return; }
@@ -633,16 +686,19 @@ static void lwc_signal(ppu_context* ctx, bool all, bool targeted)
     }
     lwc_result(ctx, targeted && !found ? CELL_ESRCH : CELL_OK);
 }
-static void sys_lwcond_signal(ppu_context* ctx)     { lwc_signal(ctx, false, false); }
-static void sys_lwcond_signal_all(ppu_context* ctx) { lwc_signal(ctx, true, false); }
-static void sys_lwcond_signal_to(ppu_context* ctx)  { lwc_signal(ctx, false, true); }
+static void lwc_signal_event(ppu_context* ctx)     { lwc_signal(ctx, false, false); }
+static void lwc_signal_all_event(ppu_context* ctx) { lwc_signal(ctx, true, false); }
+static void lwc_signal_to_event(ppu_context* ctx)  { lwc_signal(ctx, false, true); }
 
 static void lwc_wait_event(ppu_context* ctx)
 {
     const uint32_t ea = (uint32_t)ctx->gpr[3];
     const uint32_t err = lwm_guest_address_error(ea, 8);
     if (err) { lwc_result(ctx, err); return; }
-    const uint64_t timeout = ctx->gpr[4];
+    const uint64_t requested = ctx->gpr[4];
+    const bool compatibility = lwc_events_mode() == 1;
+    const bool compat_recheck = compatibility && (!requested || requested > 1000);
+    const uint64_t timeout = compat_recheck ? 1000 : requested;
     std::unique_lock<std::mutex> hold(s_lwc_mutex);
     LwcState* c = lwc_find(ea);
     if (!c) { lwc_result(ctx, CELL_ESRCH); return; }
@@ -688,32 +744,7 @@ static void lwc_wait_event(ppu_context* ctx)
     vm_write32(lwm + LWM_RECUR, rc);
     hold.lock();
     --c->active;
-    lwc_result(ctx, notified ? CELL_OK : CELL_ETIMEDOUT);
-}
-
-/* Now that the lwmutex is REAL, a no-op wait that keeps holding it deadlocks the
- * signaler. Release the paired lwmutex, wait briefly, reacquire (poll-style: the
- * guest's while(!predicate) loop re-checks; signalers stay no-ops). Handles the
- * common single (non-recursive) hold. */
-static void sys_lwcond_wait(ppu_context* ctx)
-{
-    if (lwc_events_enabled()) { lwc_wait_event(ctx); return; }
-    uint32_t lwcond  = (uint32_t)ctx->gpr[3];
-    uint32_t lwmutex = vm_read32(lwcond + 0x00);
-    struct LwmSlot* sl = lwm_slot(lwmutex);
-    if (sl) {
-        uint32_t own = vm_read32(lwmutex + LWM_OWNER);
-        uint32_t rc  = vm_read32(lwmutex + LWM_RECUR);
-        vm_write32(lwmutex + LWM_RECUR, 0);
-        vm_write32(lwmutex + LWM_OWNER, 0);
-        ppu_thread_note_block(ctx->thread_id);
-        lwm_release(sl);
-        Sleep(1);
-        lwm_acquire(sl, 0);
-        vm_write32(lwmutex + LWM_OWNER, own);
-        vm_write32(lwmutex + LWM_RECUR, rc ? rc : 1);
-    }
-    ctx->gpr[3] = 0;
+    lwc_result(ctx, (notified || compat_recheck) ? CELL_OK : CELL_ETIMEDOUT);
 }
 
 /* sys_ppu_thread_get_id(vm::ptr<u64> id) -> *id = calling thread's real id.
@@ -893,6 +924,15 @@ static void sys_lwmutex_destroy_counted(ppu_context* ctx)
         fprintf(stderr, "[LWM] destroy #%lld lwm=0x%08X r4=0x%08X r5=0x%08X\n", _n,
                 (uint32_t)ctx->gpr[3], (uint32_t)ctx->gpr[4], (uint32_t)ctx->gpr[5]); }
     ctx->gpr[3] = 0;
+}
+
+static void lwc_mutex_destroy_checked(ppu_context* ctx)
+{
+    std::lock_guard<std::mutex> hold(s_lwc_mutex);
+    if (lwc_has_mutex_locked((uint32_t)ctx->gpr[3])) {
+        lwc_result(ctx, CELL_EBUSY); return;
+    }
+    sys_lwmutex_destroy_counted(ctx);
 }
 
 /* Real preemptive thread create/exit live in the lv2 syscall layer
@@ -1384,8 +1424,8 @@ extern "C" void ppu_sysprx_register(void)
     ps3_hle_register_ctx(ps3_compute_nid("_sys_process_at_Exitspawn"),"_sys_process_at_Exitspawn",crt_ok);
 
     /* Lightweight mutex family (guards global/singleton init in the CRT). */
-    ps3_hle_register_ctx(ps3_compute_nid("sys_lwmutex_create"),  "sys_lwmutex_create",  sys_lwmutex_create);
-    ps3_hle_register_ctx(ps3_compute_nid("sys_lwmutex_destroy"), "sys_lwmutex_destroy", sys_lwmutex_destroy_counted);
+    ps3_hle_register_ctx(ps3_compute_nid("sys_lwmutex_create"),  "sys_lwmutex_create",  lwc_events_mode() ? lwc_mutex_create_checked : sys_lwmutex_create);
+    ps3_hle_register_ctx(ps3_compute_nid("sys_lwmutex_destroy"), "sys_lwmutex_destroy", lwc_events_mode() ? lwc_mutex_destroy_checked : sys_lwmutex_destroy_counted);
     ps3_hle_register_ctx(ps3_compute_nid("sys_lwmutex_lock"),    "sys_lwmutex_lock",    sys_lwmutex_lock);
     ps3_hle_register_ctx(ps3_compute_nid("sys_lwmutex_unlock"),  "sys_lwmutex_unlock",  sys_lwmutex_unlock);
     ps3_hle_register_ctx(ps3_compute_nid("sys_lwmutex_trylock"), "sys_lwmutex_trylock", sys_lwmutex_trylock);
@@ -1398,12 +1438,12 @@ extern "C" void ppu_sysprx_register(void)
     ps3_hle_register_ctx(ps3_compute_nid("sys_spinlock_trylock"),    "sys_spinlock_trylock",    sys_spinlock_trylock);
     ps3_hle_register_ctx(ps3_compute_nid("sys_spinlock_unlock"),     "sys_spinlock_unlock",     sys_spinlock_unlock);
 
-    ps3_hle_register_ctx(ps3_compute_nid("sys_lwcond_create"),     "sys_lwcond_create",     sys_lwcond_create);
-    ps3_hle_register_ctx(ps3_compute_nid("sys_lwcond_destroy"),    "sys_lwcond_destroy",    sys_lwcond_destroy);
-    ps3_hle_register_ctx(ps3_compute_nid("sys_lwcond_signal"),     "sys_lwcond_signal",     sys_lwcond_signal);
-    ps3_hle_register_ctx(ps3_compute_nid("sys_lwcond_signal_all"), "sys_lwcond_signal_all", sys_lwcond_signal_all);
-    ps3_hle_register_ctx(ps3_compute_nid("sys_lwcond_signal_to"),  "sys_lwcond_signal_to",  sys_lwcond_signal_to);
-    ps3_hle_register_ctx(ps3_compute_nid("sys_lwcond_wait"),       "sys_lwcond_wait",       sys_lwcond_wait);
+    ps3_hle_register_ctx(ps3_compute_nid("sys_lwcond_create"),     "sys_lwcond_create",     lwc_events_mode() ? lwc_create_event : sys_lwcond_create);
+    ps3_hle_register_ctx(ps3_compute_nid("sys_lwcond_destroy"),    "sys_lwcond_destroy",    lwc_events_mode() ? lwc_destroy_event : sys_lwcond_destroy);
+    ps3_hle_register_ctx(ps3_compute_nid("sys_lwcond_signal"),     "sys_lwcond_signal",     lwc_events_mode() ? lwc_signal_event : sys_lwcond_signal);
+    ps3_hle_register_ctx(ps3_compute_nid("sys_lwcond_signal_all"), "sys_lwcond_signal_all", lwc_events_mode() ? lwc_signal_all_event : sys_lwcond_signal_all);
+    ps3_hle_register_ctx(ps3_compute_nid("sys_lwcond_signal_to"),  "sys_lwcond_signal_to",  lwc_events_mode() ? lwc_signal_to_event : sys_lwcond_signal_to);
+    ps3_hle_register_ctx(ps3_compute_nid("sys_lwcond_wait"),       "sys_lwcond_wait",       lwc_events_mode() ? lwc_wait_event : sys_lwcond_wait);
 
     /* Thread id + memory manager (high-frequency boot imports). The flat VM
      * means map/unmap/free are no-ops: the memory already exists everywhere. */
