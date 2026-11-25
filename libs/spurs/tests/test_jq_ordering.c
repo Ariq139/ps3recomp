@@ -194,6 +194,7 @@ int main(int argc,char** argv) {
  test_tag_frontiers();
 
  assert(_putenv_s("SPURS_JQ_WORKERS","4")==0);
+ assert(_putenv_s("SPURS_JQ_REJECT_PROFILE","1")==0);
  blocking_returned=CreateEvent(NULL,TRUE,FALSE,NULL);
  entered_a=CreateEvent(NULL,TRUE,FALSE,NULL);release_a=CreateEvent(NULL,TRUE,FALSE,NULL);
  entered_b=CreateEvent(NULL,TRUE,FALSE,NULL);release_b=CreateEvent(NULL,TRUE,FALSE,NULL);
@@ -206,6 +207,10 @@ int main(int argc,char** argv) {
  submit(0x2200,0x1700,0);assert(WaitForSingleObject(entered_other,1000)==WAIT_OBJECT_0);
  assert(WaitForSingleObject(entered_b,30)==WAIT_TIMEOUT && WaitForSingleObject(entered_c,30)==WAIT_TIMEOUT);
  assert((s32)_cellSpursJobQueuePort2PushJobBody(0x1200,0x1700,128,0,JQ_FLAG_NON_BLOCKING,0,0,0)==(s32)CELL_SPURS_JQ_ERROR_QUEUE_FULL);
+ jq_lock();
+ assert(s_jq_reject_profile.full==1 && s_jq_reject_profile.busy==0 && s_jq_reject_profile.aborted==0);
+ assert(s_jq_reject_profile.binary_bytes==16 && s_jq_reject_profile.descriptor_bytes==256);
+ jq_unlock();
  HANDLE blocked=CreateThread(NULL,0,blocking_submit,NULL,0,NULL);assert(blocked);
  assert(WaitForSingleObject(blocking_returned,30)==WAIT_TIMEOUT);
  SetEvent(release_a);assert(WaitForSingleObject(entered_b,1000)==WAIT_OBJECT_0);
