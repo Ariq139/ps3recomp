@@ -19,6 +19,7 @@ import sys
 import time
 from collections import Counter
 from dataclasses import dataclass, field
+from register_regions import promote_register_regions
 
 # ---------------------------------------------------------------------------
 # We import the disassembler from the same directory.
@@ -4209,7 +4210,10 @@ class PPULifter:
                       f"extern int {g};", "#endif"]
         lines.append(f"void {weak}{func.name}(ppu_context* ctx) {{")
         lines.append("    PPU_MM_SNAP")
-        for bline in _fuse_cr(func.body_lines):
+        body = _fuse_cr(func.body_lines)
+        if os.environ.get("PS3RECOMP_PROMOTE_PPU_GPRS") == "1" and not self.insn_patches:
+            body = promote_register_regions(body, "ppu")
+        for bline in body:
             lines.append(f"    {bline}" if not bline.endswith(":") else bline)
 
         # If a function doesn't end with blr/b/bctr (a return or unconditional
