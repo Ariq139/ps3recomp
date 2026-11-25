@@ -2395,6 +2395,14 @@ typedef void (*ppu_fn)(ppu_context*);
 #define PPU_HASH_SIZE (1u << PPU_HASH_BITS)
 #define PPU_HASH_MASK (PPU_HASH_SIZE - 1)
 
+/* Use the high bits of the 32-bit multiplicative hash. Taking the low
+ * bits instead preserves the zero alignment bits of guest code addresses
+ * and aliases every address separated by PPU_HASH_SIZE bytes. */
+static inline uint32_t ppu_hash_home(uint32_t addr)
+{
+    return (uint32_t)(addr * 2654435761u) >> (32 - PPU_HASH_BITS);
+}
+
 static uint32_t g_addr[PPU_HASH_SIZE];
 static ppu_fn   g_fn[PPU_HASH_SIZE];
 static uint32_t g_fn_count = 0;
@@ -2403,7 +2411,7 @@ static uint32_t g_fn_gen = 0;   /* bumped by every registration; see ppu_lookup_
 extern "C" void ppu_register_function(uint64_t addr, ppu_fn fn)
 {
     uint32_t a = (uint32_t)addr;
-    uint32_t i = (a * 2654435761u) & PPU_HASH_MASK;
+    uint32_t i = ppu_hash_home(a);
     /* Bounded probe: never loop past the whole table. A full table (function
      * count >= PPU_HASH_SIZE) would otherwise spin forever here at startup. */
     for (uint32_t probes = 0; probes < PPU_HASH_SIZE; probes++) {
@@ -2485,7 +2493,7 @@ static ppu_fn ppu_lookup_icall(uint32_t a)
 
 static ppu_fn ppu_lookup(uint32_t a)
 {
-    uint32_t i = (a * 2654435761u) & PPU_HASH_MASK;
+    uint32_t i = ppu_hash_home(a);
     for (uint32_t probes = 0; probes < PPU_HASH_SIZE; probes++) {
         if (g_fn[i] == nullptr) return nullptr;
         if (g_addr[i] == a) return g_fn[i];
