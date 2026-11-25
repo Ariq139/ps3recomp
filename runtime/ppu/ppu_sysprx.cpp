@@ -17,6 +17,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <mutex>
+#include <condition_variable>
+#include <chrono>
+#include <unordered_map>
+#include <new>
 /* win32_compat.h is <windows.h> on Windows (CRITICAL_SECTION for the real
  * lwmutex exclusion) and the POSIX shims elsewhere -- Sleep, DWORD, QPC. */
 #include "../platform/win32_compat.h"
@@ -535,25 +540,164 @@ static void sys_lwmutex_unlock(ppu_context* ctx)
  * adequate here: the CRT/SPURS paths that reach us use these for one-shot init
  * handshakes, not long-term blocking. sys_lwcond_t stores a 32-bit lwmutex
  * EA at +0x00 and the lwcond_queue id at +0x04. */
+/* Opt in until titles with incomplete signaling paths have been audited. */
+static bool lwc_events_enabled()
+{
+    static const bool enabled = [] {
+        const char* v = getenv("PS3RECOMP_LWCOND_EVENTS");
+        return v && !strcmp(v, "1");
+    }();
+    return enabled;
+}
+struct LwcWaiter {
+    LwcWaiter* next = nullptr;
+    uint64_t tid = 0;
+    bool notified = false;
+    std::condition_variable cv;
+};
+struct LwcState {
+    uint32_t id, mutex_ea;
+    LwcWaiter* head = nullptr;
+    LwcWaiter* tail = nullptr;
+    unsigned active = 0; // includes waiters reacquiring the guest mutex
+};
+static std::mutex s_lwc_mutex;
+static std::unordered_map<uint32_t, LwcState> s_lwc;
+static uint32_t s_lwcond_id = 0x4C000000u;
+
+static void lwc_result(ppu_context* ctx, uint32_t rc)
+{
+    ctx->gpr[3] = (uint64_t)(int64_t)(int32_t)rc;
+}
+/* Caller holds s_lwc_mutex. Validate the guest generation and paired mutex. */
+static LwcState* lwc_find(uint32_t ea)
+{
+    auto it = s_lwc.find(ea);
+    if (it == s_lwc.end() || vm_read32(ea + 4) != it->second.id ||
+        vm_read32(ea) != it->second.mutex_ea) return nullptr;
+    return &it->second;
+}
 static void sys_lwcond_create(ppu_context* ctx)
 {
-    static uint32_t s_lwcond_id = 0x4C000000u;
-    uint32_t lwcond  = (uint32_t)ctx->gpr[3];
-    uint32_t lwmutex = (uint32_t)ctx->gpr[4];
-    vm_write32(lwcond + 0x00, lwmutex);
-    vm_write32(lwcond + 0x04, ++s_lwcond_id);
-    ctx->gpr[3] = 0;
+    const uint32_t ea = (uint32_t)ctx->gpr[3], lwm = (uint32_t)ctx->gpr[4];
+    std::lock_guard<std::mutex> hold(s_lwc_mutex);
+    if (lwc_events_enabled()) {
+        uint32_t err = lwm_guest_address_error(ea, 8);
+        if (!err) err = lwm_guest_address_error(lwm, LWM_SIZE);
+        if (err) { lwc_result(ctx, err); return; }
+        if (s_lwc.find(ea) != s_lwc.end()) { lwc_result(ctx, CELL_EBUSY); return; }
+        const uint32_t id = ++s_lwcond_id;
+        try {
+            s_lwc.emplace(ea, LwcState{id, lwm});
+        } catch (const std::bad_alloc&) {
+            lwc_result(ctx, CELL_ENOMEM); return;
+        }
+        vm_write32(ea, lwm);
+        vm_write32(ea + 4, id);
+    } else {
+        vm_write32(ea, lwm);
+        vm_write32(ea + 4, ++s_lwcond_id);
+    }
+    lwc_result(ctx, CELL_OK);
 }
-static void sys_lwcond_destroy(ppu_context* ctx)    { ctx->gpr[3] = 0; }
-static void sys_lwcond_signal(ppu_context* ctx)     { ctx->gpr[3] = 0; }
-static void sys_lwcond_signal_all(ppu_context* ctx) { ctx->gpr[3] = 0; }
-static void sys_lwcond_signal_to(ppu_context* ctx)  { ctx->gpr[3] = 0; }
+static void sys_lwcond_destroy(ppu_context* ctx)
+{
+    if (!lwc_events_enabled()) { lwc_result(ctx, CELL_OK); return; }
+    const uint32_t ea = (uint32_t)ctx->gpr[3];
+    const uint32_t err = lwm_guest_address_error(ea, 8);
+    if (err) { lwc_result(ctx, err); return; }
+    std::lock_guard<std::mutex> hold(s_lwc_mutex);
+    LwcState* c = lwc_find(ea);
+    if (!c) { lwc_result(ctx, CELL_ESRCH); return; }
+    if (c->active) { lwc_result(ctx, CELL_EBUSY); return; }
+    s_lwc.erase(ea);
+    vm_write32(ea + 4, 0);
+    lwc_result(ctx, CELL_OK);
+}
+static void lwc_signal(ppu_context* ctx, bool all, bool targeted)
+{
+    if (!lwc_events_enabled()) { lwc_result(ctx, CELL_OK); return; }
+    const uint32_t ea = (uint32_t)ctx->gpr[3];
+    const uint32_t err = lwm_guest_address_error(ea, 8);
+    if (err) { lwc_result(ctx, err); return; }
+    std::lock_guard<std::mutex> hold(s_lwc_mutex);
+    LwcState* c = lwc_find(ea);
+    if (!c) { lwc_result(ctx, CELL_ESRCH); return; }
+    bool found = false;
+    for (LwcWaiter* w = c->head; w; w = w->next) {
+        if (w->notified || (targeted && w->tid != ctx->gpr[4])) continue;
+        w->notified = true;
+        w->cv.notify_one();
+        found = true;
+        if (!all) break;
+    }
+    lwc_result(ctx, targeted && !found ? CELL_ESRCH : CELL_OK);
+}
+static void sys_lwcond_signal(ppu_context* ctx)     { lwc_signal(ctx, false, false); }
+static void sys_lwcond_signal_all(ppu_context* ctx) { lwc_signal(ctx, true, false); }
+static void sys_lwcond_signal_to(ppu_context* ctx)  { lwc_signal(ctx, false, true); }
+
+static void lwc_wait_event(ppu_context* ctx)
+{
+    const uint32_t ea = (uint32_t)ctx->gpr[3];
+    const uint32_t err = lwm_guest_address_error(ea, 8);
+    if (err) { lwc_result(ctx, err); return; }
+    const uint64_t timeout = ctx->gpr[4];
+    std::unique_lock<std::mutex> hold(s_lwc_mutex);
+    LwcState* c = lwc_find(ea);
+    if (!c) { lwc_result(ctx, CELL_ESRCH); return; }
+    const uint32_t lwm = c->mutex_ea;
+    const uint32_t own = vm_read32(lwm + LWM_OWNER);
+    const uint32_t rc = vm_read32(lwm + LWM_RECUR);
+    if (own != LWM_SELF(ctx) || !rc) { lwc_result(ctx, CELL_EPERM); return; }
+    LwmSlot* sl = lwm_find(lwm);
+    if (!sl) { lwc_result(ctx, CELL_ESRCH); return; }
+    LwcWaiter w;
+    w.tid = ctx->thread_id;
+    if (c->tail) c->tail->next = &w; else c->head = &w;
+    c->tail = &w;
+    ++c->active;
+    /* Register before releasing the paired guest mutex, under the same
+     * lock as signal. Notifications are not retained for future waiters. */
+    vm_write32(lwm + LWM_RECUR, 0);
+    vm_write32(lwm + LWM_OWNER, 0);
+    ppu_thread_note_block(ctx->thread_id);
+    lwm_release(sl);
+    const auto start = std::chrono::steady_clock::now();
+    while (!w.notified) {
+        if (!timeout) { w.cv.wait(hold); continue; }
+        const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - start).count();
+        if ((uint64_t)elapsed >= timeout) break;
+        const uint64_t left = timeout - (uint64_t)elapsed;
+        w.cv.wait_for(hold, std::chrono::microseconds(left < 60000000u ? left : 60000000u));
+    }
+    LwcWaiter* prev = nullptr;
+    for (LwcWaiter* p = c->head; p; prev = p, p = p->next) {
+        if (p != &w) continue;
+        if (prev) prev->next = w.next; else c->head = w.next;
+        if (c->tail == &w) c->tail = prev;
+        break;
+    }
+    const bool notified = w.notified;
+    // active prevents destroy while reacquiring. unordered_map references
+    // survive rehash; no registry lock is held during mutex reacquisition.
+    hold.unlock();
+    lwm_acquire(sl, 0);
+    vm_write32(lwm + LWM_OWNER, own);
+    vm_write32(lwm + LWM_RECUR, rc);
+    hold.lock();
+    --c->active;
+    lwc_result(ctx, notified ? CELL_OK : CELL_ETIMEDOUT);
+}
+
 /* Now that the lwmutex is REAL, a no-op wait that keeps holding it deadlocks the
  * signaler. Release the paired lwmutex, wait briefly, reacquire (poll-style: the
  * guest's while(!predicate) loop re-checks; signalers stay no-ops). Handles the
  * common single (non-recursive) hold. */
 static void sys_lwcond_wait(ppu_context* ctx)
 {
+    if (lwc_events_enabled()) { lwc_wait_event(ctx); return; }
     uint32_t lwcond  = (uint32_t)ctx->gpr[3];
     uint32_t lwmutex = vm_read32(lwcond + 0x00);
     struct LwmSlot* sl = lwm_slot(lwmutex);
