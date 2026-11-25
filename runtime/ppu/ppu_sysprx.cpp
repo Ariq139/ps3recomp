@@ -22,6 +22,10 @@
 #include <chrono>
 #include <unordered_map>
 #include <new>
+#include "ppu_tls.h"
+#include "ps3emu/lwsync_bridge.h"
+extern "C" PPU_THREAD_LOCAL ppu_context* g_active_ctx;
+extern "C" int32_t ppu_thread_priority_snapshot(uint64_t tid);
 /* win32_compat.h is <windows.h> on Windows (CRITICAL_SECTION for the real
  * lwmutex exclusion) and the POSIX shims elsewhere -- Sleep, DWORD, QPC. */
 #include "../platform/win32_compat.h"
@@ -577,10 +581,12 @@ static void sys_lwcond_wait(ppu_context* ctx)
     ctx->gpr[3] = 0;
 }
 
-/* Select the experimental context-HLE handler set once during registration.
- * Only bounded notification/recheck mode is offered: raw LV2 and lifted PRX
- * signal coverage is incomplete, so never add an indefinite condition wait.
- * A legacy "strict" setting falls back to the original handlers. */
+/* Select once during registration. "1" retains the bounded compatibility
+ * mode. "hle-strict" is an explicit HLE-only experiment: use real condition
+ * timeouts and never report a notification that did not occur. Raw LV2
+ * lightweight queue syscalls are a different ABI and are NOT covered here.
+ * Do not select hle-strict for a title that bypasses these HLE entry points.
+ * The old "strict" setting continues to select legacy behavior. */
 static int lwc_events_mode()
 {
     static const int mode = [] {
@@ -589,6 +595,7 @@ static int lwc_events_mode()
             fprintf(stderr, "[LWC] strict mode withdrawn: using legacy handlers\n");
             return 0;
         }
+        if (v && !strcmp(v, "hle-strict")) return 2;
         return v && !strcmp(v, "1") ? 1 : 0;
     }();
     return mode;
@@ -610,7 +617,8 @@ static std::mutex s_lwc_mutex;
 static std::unordered_map<uint32_t, LwcState> s_lwc;
 /* Logical lifetime is independent of the permanent slot table. Only the
  * experimental context-HLE create/destroy wrappers publish these records. */
-static std::unordered_map<uint32_t, uint64_t> s_lwc_live_mutexes;
+struct LwcMutexLifetime { uint64_t generation; unsigned active = 0; };
+static std::unordered_map<uint32_t, LwcMutexLifetime> s_lwc_live_mutexes;
 static uint64_t s_lwc_mutex_generation;
 static uint32_t s_lwcond_id = 0x4C000000u;
 
@@ -626,7 +634,7 @@ static LwcState* lwc_find(uint32_t ea)
         vm_read32(ea) != it->second.mutex_ea) return nullptr;
     auto live = s_lwc_live_mutexes.find(it->second.mutex_ea);
     if (live == s_lwc_live_mutexes.end() ||
-        live->second != it->second.mutex_generation ||
+        live->second.generation != it->second.mutex_generation ||
         lwm_guest_address_error(it->second.mutex_ea, LWM_SIZE))
         return nullptr;
     return &it->second;
@@ -660,7 +668,7 @@ static void lwc_mutex_create_checked(ppu_context* ctx)
         lwc_result(ctx, CELL_EKRESOURCE); return;
     }
     try {
-        s_lwc_live_mutexes.emplace(ea, ++s_lwc_mutex_generation);
+        s_lwc_live_mutexes.emplace(ea, LwcMutexLifetime{++s_lwc_mutex_generation});
     } catch (const std::bad_alloc&) {
         lwc_result(ctx, CELL_ENOMEM); return;
     }
@@ -668,6 +676,34 @@ static void lwc_mutex_create_checked(ppu_context* ctx)
     if ((uint32_t)ctx->gpr[3] != CELL_OK)
         s_lwc_live_mutexes.erase(ea);
 }
+/* A live operation holds a logical reference from before slot lookup until
+ * after guest owner/count and host slot state are updated. Destroy cannot
+ * race an acquisition which has not yet changed the slot's state word.
+ * Never keep the registry lock across a blocking legacy mutex operation. */
+static void lwc_mutex_operation(ppu_context* ctx, void (*operation)(ppu_context*))
+{
+    const uint32_t ea = (uint32_t)ctx->gpr[3];
+    const uint32_t err = lwm_guest_address_error(ea, LWM_SIZE);
+    if (err) { lwc_result(ctx, err); return; }
+    std::unique_lock<std::mutex> hold(s_lwc_mutex);
+    auto live = s_lwc_live_mutexes.find(ea);
+    if (live == s_lwc_live_mutexes.end()) {
+        if (lwc_events_mode() == 2) { lwc_result(ctx, CELL_ESRCH); return; }
+        hold.unlock();
+        operation(ctx); // compatibility mode permits existing static mutexes
+        return;
+    }
+    ++live->second.active;
+    hold.unlock();
+    operation(ctx);
+    hold.lock();
+    // Active count prevents erase/recreate; find again because map can rehash.
+    --s_lwc_live_mutexes.find(ea)->second.active;
+}
+static void lwc_mutex_lock_checked(ppu_context* ctx) { lwc_mutex_operation(ctx, sys_lwmutex_lock); }
+static void lwc_mutex_trylock_checked(ppu_context* ctx) { lwc_mutex_operation(ctx, sys_lwmutex_trylock); }
+static void lwc_mutex_unlock_checked(ppu_context* ctx) { lwc_mutex_operation(ctx, sys_lwmutex_unlock); }
+
 static void lwc_create_event(ppu_context* ctx)
 {
     const uint32_t ea = (uint32_t)ctx->gpr[3], lwm = (uint32_t)ctx->gpr[4];
@@ -685,7 +721,7 @@ static void lwc_create_event(ppu_context* ctx)
     }
     const uint32_t id = ++s_lwcond_id;
     try {
-        s_lwc.emplace(ea, LwcState{id, lwm, live->second});
+        s_lwc.emplace(ea, LwcState{id, lwm, live->second.generation});
     } catch (const std::bad_alloc&) {
         lwc_result(ctx, CELL_ENOMEM); return;
     }
@@ -715,12 +751,26 @@ static void lwc_signal(ppu_context* ctx, bool all, bool targeted)
     LwcState* c = lwc_find(ea);
     if (!c) { lwc_result(ctx, CELL_ESRCH); return; }
     bool found = false;
+    LwcWaiter* selected = nullptr;
+    int32_t best_priority = INT32_MAX;
+    const bool priority = lwc_events_mode() == 2 && !all && !targeted &&
+        (vm_read32(c->mutex_ea + LWM_ATTR) & 0xFu) == 2u; // SYS_SYNC_PRIORITY
     for (LwcWaiter* w = c->head; w; w = w->next) {
         if (w->notified || (targeted && w->tid != ctx->gpr[4])) continue;
-        w->notified = true;
-        w->cv.notify_one();
+        if (all) {
+            w->notified = true;
+            w->cv.notify_one();
+            found = true;
+            continue;
+        }
+        if (!priority) { selected = w; break; }
+        const int32_t p = ppu_thread_priority_snapshot(w->tid);
+        if (!selected || p < best_priority) { selected = w; best_priority = p; }
+    }
+    if (selected) {
+        selected->notified = true;
+        selected->cv.notify_one();
         found = true;
-        if (!all) break;
     }
     lwc_result(ctx, targeted && !found ? CELL_ESRCH : CELL_OK);
 }
@@ -734,7 +784,7 @@ static void lwc_wait_event(ppu_context* ctx)
     const uint32_t err = lwm_guest_address_error(ea, 8);
     if (err) { lwc_result(ctx, err); return; }
     const uint64_t requested = ctx->gpr[4];
-    const bool compat_recheck = !requested || requested > 1000;
+    const bool compat_recheck = lwc_events_mode() == 1 && (!requested || requested > 1000);
     const uint64_t timeout = compat_recheck ? 1000 : requested;
     std::unique_lock<std::mutex> hold(s_lwc_mutex);
     LwcState* c = lwc_find(ea);
@@ -757,11 +807,14 @@ static void lwc_wait_event(ppu_context* ctx)
     ppu_thread_note_block(ctx->thread_id);
     lwm_release(sl);
     const auto start = std::chrono::steady_clock::now();
-    while (!w.notified) {
+    if (!timeout) {
+        w.cv.wait(hold, [&] { return w.notified; });
+    } else while (!w.notified) {
         const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - start).count();
         if ((uint64_t)elapsed >= timeout) break;
         const uint64_t left = timeout - (uint64_t)elapsed;
+        // Bounded host durations avoid overflow for very large guest timeouts.
         w.cv.wait_for(hold, std::chrono::microseconds(left < 60000000u ? left : 60000000u));
     }
     LwcWaiter* prev = nullptr;
@@ -973,12 +1026,40 @@ static void lwc_mutex_destroy_checked(ppu_context* ctx)
     if (live == s_lwc_live_mutexes.end() || !sl) {
         lwc_result(ctx, CELL_ESRCH); return;
     }
-    if (lwc_has_mutex_locked(ea) || InterlockedCompareExchange(&sl->state, 0, 0)) {
+    if (live->second.active || lwc_has_mutex_locked(ea) || InterlockedCompareExchange(&sl->state, 0, 0)) {
         lwc_result(ctx, CELL_EBUSY); return;
     }
     sys_lwmutex_destroy_counted(ctx);
     if ((uint32_t)ctx->gpr[3] == CELL_OK)
         s_lwc_live_mutexes.erase(live);
+}
+
+/* The library's direct C entry points otherwise use a separate host-endian
+ * registry. In HLE-strict mode route guest-EA calls through the same context
+ * handlers, not through the legacy C mutex/condition table. A host-only
+ * caller cannot invent a guest owner identity. */
+static int32_t lwc_direct_bridge(unsigned op, uint32_t ea, uint64_t arg)
+{
+    if (!g_active_ctx || !g_active_ctx->thread_id) return (int32_t)CELL_EPERM;
+    ppu_context ctx{};
+    ctx.thread_id = g_active_ctx->thread_id;
+    ctx.cia = g_active_ctx->cia;
+    ctx.lr = g_active_ctx->lr;
+    ctx.gpr[3] = ea; ctx.gpr[4] = arg;
+    switch (op) {
+    case PS3_LWSYNC_MUTEX_CREATE: lwc_mutex_create_checked(&ctx); break;
+    case PS3_LWSYNC_MUTEX_DESTROY: lwc_mutex_destroy_checked(&ctx); break;
+    case PS3_LWSYNC_MUTEX_LOCK: lwc_mutex_lock_checked(&ctx); break;
+    case PS3_LWSYNC_MUTEX_TRYLOCK: lwc_mutex_trylock_checked(&ctx); break;
+    case PS3_LWSYNC_MUTEX_UNLOCK: lwc_mutex_unlock_checked(&ctx); break;
+    case PS3_LWSYNC_COND_CREATE: lwc_create_event(&ctx); break;
+    case PS3_LWSYNC_COND_DESTROY: lwc_destroy_event(&ctx); break;
+    case PS3_LWSYNC_COND_WAIT: lwc_wait_event(&ctx); break;
+    case PS3_LWSYNC_COND_SIGNAL: lwc_signal_event(&ctx); break;
+    case PS3_LWSYNC_COND_SIGNAL_ALL: lwc_signal_all_event(&ctx); break;
+    default: return (int32_t)CELL_EINVAL;
+    }
+    return (int32_t)ctx.gpr[3];
 }
 
 /* Real preemptive thread create/exit live in the lv2 syscall layer
@@ -1472,11 +1553,14 @@ extern "C" void ppu_sysprx_register(void)
     /* Lightweight mutex family (guards global/singleton init in the CRT). */
     ps3_hle_register_ctx(ps3_compute_nid("sys_lwmutex_create"),  "sys_lwmutex_create",  lwc_events_mode() ? lwc_mutex_create_checked : sys_lwmutex_create);
     ps3_hle_register_ctx(ps3_compute_nid("sys_lwmutex_destroy"), "sys_lwmutex_destroy", lwc_events_mode() ? lwc_mutex_destroy_checked : sys_lwmutex_destroy_counted);
-    ps3_hle_register_ctx(ps3_compute_nid("sys_lwmutex_lock"),    "sys_lwmutex_lock",    sys_lwmutex_lock);
-    ps3_hle_register_ctx(ps3_compute_nid("sys_lwmutex_unlock"),  "sys_lwmutex_unlock",  sys_lwmutex_unlock);
-    ps3_hle_register_ctx(ps3_compute_nid("sys_lwmutex_trylock"), "sys_lwmutex_trylock", sys_lwmutex_trylock);
-    ps3_hle_register_fast(ps3_compute_nid("sys_lwmutex_lock"),   sys_lwmutex_lock_fast);
-    ps3_hle_register_fast(ps3_compute_nid("sys_lwmutex_unlock"), sys_lwmutex_unlock_fast);
+    ps3_hle_register_ctx(ps3_compute_nid("sys_lwmutex_lock"),    "sys_lwmutex_lock",    lwc_events_mode() ? lwc_mutex_lock_checked : sys_lwmutex_lock);
+    ps3_hle_register_ctx(ps3_compute_nid("sys_lwmutex_unlock"),  "sys_lwmutex_unlock",  lwc_events_mode() ? lwc_mutex_unlock_checked : sys_lwmutex_unlock);
+    ps3_hle_register_ctx(ps3_compute_nid("sys_lwmutex_trylock"), "sys_lwmutex_trylock", lwc_events_mode() ? lwc_mutex_trylock_checked : sys_lwmutex_trylock);
+    if (!lwc_events_mode()) {
+        ps3_hle_register_fast(ps3_compute_nid("sys_lwmutex_lock"),   sys_lwmutex_lock_fast);
+        ps3_hle_register_fast(ps3_compute_nid("sys_lwmutex_unlock"), sys_lwmutex_unlock_fast);
+    }
+    if (lwc_events_mode() == 2) g_ps3_lwsync_bridge = lwc_direct_bridge;
 
     /* Spinlocks. One guest word each, no kernel object; see the block above. */
     ps3_hle_register_ctx(ps3_compute_nid("sys_spinlock_initialize"), "sys_spinlock_initialize", sys_spinlock_initialize);
