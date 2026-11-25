@@ -504,6 +504,13 @@ endif()
 # ---------------------------------------------------------------------------
 if(PS3RECOMP_BUILD_TESTS)
     include(CTest)
+    if(WIN32)
+        add_executable(test_spu_lockline_srw runtime/spu/tests/test_spu_lockline_srw.c)
+        target_include_directories(test_spu_lockline_srw PRIVATE include)
+        target_compile_definitions(test_spu_lockline_srw PRIVATE PS3RECOMP_SPU_LOCKLINE_SRW=1)
+        add_test(NAME spu_lockline_srw COMMAND test_spu_lockline_srw)
+        set_tests_properties(spu_lockline_srw PROPERTIES TIMEOUT 40)
+    endif()
     # sync_stress is written directly against the Win32 threading API
     # (WaitForMultipleObjects, joinable HANDLEs, Interlocked*, CRITICAL_SECTION).
     # Off Windows all of that comes from runtime/platform/win32_compat.h, so
