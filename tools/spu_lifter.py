@@ -51,7 +51,7 @@ import sys
 from dataclasses import dataclass, field
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from register_regions import promote_register_regions
+from register_regions import SPU_PURE_GPR, promote_register_regions
 
 try:
     from spu_disasm import SPUInstruction, disassemble_spu, spu_decode, CHANNEL_NAMES
@@ -204,6 +204,7 @@ class LiftedFunction:
     start_addr: int = 0
     end_addr: int = 0
     body_lines: list[str] = field(default_factory=list)
+    pure_gpr_lines: set[str] = field(default_factory=set)
     calls: list[int] = field(default_factory=list)
 
 
@@ -573,6 +574,7 @@ class SPULifter:
         # each merged chunk entry hands back to the drain when one is pending.
         merged_starts = {a for a in getattr(self, "func_starts", ()) if start < a < end}
         last_insn = None
+        promote_gprs = os.environ.get("PS3RECOMP_PROMOTE_SPU_GPRS") == "1" and not self.trace
         for insn in insns:
             if insn.addr < start or insn.addr >= end:
                 continue
@@ -587,7 +589,10 @@ class SPULifter:
             if c:
                 if self.trace:
                     func.body_lines.append(f"    spu_trace_pc(ctx, {self._pc(insn.addr)});")
-                func.body_lines.append(f"    {c}")
+                emitted = f"    {c}"
+                func.body_lines.append(emitted)
+                if promote_gprs and insn.mnemonic in SPU_PURE_GPR:
+                    func.pure_gpr_lines.add(emitted)
                 if self.trace and insn.mnemonic not in _NO_RT_WRITE:
                     rt_idx = insn.raw & 0x7F
                     func.body_lines.append(f"    spu_trace_rt(ctx, {rt_idx});")
@@ -1170,7 +1175,7 @@ class SPULifter:
             lines.append(f"void {weak}{f.name}(spu_context* ctx) {{")
             body = f.body_lines
             if os.environ.get("PS3RECOMP_PROMOTE_SPU_GPRS") == "1" and not self.trace:
-                body = promote_register_regions(body, "spu")
+                body = promote_register_regions(body, "spu", f.pure_gpr_lines)
             for b in body:
                 lines.append(b if b.endswith(":") else f"    {b}")
             lines.append("}")
