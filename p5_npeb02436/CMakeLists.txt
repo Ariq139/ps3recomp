@@ -415,6 +415,10 @@ if(NOT P5_PGO_MODE STREQUAL "OFF")
             "runtime/lifted sources; GCC PGO is not configured.")
     endif()
 
+    if(NOT CMAKE_C_COMPILER_VERSION STREQUAL CMAKE_CXX_COMPILER_VERSION)
+        message(FATAL_ERROR "P5 PGO requires matching Clang C and C++ compiler versions")
+    endif()
+
     if(P5_PGO_MODE STREQUAL "GENERATE")
         set(_p5_pgo_flag "-fprofile-instr-generate")
     else()
@@ -463,6 +467,39 @@ if(NOT P5_PGO_MODE STREQUAL "OFF")
                 message(FATAL_ERROR
                     "No clang-cl compiler-rt profile library under ${_p5_profile_libdir}. "
                     "Install matching compiler-rt or set P5_CLANG_PROFILE_LIB_DIR.")
+            endif()
+            # A glob alone cannot establish that compiler-rt matches the
+            # architecture/linker. Link (do not run) instrumented C and C++
+            # with the exact selected library directory. This happens only
+            # when the user configures the optional training build.
+            set(_p5_probe_source "${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/p5-pgo-probe-src")
+            file(MAKE_DIRECTORY "${_p5_probe_source}")
+            file(WRITE "${_p5_probe_source}/probe.c"
+                "int pgo_probe_c(int x) { return x ? x + 1 : 2; }\n")
+            file(WRITE "${_p5_probe_source}/probe.cpp"
+                "extern \"C\" int pgo_probe_c(int); int main(int n, char**) { return pgo_probe_c(n); }\n")
+            file(WRITE "${_p5_probe_source}/CMakeLists.txt" [=[
+cmake_minimum_required(VERSION 3.20)
+project(P5ProfileProbe LANGUAGES C CXX)
+add_executable(p5_profile_probe probe.c probe.cpp)
+target_compile_options(p5_profile_probe PRIVATE "${P5_PROBE_FLAG}")
+target_link_directories(p5_profile_probe PRIVATE "${P5_PROBE_LIBDIR}")
+]=])
+            set(_p5_saved_try_config "${CMAKE_TRY_COMPILE_CONFIGURATION}")
+            set(CMAKE_TRY_COMPILE_CONFIGURATION Release)
+            unset(_p5_profile_link_ok CACHE)
+            try_compile(_p5_profile_link_ok
+                "${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/p5-pgo-probe-build"
+                "${_p5_probe_source}" P5ProfileProbe p5_profile_probe
+                CMAKE_FLAGS "-DP5_PROBE_FLAG:STRING=${_p5_pgo_compile}"
+                    "-DP5_PROBE_LIBDIR:PATH=${_p5_profile_libdir}"
+                    "-DCMAKE_BUILD_TYPE:STRING=Release"
+                OUTPUT_VARIABLE _p5_profile_link_output)
+            set(CMAKE_TRY_COMPILE_CONFIGURATION "${_p5_saved_try_config}")
+            if(NOT _p5_profile_link_ok)
+                message(FATAL_ERROR
+                    "clang-cl profiling runtime link probe failed for the active "
+                    "compiler/linker/target; check compiler-rt installation:\n${_p5_profile_link_output}")
             endif()
             # Every executable that consumes the instrumented static runtime
             # (including optional SDK smoke tests) needs the same search path.
