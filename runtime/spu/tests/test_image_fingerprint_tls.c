@@ -35,6 +35,16 @@ static void exercise(void)
     assert(spu_image_fingerprint_thread_cache() == c);
     assert(c->clock == 2);
     assert(c->entries[0].snapshot && c->entries[1].snapshot);
+    /* Simulate multiple tasks on one long-lived pool worker. A hit still
+     * compares the entire image, including changes at an identical address. */
+    for (unsigned i = 0; i < 64; ++i) {
+        assert(spu_image_fingerprint_thread_cache() == c);
+        assert(spu_image_fingerprint_cached(c, a, sizeof(a), hash_image) == hash_image(a, sizeof(a)));
+        assert(spu_image_fingerprint_cached(c, b, sizeof(b), hash_image) == hash_image(b, sizeof(b)));
+    }
+    a[256] ^= 1;
+    assert(spu_image_fingerprint_cached(c, a, sizeof(a), hash_image) == hash_image(a, sizeof(a)));
+    assert(spu_image_fingerprint_thread_cache() == c);
 }
 #ifdef _WIN32
 static unsigned __stdcall worker(void* p) { (void)p; exercise(); return 0; }

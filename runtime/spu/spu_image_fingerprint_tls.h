@@ -41,8 +41,17 @@ static inline spu_image_fingerprint_cache* spu_image_fingerprint_thread_cache(vo
 static pthread_key_t s_fingerprint_key;
 static pthread_once_t s_fingerprint_once = PTHREAD_ONCE_INIT;
 static int s_fingerprint_key_valid;
+/* The pthread key owns the allocation; the compiler TLS pointer only borrows
+ * it. Hot lookups avoid pthread_once/pthread_getspecific. FLS remains the
+ * lookup path on Windows because a host thread may switch fibers. */
+#ifdef __cplusplus
+static thread_local spu_image_fingerprint_cache* s_fingerprint_fast;
+#else
+static _Thread_local spu_image_fingerprint_cache* s_fingerprint_fast;
+#endif
 static void fingerprint_tls_destroy(void* p)
 {
+    s_fingerprint_fast = NULL;
     spu_image_fingerprint_cache_destroy((spu_image_fingerprint_cache*)p);
     free(p);
 }
@@ -52,17 +61,18 @@ static void fingerprint_tls_init(void)
 }
 static inline spu_image_fingerprint_cache* spu_image_fingerprint_thread_cache(void)
 {
+    if (s_fingerprint_fast) return s_fingerprint_fast;
     if (pthread_once(&s_fingerprint_once, fingerprint_tls_init) ||
         !s_fingerprint_key_valid) return NULL;
     spu_image_fingerprint_cache* cache =
         (spu_image_fingerprint_cache*)pthread_getspecific(s_fingerprint_key);
-    if (cache) return cache;
+    if (cache) return s_fingerprint_fast = cache;
     cache = (spu_image_fingerprint_cache*)calloc(1, sizeof(*cache));
     if (cache && pthread_setspecific(s_fingerprint_key, cache)) {
         free(cache);
         return NULL;
     }
-    return cache;
+    return s_fingerprint_fast = cache;
 }
 #endif
 #endif
