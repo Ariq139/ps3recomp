@@ -49,6 +49,7 @@ import os
 import re
 import sys
 from dataclasses import dataclass, field
+from register_regions import promote_register_regions
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -1167,7 +1168,10 @@ class SPULifter:
         weak = "__attribute__((weak)) " if getattr(self, "weak_emit", False) else ""
         for f in self.functions:
             lines.append(f"void {weak}{f.name}(spu_context* ctx) {{")
-            for b in f.body_lines:
+            body = f.body_lines
+            if os.environ.get("PS3RECOMP_PROMOTE_SPU_GPRS") == "1" and not self.trace:
+                body = promote_register_regions(body, "spu")
+            for b in body:
                 lines.append(b if b.endswith(":") else f"    {b}")
             lines.append("}")
             lines.append("")
