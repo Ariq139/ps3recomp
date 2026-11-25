@@ -2395,6 +2395,15 @@ static void spu_ef_deliver_owed(spu_context* ctx, uint32_t wobj)
                 (unsigned)bits, wobj); }
 }
 
+static SPU_TLS int s_exit_seen;
+void spu_async_task_reset_thread_state(void)
+{
+    s_exit_seen = 0;
+    s_spu_halt_armed = 0;
+    g_spu_trampoline_fn = NULL;
+    t_ft_busy0 = 0;
+}
+
 void spu_spurs_taskset_syscall(spu_context* ctx)   /* non-static: also called by the pure interpreter (spu_interp.c) */
 {
     uint32_t raw = ctx->gpr[3]._u32[0];
@@ -2432,8 +2441,7 @@ void spu_spurs_taskset_syscall(spu_context* ctx)   /* non-static: also called by
      * that has since done work and calls EXIT again means it: returning there makes
      * it re-enter and spin (observed: 6x num=0 from link 0x26E18 once the task is
      * woken). Honour the first call, halt on the rest. Each task runs on its own
-     * host thread, so a thread-local count is per task. */
-    static _Thread_local int s_exit_seen = 0;
+     * host thread or an explicitly reset pooled worker. */
     if (num == 0 && ctx->image_id == 22 && !getenv("YDKJ_CRI_EXIT_HALT")) {
         if (s_exit_seen++ == 0) { ctx->gpr[3]._u32[0] = 0; return; }   /* bootstrap */
         { static int _n = 0; if (PS3_LOG_FIRST(_n, 8))
