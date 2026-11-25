@@ -32,9 +32,6 @@
 #include <errno.h>
 #include <mutex>
 #include <atomic>
-#include <condition_variable>
-#include <deque>
-#include <thread>
 #include <mutex>
 #include <sys/stat.h>
 #include "../platform/win32_dirent.h"   /* <dirent.h>, or a Win32 stand-in */
@@ -293,8 +290,6 @@ static void host_path(char* out, size_t cap, const char* guest)
 /* ---- fd / dir handle tables ---- */
 #define FS_MAX 256
 static FILE* g_files[FS_MAX];
-/* Allocation generations distinguish an old queued AIO from a reopened fd. */
-static uint64_t g_fd_generation[FS_MAX];
 static uint8_t g_fd_usm[FS_MAX];
 static char    g_fd_path[FS_MAX][192];   /* guest path per fd (diagnostics) */   /* 1 if this fd is an open .usm movie (read tracker) */
 static DIR*  g_dirs[FS_MAX];
@@ -345,7 +340,6 @@ static int fd_alloc_file(FILE* f)
     for (int i = 3; i < FS_MAX; i++)
         if (!g_files[i] && !g_dirs[i] && !sys_fs_owns_fd(i)) {
             g_fd_dir[i] = 0;
-            if (++g_fd_generation[i] == 0) ++g_fd_generation[i];
             __atomic_store_n(&g_files[i], f, __ATOMIC_RELEASE);
             return i;
         }
@@ -1339,8 +1333,11 @@ static void cellFsSdataOpenByFd(ppu_context* ctx)
  *
  * The completion callback is (CellFsAio* aio, s32 error, s32 id, u64 size).
  *
- * Legacy mode performs the transfer and callback inline. An experimental
- * bounded Windows worker is available via PS3RECOMP_FS_AIO_WORKER=1.
+ * Compatibility mode still transfers and calls back inline. Transfer and
+ * completion are separate phases: an eventual worker must publish a result
+ * to a guest-aware completion dispatcher, never call guest code itself.
+ * Do not enable a worker until its PPU identity, callback/VM lifetimes,
+ * cancellation, finish and shutdown contracts are implemented.
  */
 #ifdef _WIN32
 #  define HOST_FSEEK64(f,off) _fseeki64((f), (__int64)(off), SEEK_SET)
@@ -1366,33 +1363,54 @@ static uint64_t guest_be64(uint32_t a)
 }
 
 static std::atomic<int> s_aio_initialized{0};
+
+static void cellFsAioInit(ppu_context* ctx)
+{
+    char mount[256];
+    const uint32_t mount_ea = (uint32_t)ctx->gpr[3];
+    if (!mount_ea) { ctx->gpr[3] = (uint64_t)(int64_t)CELL_EFAULT; return; }
+    guest_strcpy(mount, mount_ea, sizeof mount);
+    if (!mount[0]) { ctx->gpr[3] = (uint64_t)(int64_t)CELL_EINVAL; return; }
+    s_aio_initialized = 1;
+    ctx->gpr[3] = CELL_OK;
+}
+
+static void cellFsAioFinish(ppu_context* ctx)
+{
+    s_aio_initialized = 0;
+    ctx->gpr[3] = CELL_OK;
+}
+
+/* This runtime completes each read inline, so no request remains pending.
+ * RPCS3 currently reports EINVAL for cancellation in its unimplemented path. */
+static void cellFsAioCancel(ppu_context* ctx)
+{
+    (void)ctx->gpr[3]; /* request id */
+    ctx->gpr[3] = (uint64_t)(int64_t)CELL_EINVAL;
+}
+
+/* One id space for reads and writes: the completion callback and
+ * cellFsAioCancel tell requests apart by id alone, and with a counter each a
+ * read and a write in flight together could both be id 1. */
 static std::atomic<int32_t> s_aio_next_id{1};
 
-struct AioRequest {
-    uint32_t aio, cb_opd, buf;
-    int fd;
-    uint64_t offset, size, generation;
-    int32_t id;
-    bool write;
+/* The transfer phase owns no PPU context and invokes no guest callback.
+ * A future I/O worker may execute this phase, but only after requests pin
+ * their fd, guest ranges and VM lifetime. Keep inline delivery until a
+ * guest-aware completion dispatcher can safely consume these results. */
+struct AioTransferResult {
+    int32_t error;
+    size_t bytes;
 };
 
-/* Same positional stdio operation as the legacy synchronous path, but no
- * caller context is retained. For worker requests, validate the fd lifetime
- * under the existing filesystem lock before touching the stream. */
-static void fs_aio_complete(const AioRequest& req, bool check_generation)
+static AioTransferResult fs_aio_transfer(int fd, uint64_t offset, uint32_t buf,
+                                        uint64_t size, int32_t id, bool write)
 {
-    const int fd = req.fd;
-    const uint32_t buf = req.buf;
-    const uint64_t offset = req.offset, size = req.size;
-    const int32_t id = req.id;
-    const bool write = req.write;
     size_t n = 0;
     int32_t err = CELL_EBADF;
     {
         std::lock_guard<std::mutex> fs_lock(g_fs_mutex);
-        FILE* f = fd_file(fd);
-        if (f && (!check_generation ||
-                  g_fd_generation[fd] == req.generation)) {
+        if (FILE* f = fd_file(fd)) {
             if (size > SIZE_MAX || (size && !buf) ||
                 !fs_guest_range_valid(buf, size) || offset > INT64_MAX) {
                 err = (size > SIZE_MAX || offset > INT64_MAX) ? CELL_EFBIG : CELL_EFAULT;
@@ -1430,187 +1448,33 @@ static void fs_aio_complete(const AioRequest& req, bool check_generation)
         fprintf(stderr, "[fs] aio %s id=%d fd=%d off=%llu size=%llu -> %zu\n", write ? "write" : "read",
                 id, fd, (unsigned long long)offset, (unsigned long long)size, n);
 
-    if (req.cb_opd)
-        ps3_invoke_guest(req.cb_opd, req.aio, (uint64_t)(int64_t)err,
-                         (uint64_t)(int64_t)id, (uint64_t)n, 0, 0, 0, 0);
-}
-
-/* Experimental Windows-only worker. The current callback scaffold assigns
- * a per-host-thread identity/stack on Windows; other hosts need a separate
- * callback-identity audit. The legacy path remains the default. */
-static bool aio_worker_enabled()
-{
-#ifdef _WIN32
-    static const bool on = [] {
-        const char* v = getenv("PS3RECOMP_FS_AIO_WORKER");
-        return v && !strcmp(v, "1");
-    }();
-    return on;
-#else
-    return false;
-#endif
-}
-static std::mutex s_aio_mutex;
-static std::condition_variable s_aio_cv;
-static std::deque<AioRequest> s_aio_queue;
-static std::thread* s_aio_worker;
-static bool s_aio_stopping, s_aio_active, s_aio_draining;
-static constexpr size_t AIO_QUEUE_LIMIT = 64;
-
-static void fs_aio_worker_loop()
-{
-    std::unique_lock<std::mutex> lock(s_aio_mutex);
-    for (;;) {
-        s_aio_cv.wait(lock, [] { return s_aio_stopping || !s_aio_queue.empty(); });
-        if (s_aio_stopping) return;
-        const AioRequest req = s_aio_queue.front();
-        s_aio_queue.pop_front();
-        s_aio_active = true;
-        lock.unlock();
-        // Never invoke guest code with either queue or filesystem lock held.
-        fs_aio_complete(req, true);
-        lock.lock();
-        s_aio_active = false;
-        s_aio_cv.notify_all();
-    }
-}
-
-/* Called before C++ static teardown. Process exit abandons queued requests;
- * ordinary cellFsAioFinish drains them. A callback that exits the entire
- * process must not join its own host thread. A heap-owned thread object
- * avoids a joinable std::thread destructor on that non-returning path. */
-static void fs_aio_worker_shutdown()
-{
-    std::thread* worker;
-    {
-        std::lock_guard<std::mutex> lock(s_aio_mutex);
-        s_aio_initialized = 0;
-        s_aio_stopping = true;
-        s_aio_queue.clear();
-        worker = s_aio_worker;
-        s_aio_cv.notify_all();
-    }
-    if (worker && worker->get_id() != std::this_thread::get_id()) {
-        worker->join();
-        delete worker;
-        std::lock_guard<std::mutex> lock(s_aio_mutex);
-        s_aio_worker = nullptr;
-    }
-}
-
-static void cellFsAioInit(ppu_context* ctx)
-{
-    char mount[256];
-    const uint32_t mount_ea = (uint32_t)ctx->gpr[3];
-    if (!mount_ea) { ctx->gpr[3] = (uint64_t)(int64_t)CELL_EFAULT; return; }
-    guest_strcpy(mount, mount_ea, sizeof mount);
-    if (!mount[0]) { ctx->gpr[3] = (uint64_t)(int64_t)CELL_EINVAL; return; }
-    if (aio_worker_enabled()) {
-        std::lock_guard<std::mutex> lock(s_aio_mutex);
-        if (s_aio_stopping || s_aio_draining) {
-            ctx->gpr[3] = (uint64_t)(int64_t)(int32_t)CELL_EBUSY;
-            return;
-        }
-        if (!s_aio_worker) {
-            static const int exit_hook = atexit(fs_aio_worker_shutdown);
-            if (exit_hook != 0) {
-                ctx->gpr[3] = (uint64_t)(int64_t)(int32_t)CELL_EAGAIN;
-                return;
-            }
-            try {
-                s_aio_worker = new std::thread(fs_aio_worker_loop);
-            } catch (...) {
-                ctx->gpr[3] = (uint64_t)(int64_t)(int32_t)CELL_EAGAIN;
-                return;
-            }
-        }
-        s_aio_initialized = 1;
-    } else {
-        s_aio_initialized = 1;
-    }
-    ctx->gpr[3] = CELL_OK;
-}
-
-static void cellFsAioFinish(ppu_context* ctx)
-{
-    if (aio_worker_enabled()) {
-        std::unique_lock<std::mutex> lock(s_aio_mutex);
-        if (s_aio_stopping || s_aio_draining ||
-            (s_aio_worker && s_aio_worker->get_id() == std::this_thread::get_id())) {
-            ctx->gpr[3] = (uint64_t)(int64_t)(int32_t)CELL_EBUSY;
-            return;
-        }
-        s_aio_initialized = 0;
-        s_aio_draining = true;
-        s_aio_cv.wait(lock, [] { return s_aio_queue.empty() && !s_aio_active; });
-        s_aio_draining = false;
-    } else {
-        s_aio_initialized = 0;
-    }
-    ctx->gpr[3] = CELL_OK;
-}
-
-/* Cancellation remains unimplemented. Do not invent callback status or
- * cancellation semantics for a request already executing. */
-static void cellFsAioCancel(ppu_context* ctx)
-{
-    (void)ctx->gpr[3];
-    ctx->gpr[3] = (uint64_t)(int64_t)CELL_EINVAL;
+    return {err, n};
 }
 
 static void fs_aio_submit(ppu_context* ctx, bool write)
 {
-    const uint32_t aio = (uint32_t)ctx->gpr[3];
-    const uint32_t id_ptr = (uint32_t)ctx->gpr[4];
-    const uint32_t cb_opd = (uint32_t)ctx->gpr[5];
-    const bool worker = aio_worker_enabled();
-    std::unique_lock<std::mutex> lock(s_aio_mutex, std::defer_lock);
-    if (worker) lock.lock();
+    uint32_t aio    = (uint32_t)ctx->gpr[3];
+    uint32_t id_ptr = (uint32_t)ctx->gpr[4];
+    uint32_t cb_opd = (uint32_t)ctx->gpr[5];
+
     if (!s_aio_initialized) { ctx->gpr[3] = (uint64_t)(int64_t)CELL_ENXIO; return; }
     if (!aio || !vm_base) { ctx->gpr[3] = (uint64_t)(int64_t)CELL_EFAULT; return; }
-    if (worker && ((uint64_t)aio + 0x28u > (1ull << 32) ||
-                   !fs_guest_range_valid(aio, 0x28) ||
-                   (id_ptr && ((uint64_t)id_ptr + 4u > (1ull << 32) ||
-                               !fs_guest_range_valid(id_ptr, 4))))) {
-        ctx->gpr[3] = (uint64_t)(int64_t)(int32_t)CELL_EFAULT;
-        return;
-    }
-    AioRequest req{};
-    req.aio = aio; req.cb_opd = cb_opd; req.write = write;
-    req.fd = (int)guest_be32(aio + 0x00);
-    req.offset = guest_be64(aio + 0x08);
-    req.buf = guest_be32(aio + 0x10);
-    req.size = guest_be64(aio + 0x18);
-    if (worker) {
-        if (s_aio_queue.size() >= AIO_QUEUE_LIMIT) {
-            ctx->gpr[3] = (uint64_t)(int64_t)(int32_t)CELL_EAGAIN;
-            return;
-        }
-        if (req.size > (1ull << 32) - req.buf) {
-            ctx->gpr[3] = (uint64_t)(int64_t)(int32_t)CELL_EFAULT;
-            return;
-        }
-        {
-            std::lock_guard<std::mutex> fs_lock(g_fs_mutex);
-            if (fd_file(req.fd)) req.generation = g_fd_generation[req.fd];
-        }
-        req.id = s_aio_next_id++;
-        try {
-            s_aio_queue.push_back(req);
-        } catch (...) {
-            ctx->gpr[3] = (uint64_t)(int64_t)(int32_t)CELL_ENOMEM;
-            return;
-        }
-        // Publish the ID and submit result before the worker can dequeue.
-        if (id_ptr) vm_write32(id_ptr, (uint32_t)req.id);
-        ctx->gpr[3] = CELL_OK;
-        s_aio_cv.notify_one();
-        return;
-    }
-    req.id = s_aio_next_id++;
-    if (id_ptr) vm_write32(id_ptr, (uint32_t)req.id);
+
+    int      fd     = (int)guest_be32(aio + 0x00);
+    uint64_t offset = guest_be64(aio + 0x08);
+    uint32_t buf    = guest_be32(aio + 0x10);
+    uint64_t size   = guest_be64(aio + 0x18);
+
+    int32_t id = s_aio_next_id++;
+    if (id_ptr) vm_write32(id_ptr, (uint32_t)id);
+
+    const AioTransferResult result = fs_aio_transfer(fd, offset, buf, size, id, write);
+
+    /* Preserve the established caller context, result ordering and
+     * synchronous completion timing; no queue or host worker is started. */
     ctx->gpr[3] = CELL_OK;
-    fs_aio_complete(req, false);
+    if (cb_opd) ps3_invoke_guest(cb_opd, aio, (uint64_t)(int64_t)result.error,
+                                 (uint64_t)(int64_t)id, (uint64_t)result.bytes, 0, 0, 0, 0);
 }
 
 static void cellFsAioRead(ppu_context* ctx) { fs_aio_submit(ctx, false); }
@@ -1619,7 +1483,7 @@ static void cellFsAioRead(ppu_context* ctx) { fs_aio_submit(ctx, false); }
  * written with cellFsAioWrite, and polls a status word its completion callback
  * sets. With the NID unresolved the submit "succeeded", nothing was written, the
  * callback never ran, and the boot parked on the first screen. Same contract and
- * the same completion implementation as cellFsAioRead above. */
+ * the same synchronous-completion shortcut as cellFsAioRead above. */
 static void cellFsAioWrite(ppu_context* ctx) { fs_aio_submit(ctx, true); }
 
 extern "C" void ppu_fs_register(void)
