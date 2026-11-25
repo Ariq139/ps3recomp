@@ -604,7 +604,31 @@ static void cellFsRead(ppu_context* ctx)
     FILE* f = fd_file(fd);
     if (!f) { ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_EBADF; return; }
     uint64_t raw_nbytes = ctx->gpr[5];
-    int64_t fpos_before = fs_tell64(f);
+    /* The pre-read position is used only by diagnostics (including the
+     * explicit EOF injection knob), not by ordinary stream operations. */
+    // Environment switches are immutable for a title run, as required
+    // by ps3_env_once. Parse once, rather than hash/probe on every read.
+    struct ReadDiagnostics {
+        int eof_fd, read_fd;
+        int64_t eof_limit;
+        bool reads, fs, summary, all, path, toc;
+    };
+    static const ReadDiagnostics diag = [] {
+        const char* eof = ps3_env_once("PS3_FSLOG_EOF");
+        const char* reads = ps3_env_once("PS3_FSLOG_READS");
+        const char* summary = ps3_env_once("PS3_FS_READ_SUMMARY");
+        const char* comma = eof ? strchr(eof, ',') : nullptr;
+        const bool all = ps3_env_once("FS_READ_ALL") != nullptr;
+        const bool path = ps3_env_once("FS_READ_PATH") != nullptr;
+        return ReadDiagnostics{eof ? atoi(eof) : -1, reads ? atoi(reads) : -1,
+            comma ? strtoll(comma + 1, nullptr, 10) : 0, reads != nullptr,
+            ps3_env_once("PS3_FSLOG") != nullptr,
+            !summary || strcmp(summary, "0") || all || path,
+            all, path, ps3_env_once("PS3_FSLOG_TOC") != nullptr};
+    }();
+    const int64_t fpos_before = ((diag.eof_fd >= 0 && fd == diag.eof_fd && diag.eof_limit > 0) ||
+           diag.reads || diag.fs)
+        ? fs_tell64(f) : -1;
     if (ppu_vm_size && (uint64_t)buf + nbytes > ppu_vm_size) nbytes = ppu_vm_size - buf;
     fs_prefault(buf, nbytes);
     fs_set_dir(fd, f, 1);
@@ -616,48 +640,46 @@ static void cellFsRead(ppu_context* ctx)
      * a second, so it cannot be watched to its end -- truncating the stream makes
      * the demuxer see EOF and the movie finish, which is what advances the title
      * to whatever follows the intro. Deliberately a testing knob, not a fix. */
-    { static int efd = -2; static int64_t elim = 0;
-      if (efd == -2) { const char* e = ps3_env_once("PS3_FSLOG_EOF");
-          if (e) { efd = atoi(e); const char* c = strchr(e, 44); elim = c ? strtoll(c + 1, nullptr, 10) : 0; }
-          else efd = -1; }
-      if (efd >= 0 && fd == efd && elim > 0 && fpos_before >= elim) {
+    { if (diag.eof_fd >= 0 && fd == diag.eof_fd && diag.eof_limit > 0 &&
+          fpos_before >= diag.eof_limit) {
           static int once = 0;
           if (!once++) fprintf(stderr, "[fs] PS3_FSLOG_EOF: fd=%d truncated at %lld bytes\n", fd, (long long)elim);
           n = 0;
       } }
-    if (g_fd_usm[fd] && ps3_env_once("PS3_FSLOG_READS")) fprintf(stderr, "[USMRD] READ usm fd=%d nbytes=%llu -> %zu magic=%02X%02X%02X%02X pos=%lld lr=0x%08X\n", fd, (unsigned long long)nbytes, n, vm_base[buf], vm_base[buf+1], vm_base[buf+2], vm_base[buf+3], (long long)fpos_before, (uint32_t)ctx->lr);
+    if (g_fd_usm[fd] && diag.reads) fprintf(stderr, "[USMRD] READ usm fd=%d nbytes=%llu -> %zu magic=%02X%02X%02X%02X pos=%lld lr=0x%08X\n", fd, (unsigned long long)nbytes, n, vm_base[buf], vm_base[buf+1], vm_base[buf+2], vm_base[buf+3], (long long)fpos_before, (uint32_t)ctx->lr);
     /* PS3_FSLOG_READS=<fd>: log every read on one descriptor. PS3_FSLOG caps at 20
      * lines and they are all spent before a movie ever opens, so it cannot
      * answer "is the streamer reading the .avi". */
-    { static int wfd = -2;
-      if (wfd == -2) { const char* e = ps3_env_once("PS3_FSLOG_READS"); wfd = e ? atoi(e) : -1; }
-      if (wfd >= 0 && fd == wfd)
-          fprintf(stderr, "[fsread] fd=%d want=%llu got=%zu pos=%ld\n",
-                  fd, (unsigned long long)nbytes, n, fpos_before); }
-    if (ps3_env_once("PS3_FSLOG")) { static int _fd=0; if(PS3_LOG_FIRST(_fd, 20)) fprintf(stderr,"[FSDBG] fd=%d raw_nbytes=0x%llX clamped=0x%llX buf=0x%08X fpos_before=%lld n=%zu eof=%d err=%d\n", fd,(unsigned long long)raw_nbytes,(unsigned long long)nbytes,buf,fpos_before,n,feof(f),ferror(f)); }
+    { if (diag.read_fd >= 0 && fd == diag.read_fd)
+          fprintf(stderr, "[fsread] fd=%d want=%llu got=%zu pos=%lld\n",
+                  fd, (unsigned long long)nbytes, n, (long long)fpos_before); }
+    if (diag.fs) { static int _fd=0; if(PS3_LOG_FIRST(_fd, 20)) fprintf(stderr,"[FSDBG] fd=%d raw_nbytes=0x%llX clamped=0x%llX buf=0x%08X fpos_before=%lld n=%zu eof=%d err=%d\n", fd,(unsigned long long)raw_nbytes,(unsigned long long)nbytes,buf,fpos_before,n,feof(f),ferror(f)); }
 #ifdef _WIN32
-    if (ps3_env_once("PS3_FSLOG") && buf==0 && raw_nbytes>0x10000) { static int _b=0; if(_b++<2){ void* fr[30]; unsigned short nn=RtlCaptureStackBackTrace(0,30,fr,0); uintptr_t mb=(uintptr_t)GetModuleHandleA(0); fprintf(stderr,"[FSBT] null-buf read caller rvas:"); for(unsigned short i=0;i<nn&&i<16;i++) fprintf(stderr," %llX",(unsigned long long)((uintptr_t)fr[i]-mb)); fprintf(stderr,"\n"); } }
+    if (diag.fs && buf==0 && raw_nbytes>0x10000) { static int _b=0; if(_b++<2){ void* fr[30]; unsigned short nn=RtlCaptureStackBackTrace(0,30,fr,0); uintptr_t mb=(uintptr_t)GetModuleHandleA(0); fprintf(stderr,"[FSBT] null-buf read caller rvas:"); for(unsigned short i=0;i<nn&&i<16;i++) fprintf(stderr," %llX",(unsigned long long)((uintptr_t)fr[i]-mb)); fprintf(stderr,"\n"); } }
 #endif
     /* Per-fd totals, not just the first 50 lines. The flat cap made "this file is
      * opened and never read" unfalsifiable: reads on a later-opened fd fall off
      * the end of the log and look identical to reads that never happen.
      * FS_READ_ALL=1 logs every read; otherwise a per-fd first-read line plus a
      * periodic summary is enough to tell the two apart. */
-    { static uint64_t tot=0; static int _n=0;
+    /* Preserve default diagnostics; clean benchmarks can disable these
+     * counters and log writes while keeping explicit read logging options. */
+    if (diag.summary) {
+      static uint64_t tot=0; static int _n=0;
       static uint64_t per_fd[64]; static uint32_t cnt_fd[64];
       tot+=n;
       if (fd>=0 && fd<64) { per_fd[fd]+=n; cnt_fd[fd]++; }
       int first_for_fd = (fd>=0 && fd<64 && cnt_fd[fd]==1);
-      if(PS3_LOG_FIRST(_n, 50) || first_for_fd || ps3_env_once("FS_READ_ALL"))
+      if(PS3_LOG_FIRST(_n, 50) || first_for_fd || diag.all)
         fprintf(stderr,"[fs] read fd=%d nbytes=%llu -> %zu (magic=%02X%02X%02X%02X, total=%llu)%s\n",
                 fd,(unsigned long long)nbytes,n,vm_base[buf],vm_base[buf+1],vm_base[buf+2],vm_base[buf+3],
                 (unsigned long long)tot, first_for_fd?"  <= FIRST READ ON THIS FD":"");
-      if (ps3_env_once("FS_READ_PATH") && fd>=0 && fd<64 && g_fd_path[fd][0])
+      if (diag.path && fd>=0 && fd<64 && g_fd_path[fd][0])
           fprintf(stderr, "        from %s\n", g_fd_path[fd]);
       if ((_n % 2000)==0) { fprintf(stderr,"[fs] read summary after %d reads:",_n);
           for (int i=0;i<64;i++) if (cnt_fd[i]) fprintf(stderr," fd%d=%ux/%lluB",i,cnt_fd[i],(unsigned long long)per_fd[i]);
           fprintf(stderr,"\n"); } }
-    if (ps3_env_once("PS3_FSLOG_TOC") && nbytes >= 50000) {  /* data.toc read -> who parses it? */
+    if (diag.toc && nbytes >= 50000) {  /* data.toc read -> who parses it? */
         fprintf(stderr, "[TOC] data.toc read into buf=0x%08X n=%zu; lr=0x%08llX; guest-stack RAs:\n", buf, n, (unsigned long long)ctx->lr);
         uint32_t sp = (uint32_t)ctx->gpr[1];
         for (uint32_t i = 0; i < 128 && sp + i*4 + 4 <= ppu_vm_size; i++) {
