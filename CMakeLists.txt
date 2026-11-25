@@ -20,6 +20,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Options
 # ---------------------------------------------------------------------------
 option(PS3RECOMP_BUILD_TESTS "Build unit tests" OFF)
+option(PS3RECOMP_SPU_LOCKLINE_SRW "Use a native parking lock for Windows SPU coherency" OFF)
 
 # cellFiber switches host contexts with Windows fibers on Windows and the
 # ucontext routines everywhere else. Apple arm64 has a third, opt-in option: a
@@ -155,6 +156,12 @@ add_library(ps3recomp_runtime STATIC
     ${HLE_SOURCES}
     ${RUNTIME_SOURCES}
 )
+if(PS3RECOMP_SPU_LOCKLINE_SRW)
+    if(NOT WIN32)
+        message(FATAL_ERROR "PS3RECOMP_SPU_LOCKLINE_SRW requires Windows")
+    endif()
+    target_compile_definitions(ps3recomp_runtime PRIVATE PS3RECOMP_SPU_LOCKLINE_SRW=1)
+endif()
 # cellFiber picks its host context path on this; nothing else reads it.
 if(PS3RECOMP_FIBER_BACKEND STREQUAL "aarch64")
     target_compile_definitions(ps3recomp_runtime PRIVATE PS3RECOMP_FIBER_HOST_AARCH64=1)
@@ -508,6 +515,13 @@ endif()
 # ---------------------------------------------------------------------------
 if(PS3RECOMP_BUILD_TESTS)
     include(CTest)
+    if(WIN32)
+        add_executable(test_spu_lockline_srw runtime/spu/tests/test_spu_lockline_srw.c)
+        target_include_directories(test_spu_lockline_srw PRIVATE include)
+        target_compile_definitions(test_spu_lockline_srw PRIVATE PS3RECOMP_SPU_LOCKLINE_SRW=1)
+        add_test(NAME spu_lockline_srw COMMAND test_spu_lockline_srw)
+        set_tests_properties(spu_lockline_srw PROPERTIES TIMEOUT 40)
+    endif()
     # sync_stress is written directly against the Win32 threading API
     # (WaitForMultipleObjects, joinable HANDLEs, Interlocked*, CRITICAL_SECTION).
     # Off Windows all of that comes from runtime/platform/win32_compat.h, so
