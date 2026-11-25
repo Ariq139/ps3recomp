@@ -8,7 +8,7 @@
  */
 #include "spu_workload.h"
 #include "spu_job_profile.h"
-#include "spu_image_fingerprint_cache.h"
+#include "spu_image_fingerprint_tls.h"
 #include "spu_lifted_job.h"   /* spu_run_lifted_job */
 #include "../ps3_log.h"      /* ps3_log_verbose */
 #include <stdio.h>
@@ -693,12 +693,10 @@ size_t spu_elf_image_size(const uint8_t* image, size_t max_avail)
  * after a complete byte comparison. Guest address reuse cannot validate a hit. */
 static uint64_t spu_workload_fingerprint_cached(const uint8_t* image, size_t n)
 {
-#ifdef _WIN32
-    static __declspec(thread) spu_image_fingerprint_cache cache;
-#else
-    static _Thread_local spu_image_fingerprint_cache cache;
-#endif
-    return spu_image_fingerprint_cached(&cache, image, n, spu_workload_fingerprint);
+    if (!image || !n || n > 0x40000u) return spu_workload_fingerprint(image, n);
+    spu_image_fingerprint_cache* cache = spu_image_fingerprint_thread_cache();
+    return cache ? spu_image_fingerprint_cached(cache, image, n, spu_workload_fingerprint)
+                 : spu_workload_fingerprint(image, n);
 }
 
 
@@ -1717,12 +1715,7 @@ static _Thread_local spu_image_fingerprint_cache s_job_image_cache;
 #endif
 void spu_workload_job_cache_thread_cleanup(void)
 {
-    for (unsigned i = 0; i < SPU_IMAGE_FINGERPRINT_SLOTS; ++i) {
-        free(s_job_image_cache.entries[i].snapshot);
-        memset(&s_job_image_cache.entries[i], 0,
-               sizeof(s_job_image_cache.entries[i]));
-    }
-    s_job_image_cache.clock = 0;
+    spu_image_fingerprint_cache_destroy(&s_job_image_cache);
 }
 
 static int spu_workload_dispatch_job_internal(const uint8_t* image,

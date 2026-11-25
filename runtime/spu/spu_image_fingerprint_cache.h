@@ -20,6 +20,14 @@ typedef struct {
     uint64_t clock;
 } spu_image_fingerprint_cache;
 
+static inline void spu_image_fingerprint_cache_destroy(spu_image_fingerprint_cache* cache)
+{
+    if (!cache) return;
+    for (unsigned i = 0; i < SPU_IMAGE_FINGERPRINT_SLOTS; ++i)
+        free(cache->entries[i].snapshot);
+    memset(cache, 0, sizeof(*cache));
+}
+
 static inline uint64_t spu_image_fingerprint_cached(
     spu_image_fingerprint_cache* cache, const void* data, size_t size,
     uint64_t (*hash)(const void*, size_t))
