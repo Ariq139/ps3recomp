@@ -39,8 +39,37 @@ static void submit(unsigned port,unsigned job,unsigned flags) {
 static DWORD WINAPI blocking_submit(void* ignored) {
  (void)ignored;submit(0x1200,0x1700,0);SetEvent(blocking_returned);return 0;
 }
+/* Exercise out-of-order removal independently of worker scheduling. */
+static void test_dense_pending(void) {
+ JqState* q=&s_queues[0];
+ JqTask a={0}, b={0}, c={0}, d={0};
+ a.id=1; a.sequence=1; a.tag=7; a.tag_serial=1;
+ b.id=2; b.sequence=2; b.flags=JQ_FLAG_SYNC_JOB;
+ c.id=3; c.sequence=3; c.tag=7; c.tag_serial=2;
+ d.id=4; d.sequence=4; d.tag=7; d.tag_serial=3;
+ uint64_t target[32]={0}; target[7]=2;
+ jq_lock();
+ jq_pending_insert(q,&a); jq_pending_insert(q,&b); jq_pending_insert(q,&c);
+ assert(q->jobCount==3 && !jq_task_runnable(&b) && !jq_task_runnable(&c));
+ jq_pending_remove(q,&a);
+ assert(q->jobCount==2 && q->pending[0]==&c && c.pending_index==0);
+ assert(!jq_pending_id(q,1) && jq_pending_id(q,3));
+ assert(jq_task_runnable(&b) && !jq_task_runnable(&c));
+ assert(jq_pending_tag_before(0,1u<<7,target));
+ jq_pending_insert(q,&d);
+ jq_pending_remove(q,&b);
+ assert(jq_task_runnable(&c) && jq_task_runnable(&d));
+ assert(d.pending_index==1 && q->pending[1]==&d);
+ jq_pending_remove(q,&c);
+ assert(!jq_pending_tag_before(0,1u<<7,target));
+ assert(jq_pending_id(q,4) && d.pending_index==0);
+ jq_pending_remove(q,&d);
+ assert(q->jobCount==0 && q->pending[0]==NULL);
+ jq_unlock();
+}
 int main(int argc,char** argv) {
  (void)argv;
+ test_dense_pending();
 
  assert(_putenv_s("SPURS_JQ_WORKERS","4")==0);
  blocking_returned=CreateEvent(NULL,TRUE,FALSE,NULL);
