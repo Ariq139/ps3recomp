@@ -205,6 +205,32 @@ static void spu_put_watch_hit(const spu_context* spu, uint32_t lsa, uint64_t ea,
  * Execute a single DMA transfer between local store and main memory.
  * Returns 0 on success, -1 on error.
  */
+/* Cache the process environment once per translation unit. These flags
+ * only guard observational diagnostic blocks; never include watchdogs,
+ * validation, title compatibility, or overlay tracking in this mask.
+ * Use the same presence semantics (even an empty value enables a probe).
+ * The config is startup-only, just like the individual cached probes. */
+enum { MFC_DIAG_TRANSFER_PRE = 1, MFC_DIAG_TRANSFER_HIST = 2,
+       MFC_DIAG_SUBMIT_PRE = 4, MFC_DIAG_SUBMIT_HIST = 8 };
+static inline unsigned mfc_diag_mask(void)
+{
+    static int cached = -1;
+    int mask = __atomic_load_n(&cached, __ATOMIC_ACQUIRE);
+    if (mask < 0) {
+        unsigned m = 0;
+        if (getenv("SPU_DMA_WATCH") || getenv("SPU_DMA_RANGE"))
+            m |= MFC_DIAG_TRANSFER_PRE;
+        if (getenv("SPU_DMACHK") || getenv("SPU_GETHIST") ||
+            getenv("SPU_PUTHIST") || getenv("SPU_MFC_TRACE"))
+            m |= MFC_DIAG_TRANSFER_HIST;
+        if (getenv("SPU_CMDHIST")) m |= MFC_DIAG_SUBMIT_PRE;
+        if (getenv("SPU_PUTEA") || getenv("SPU_PUTHIST")) m |= MFC_DIAG_SUBMIT_HIST;
+        __atomic_store_n(&cached, (int)m, __ATOMIC_RELEASE);
+        mask = (int)m;
+    }
+    return (unsigned)mask;
+}
+
 static inline int mfc_do_transfer(spu_context* spu, uint32_t lsa, uint64_t ea,
                                    uint32_t size, uint32_t cmd)
 {
@@ -213,6 +239,7 @@ static inline int mfc_do_transfer(spu_context* spu, uint32_t lsa, uint64_t ea,
      * descriptor at LS 0x3FFE0 can be valid while this second GET still uses
      * a bad EA, is rejected, or reads an empty source page. Keep this narrow
      * and opt-in because the kernel retries the dispatch continuously. */
+    const unsigned diag = mfc_diag_mask();
     int spurs_load_trace = 0;
     const uint32_t trace_lsa = lsa & SPU_LS_MASK;
     if (spu->image_id == 104 && trace_lsa < 0x2C00u &&
@@ -271,6 +298,7 @@ static inline int mfc_do_transfer(spu_context* spu, uint32_t lsa, uint64_t ea,
         spu_lockline_unlock();
         return 0;
     }
+    if (diag & MFC_DIAG_TRANSFER_PRE) {
     /* SPU_DMA_WATCH=<hex>: report any transfer whose destination RANGE covers
      * this guest address. A DMA landing in the loaded ELF image is always a
      * bug, and it is invisible to the sampling traces -- YDKJ had an SPU job
@@ -308,6 +336,7 @@ static inline int mfc_do_transfer(spu_context* spu, uint32_t lsa, uint64_t ea,
                 fprintf(stderr, "[dma-range] %.0f B/s put, %.0f B/s get\n",
                         s_put * 1000.0 / (now - s_t0), s_get * 1000.0 / (now - s_t0));
                 s_put = s_get = 0; s_t0 = now; } } } }
+    }
     /* Malformed transfers are REJECTED, as the hardware MFC does. The rules
      * are the ones the SDK's own dma.h asserts: a non-zero size, at most
      * 16 KB, a multiple of 16 once >= 16 bytes, and LSA/EA sharing 16-byte
@@ -343,6 +372,7 @@ static inline int mfc_do_transfer(spu_context* spu, uint32_t lsa, uint64_t ea,
                           lsa, (uint32_t)ea, size);
               return 0;
           } } }
+    if (diag & MFC_DIAG_TRANSFER_HIST) {
     /* SPU_DMACHK=1: report transfers that break the MFC rules the guest's own
      * dma.h asserts on -- size 0 or > 16 KB, size not a multiple of 16 for
      * transfers of 16+ bytes, or LSA/EA not sharing 16-byte alignment. */
@@ -468,6 +498,7 @@ static inline int mfc_do_transfer(spu_context* spu, uint32_t lsa, uint64_t ea,
                       spu->image_id, (uint32_t)spu->pc & SPU_LS_MASK,
                       (uint32_t)ea, size, lsa);
       } }
+    }
     /* Validate size */
     if (size == 0 || size > MFC_MAX_DMA_SIZE)
         return -1;
@@ -1114,6 +1145,8 @@ static inline void spu_dma_repeat_log_end(const spu_context* spu, uint32_t ea, u
 
 static inline int mfc_submit(mfc_engine* mfc, spu_context* spu, uint32_t cmd)
 {
+    const unsigned diag = mfc_diag_mask();
+    if (diag & MFC_DIAG_SUBMIT_PRE) {
     /* SPU_CMDHIST=1: every MFC command that reaches the engine, by opcode and
      * SPU image. Catches list DMAs (putl/getl) that never reach
      * mfc_do_transfer's per-element path. */
@@ -1126,6 +1159,7 @@ static inline int mfc_submit(mfc_engine* mfc, spu_context* spu, uint32_t cmd)
                   if (h[c][im]) fprintf(stderr, "   cmd=0x%02X img=%d  %llu%c",
                                         c, im, h[c][im], 10);
           } } }
+    }
     uint32_t lsa  = spu->mfc_lsa;
     uint64_t ea   = ((uint64_t)spu->mfc_eah << 32) | spu->mfc_eal;
     uint32_t size = spu->mfc_size;
@@ -1339,6 +1373,7 @@ static inline int mfc_submit(mfc_engine* mfc, spu_context* spu, uint32_t cmd)
      * (RSX local + 0x400000). Buckets keep only 4 address bits, so that may be
      * an artifact of where RSX local memory actually sits; the full EA settles
      * it. */
+    if (diag & MFC_DIAG_SUBMIT_HIST) {
     { static int s_pe = -1; if (s_pe < 0) s_pe = getenv("SPU_PUTEA") ? 1 : 0;
       if (s_pe && (cmd & 0xFF) >= 0x20u && (cmd & 0xFF) <= 0x2Fu) {
           static int shown[8];
@@ -1384,6 +1419,7 @@ static inline int mfc_submit(mfc_engine* mfc, spu_context* spu, uint32_t cmd)
           }
       } }
 
+    }
     /* cri build (YDKJ_CRI_CHAIN): when the kernel DMA-loads the TASKSET policy
      * module (libsre guest 0x30023680) to LS 0xA00, switch this SPU's image to 23
      * so subsequent indirect branches to 0xA00 resolve lift_tsp (taskset policy)
