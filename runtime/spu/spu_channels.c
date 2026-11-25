@@ -1231,11 +1231,31 @@ static void spu_ft_wait_span(spu_context* ctx, uint32_t channel, uint64_t t0)
     t_ft_busy0 = t1;
 }
 
+/* Keep the compatibility poll for every channel. Only opt-in private
+ * mailbox/signal waits may lengthen it; LR events can depend on the 128-byte
+ * snapshot comparison, and raw-SPU stop latency must remain unchanged. */
+static DWORD spu_ch_poll_interval(const spu_context* ctx, uint32_t channel)
+{
+    if (ctx->ls != ctx->ls_store ||
+        (channel != SPU_RdInMbox && channel != SPU_RdSigNotify1 &&
+         channel != SPU_RdSigNotify2)) return 10;
+    const char* e = getenv("SPU_CH_POLL_MS");
+    if (!e || !*e) return 10;
+    char* end = NULL;
+    unsigned long n = strtoul(e, &end, 10);
+    if (!end || *end || n < 10 || n > 100) return 10;
+    return (DWORD)n;
+}
+
 /* Block the calling SPU host thread until `channel` is readable. */
 static void spu_ch_wait(spu_context* ctx, uint32_t channel, const char* op)
 {
     if (!yz_ch_block() || spu_ch_ready(ctx, channel)) return;
     const uint64_t ft_t0 = PS3_FT_ON() ? ps3_ft_now() : 0;
+    const DWORD poll_ms = spu_ch_poll_interval(ctx, channel);
+    const char* diag_env = getenv("SPU_CH_POLL_DIAG");
+    const int poll_diag = diag_env && !strcmp(diag_env, "1");
+    unsigned long long wait_calls = 0, wait_unsignaled = 0;
 
     { static unsigned long bn = 0; unsigned long n = ++bn;
       if (n <= 50 || (n % 512) == 0)
@@ -1253,9 +1273,15 @@ static void spu_ch_wait(spu_context* ctx, uint32_t channel, const char* op)
                 spu_honour_stop_request(ctx);
             }
             AcquireSRWLockExclusive((SRWLOCK*)&ctx->ch_wait_lock);
-            if (!spu_ch_ready(ctx, channel))
-                SleepConditionVariableSRW((CONDITION_VARIABLE*)&ctx->ch_wait_cv,
-                                          (SRWLOCK*)&ctx->ch_wait_lock, 10, 0);
+            if (!spu_ch_ready(ctx, channel)) {
+                const BOOL signaled = SleepConditionVariableSRW(
+                    (CONDITION_VARIABLE*)&ctx->ch_wait_cv,
+                    (SRWLOCK*)&ctx->ch_wait_lock, poll_ms, 0);
+                if (poll_diag) {
+                    ++wait_calls;
+                    if (!signaled) ++wait_unsignaled;
+                }
+            }
             ReleaseSRWLockExclusive((SRWLOCK*)&ctx->ch_wait_lock);
             unsigned long long waited = GetTickCount64() - start;
             if (waited >= next_hb) {
@@ -1269,6 +1295,9 @@ static void spu_ch_wait(spu_context* ctx, uint32_t channel, const char* op)
         }
     }
     yz_lockstep_block_end(ctx);            /* rejoin the rotation, reacquire the token */
+    if (poll_diag && wait_calls)
+        fprintf(stderr, "[ch-poll] spu=%X ch=%u interval=%lu ms waits=%llu unsignaled=%llu\n",
+                ctx->spu_id, channel, (unsigned long)poll_ms, wait_calls, wait_unsignaled);
     if (ft_t0) spu_ft_wait_span(ctx, channel, ft_t0);
     ctx->status = SPU_STATUS_RUNNING;
 }
