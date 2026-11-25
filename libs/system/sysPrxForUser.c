@@ -10,10 +10,12 @@
 #include "sysPrxForUser.h"
 #include "../../runtime/memory/vm.h"
 #include <ps3emu/guest_call.h>
+#include "ps3emu/aio_service.h"
 #include "ps3emu/lwsync_bridge.h"
 
 /* Installed at context-HLE registration, before guest dispatch. */
 ps3_lwsync_bridge_fn g_ps3_lwsync_bridge;
+void (*g_ps3_aio_process_stop)(void);
 #include "../../runtime/ppu/ppu_memory.h"   /* vm_base, vm_write32: translate + byte-swap */
 #include <stdio.h>
 #include <stdarg.h>
@@ -201,6 +203,8 @@ void sys_process_exit(s32 exitcode)
 #endif
         }
     }
+    void (*stop)(void) = __atomic_load_n(&g_ps3_aio_process_stop, __ATOMIC_ACQUIRE);
+    if (stop) stop();
     exit(exitcode);
 }
 

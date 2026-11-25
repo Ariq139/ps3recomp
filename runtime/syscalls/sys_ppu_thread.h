@@ -14,6 +14,7 @@
 #include "../memory/vm.h"
 
 #include <stdint.h>
+#include "ps3emu/aio_service.h"
 
 #ifdef _WIN32
   #define WIN32_LEAN_AND_MEAN
@@ -54,6 +55,7 @@ typedef struct ppu_thread_info {
     uint64_t     tls_addr;
     uint32_t     prof_pc;      /* last syscall/HLE callsite (sampling profiler) */
     int          blocked;      /* reached a blocking call (ppu_thread_note_block); atomic access only */
+    ps3_ppu_service_fn service_entry, service_cleanup; /* native HLE service, or NULL */
 
 #ifdef _WIN32
     HANDLE       host_thread;
