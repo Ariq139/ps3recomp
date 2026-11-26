@@ -164,6 +164,12 @@ target_include_directories(ps3recomp_runtime PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
 )
 
+# VMX helpers are inline in the generated PPU code and runtime consumers.
+option(PS3RECOMP_PPU_VMX_SSE2 "Enable experimental native integer VMX SSE2" OFF)
+if(PS3RECOMP_PPU_VMX_SSE2)
+    target_compile_definitions(ps3recomp_runtime PUBLIC PPU_VMX_ENABLE_SSE2=1)
+endif()
+
 # HLE modules include their own headers
 target_include_directories(ps3recomp_runtime PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/libs/system"
