@@ -668,6 +668,20 @@ if(PS3RECOMP_BUILD_TESTS)
         "${CMAKE_CURRENT_SOURCE_DIR}/libs/video")
     add_test(NAME rsx_present_policy COMMAND test_rsx_present_policy)
 
+    # Exact-byte reuse for the D3D12 vertex-constant snapshot cache. This is
+    # a pure host-side test and does not require a GPU or the full backend.
+    add_executable(test_constant_snapshot_cache
+        libs/video/tests/test_constant_snapshot_cache.c)
+    target_include_directories(test_constant_snapshot_cache PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/libs/video")
+    if(MSVC)
+        target_compile_options(test_constant_snapshot_cache PRIVATE /UNDEBUG)
+    else()
+        target_compile_options(test_constant_snapshot_cache PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME rsx_constant_snapshot_cache
+        COMMAND test_constant_snapshot_cache)
+
     if(WIN32)
         add_executable(test_vertex_raw_gpu
             libs/video/tests/test_vertex_raw_gpu.c
