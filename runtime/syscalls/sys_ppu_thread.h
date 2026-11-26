@@ -14,6 +14,7 @@
 #include "../memory/vm.h"
 
 #include <stdint.h>
+#include "ps3emu/aio_service.h"
 
 #ifdef _WIN32
   #define WIN32_LEAN_AND_MEAN
@@ -35,6 +36,7 @@ extern "C" {
 #define PPU_THREAD_STATE_RUNNING    1
 #define PPU_THREAD_STATE_FINISHED   2
 #define PPU_THREAD_STATE_DETACHED   3
+#define PPU_THREAD_STATE_STARTING   4 /* internal, not published */
 
 /* Thread entry point type - recompiled function pointer */
 typedef void (*ppu_thread_entry_fn)(ppu_context* ctx);
@@ -47,13 +49,17 @@ typedef struct ppu_thread_info {
     int32_t      priority;
     int64_t      exit_status;
     int          joinable;
-    int          joining;      /* a sys_ppu_thread_join is in progress: a second joiner is EINVAL */
+    int          joining;      /* exclusive join/finished-detach claimant */
+    int          exit_requested;
+    uint64_t     generation;   /* internal slot lifetime, not a guest ABI change */
     uint32_t     stack_addr;   /* guest stack base */
+    uint32_t     stack_capacity; /* original usable extent including alignment slack */
     uint32_t     stack_size;
     uint64_t     entry_addr;   /* guest entry point */
     uint64_t     tls_addr;
     uint32_t     prof_pc;      /* last syscall/HLE callsite (sampling profiler) */
     int          blocked;      /* reached a blocking call (ppu_thread_note_block); atomic access only */
+    ps3_ppu_service_fn service_entry, service_cleanup; /* native HLE service, or NULL */
 
 #ifdef _WIN32
     HANDLE       host_thread;
@@ -102,6 +108,8 @@ uint64_t ppu_thread_register_main(void);
  * With PS3_PRIO_START=1, sys_ppu_thread_create waits for it on a thread it has just made at a higher priority than
  * the creator's, as lv2's scheduler would run that thread first. */
 void ppu_thread_note_block(uint64_t tid);
+int32_t ppu_thread_priority_snapshot(uint64_t tid);
+int ppu_thread_exists(uint64_t tid);
 /* Set the executable's validated PROC_PARAM priority before main dispatch. */
 uint64_t ppu_thread_register_main_priority(int32_t priority);
 int64_t sys_ppu_thread_exit(ppu_context* ctx);

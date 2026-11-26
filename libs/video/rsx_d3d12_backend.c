@@ -65,6 +65,7 @@ static const GUID s_iid_d3d12_pipeline_library =
     {0xc64226a8, 0x9201, 0x46af, {0xb4, 0xcc, 0x53, 0xfb, 0x9f, 0xf7, 0x41, 0x4f}};
 
 #include "rsx_d3d12_device.h"
+#include "rsx_d3d12_shadow_border.h"
 
 /* Link libraries */
 #pragma comment(lib, "d3d12.lib")
@@ -175,6 +176,7 @@ typedef struct {
         u32 w, h, fmt;  /* dims + RSX base format */
         u32 ctrl1;      /* NV4097 TEXTURE_CONTROL1: component remap crossbar */
         u32 filter, address, control0, pitch; /* sampler state + row pitch */
+        u32 border_color; /* guest TEXTURE_BORDER_COLOR, snapshotted per draw */
         u32 mips;       /* SET_TEXTURE_FORMAT bits 16..31: mipmap level count.
                          * Cube faces sit one whole mip pyramid apart, so this
                          * is what sets the face stride. */
@@ -2281,13 +2283,17 @@ static void rsx_capture_frame(u32 fi, u32 ndraws, u32 capidx)
                         fclose(raw);
                     }
                 }
-                for (int u = 0; u < RSX_TEXTURE_UNITS; u++)
-                    if (r->tex[u].set)
-                        fprintf(mf, "      t%d off=0x%08X fmt=0x%02X (%s%s) %ux%u remap=0x%04X\n", u,
-                                r->tex[u].off, r->tex[u].fmt,
-                                (r->tex[u].fmt & 0x20) ? "LN" : "SZ",
-                                (r->tex[u].fmt & 0x40) ? ",NR" : "",
-                                r->tex[u].w, r->tex[u].h, r->tex[u].ctrl1 & 0xFFFF);
+                for (int u = 0; u < RSX_TEXTURE_UNITS; u++) {
+                    if (!r->tex[u].set) continue;
+                    fprintf(mf, "      t%d off=0x%08X fmt=0x%02X (%s%s) %ux%u remap=0x%04X\n", u,
+                            r->tex[u].off, r->tex[u].fmt,
+                            (r->tex[u].fmt & 0x20) ? "LN" : "SZ",
+                            (r->tex[u].fmt & 0x40) ? ",NR" : "",
+                            r->tex[u].w, r->tex[u].h, r->tex[u].ctrl1 & 0xFFFF);
+                    fprintf(mf, "      t%d sampler address=0x%08X filter=0x%08X control0=0x%08X border=0x%08X shadow=%u\n",
+                            u, r->tex[u].address, r->tex[u].filter, r->tex[u].control0,
+                            r->tex[u].border_color, (unsigned)r->tex_shadow[u].enabled);
+                }
             }
         }
         /* Per-draw VP constant banks for the first few offscreen-RT geometry
@@ -3417,7 +3423,7 @@ static void dr_capture_extended_rsx_state(D3D12DrawRecord* dr, const rsx_state* 
     memset(dr->gamma_masks, 0, sizeof dr->gamma_masks);
     for (u32 u = 0; u < RSX_TEXTURE_UNITS; u++)
         dr->tex[u].filter = dr->tex[u].address = dr->tex[u].control0 =
-            dr->tex[u].pitch = 0;
+            dr->tex[u].pitch = dr->tex[u].border_color = 0;
     if (st) for (u32 i = 0; i < 10; i++)
         dr->texcoord_control_mask |= (st->tex_coord_control[i] & 1u) << i;
     dr->vtex_mask = dr->vtex_cube_mask = dr->vtex_1d_mask = 0;
@@ -3434,6 +3440,7 @@ static void dr_capture_extended_rsx_state(D3D12DrawRecord* dr, const rsx_state* 
             dr->tex[u].address = t->address;
             dr->tex[u].control0 = t->control0;
             dr->tex[u].pitch = t->control3 & 0xFFFFFu;
+            dr->tex[u].border_color = t->border_color;
             dr->gamma_masks[u] = rsx_texture_gamma_mask(
                 (t->format >> 8) & 0xFFu, t->control1, t->filter, t->address);
             const u32 fmt = ((t->format >> 8) & 0xFFu) & 0x9Fu;
@@ -3564,7 +3571,7 @@ static D3D12_SAMPLER_DESC d3d12_sampler_desc(u32 filter, u32 address,
     sd.ComparisonFunc = comparison
         ? d3d12_shadow_sample_func(compare_func)
         : D3D12_COMPARISON_FUNC_ALWAYS;
-    /* Vulkan currently uses transparent black for border addressing too. */
+    /* Non-shadow and unsupported border values retain the legacy default. */
     return sd;
 }
 
@@ -3659,12 +3666,18 @@ static int d3d12_sampler_table_for_draw(const D3D12DrawRecord* dr,
                     const D3D12DrawRecord* r = dr;
                     desc[ns] = d3d12_sampler_desc(r->tex[unit].filter,
                         r->tex[unit].address, r->tex[unit].control0, 0, 0);
+                    /* The manual comparison shader samples depth through a
+                     * normal sampler. Border depth matters on this path too. */
+                    rsx_d3d12_apply_shadow_border(&desc[ns],
+                        dr->tex_shadow[unit].enabled == 1, dr->tex[unit].border_color);
                 }
                 const u8 cs = layout->shadow_slot[unit];
                 if (cs != 0xFFu) {
                     const u32 func = (u32)((dr->tex_shadow_compare_key >> (4u * unit)) & 7u);
                     desc[cs] = d3d12_sampler_desc(dr->tex[unit].filter,
                         dr->tex[unit].address, dr->tex[unit].control0, 1, func);
+                    rsx_d3d12_apply_shadow_border(&desc[cs],
+                        dr->tex_shadow[unit].enabled == 1, dr->tex[unit].border_color);
                 }
             }
         }

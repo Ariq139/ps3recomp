@@ -97,11 +97,36 @@ static DWORD WINAPI bgjoin_main(LPVOID p)
     return 0;
 }
 
+static void fixture_stack_arena(void)
+{
+#ifdef _WIN32
+    vm_base = (uint8_t*)VirtualAlloc(NULL, 16u << 20, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+#else
+    void* p = mmap(NULL, 16u << 20, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    vm_base = p == MAP_FAILED ? NULL : (uint8_t*)p;
+#endif
+    assert(vm_base);
+    ppu_vm_size = 16u << 20;
+    g_vm_stack_alloc.next_addr = 0x10000u;
+    g_vm_stack_alloc.region_end = 8u << 20;
+    g_vm_stack_alloc.retired_count = 0;
+}
+
 int main(void)
 {
-    vm_base = (uint8_t*)calloc(1, 0x10000); assert(vm_base);
-    g_vm_stack_alloc.next_addr = 0x10000000u;   /* the guest stack region the threads bump-allocate from */
-    g_vm_stack_alloc.region_end = 0xA0000000u;
+    fixture_stack_arena();
+    {
+        uint32_t first=g_vm_stack_alloc.next_addr,ac=0,bc=0,cc=0,dc=0;
+        uint32_t a=vm_stack_reserve_extent(&g_vm_stack_alloc,0x10000,&ac);
+        uint32_t b=vm_stack_reserve_extent(&g_vm_stack_alloc,0x10000,&bc);
+        uint32_t c=vm_stack_reserve_extent(&g_vm_stack_alloc,0x10000,&cc);
+        assert(a&&b&&c);
+        vm_stack_release(&g_vm_stack_alloc,a,ac);vm_stack_release(&g_vm_stack_alloc,b,bc);
+        uint32_t d=vm_stack_reserve_extent(&g_vm_stack_alloc,0x18000,&dc);
+        assert(d==a&&dc>=0x18000&&vm_stack_prepare_extent(d,dc,NULL));
+        vm_stack_release(&g_vm_stack_alloc,d,dc);vm_stack_release(&g_vm_stack_alloc,c,cc);
+        assert(g_vm_stack_alloc.next_addr==first&&!g_vm_stack_alloc.retired_count);
+    }
     g_ppu_thread_entry_trampoline = guest_entry;
     ppu_thread_register_main();
 
@@ -141,6 +166,7 @@ int main(void)
             Sleep(1);
         }
         EXPECT_EQ(join_as(1, tid, &status), (int64_t)(int32_t)CELL_EINVAL);       /* a second joiner */
+        EXPECT_EQ(detach(tid), (int64_t)(int32_t)CELL_EINVAL); // cannot steal joiner's slot
         s_gate = 1;
         WaitForSingleObject(h, 20000); CloseHandle(h);
         EXPECT_EQ(b.rc, 0);

@@ -21,6 +21,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # ---------------------------------------------------------------------------
 option(PS3RECOMP_BUILD_TESTS "Build unit tests" OFF)
 option(PS3RECOMP_SPU_LOCKLINE_SRW "Use a native parking lock for Windows SPU coherency" OFF)
+option(PS3RECOMP_SPU_LOOKUP_CACHE_HASH_MIX
+    "Mix full SPU lookup keys before selecting cache buckets (experimental)" OFF)
 
 # cellFiber switches host contexts with Windows fibers on Windows and the
 # ucontext routines everywhere else. Apple arm64 has a third, opt-in option: a
@@ -162,6 +164,10 @@ if(PS3RECOMP_SPU_LOCKLINE_SRW)
     endif()
     target_compile_definitions(ps3recomp_runtime PRIVATE PS3RECOMP_SPU_LOCKLINE_SRW=1)
 endif()
+if(PS3RECOMP_SPU_LOOKUP_CACHE_HASH_MIX)
+    target_compile_definitions(ps3recomp_runtime PRIVATE
+        PS3RECOMP_SPU_LOOKUP_CACHE_HASH_MIX=1)
+endif()
 # cellFiber picks its host context path on this; nothing else reads it.
 if(PS3RECOMP_FIBER_BACKEND STREQUAL "aarch64")
     target_compile_definitions(ps3recomp_runtime PRIVATE PS3RECOMP_FIBER_HOST_AARCH64=1)
@@ -170,6 +176,12 @@ endif()
 target_include_directories(ps3recomp_runtime PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
 )
+
+# VMX helpers are inline in the generated PPU code and runtime consumers.
+option(PS3RECOMP_PPU_VMX_SSE2 "Enable experimental native integer VMX SSE2" OFF)
+if(PS3RECOMP_PPU_VMX_SSE2)
+    target_compile_definitions(ps3recomp_runtime PUBLIC PPU_VMX_ENABLE_SSE2=1)
+endif()
 
 # HLE modules include their own headers
 target_include_directories(ps3recomp_runtime PRIVATE
@@ -187,6 +199,11 @@ target_include_directories(ps3recomp_runtime PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/runtime/spu"
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
 )
+
+option(PS3RECOMP_AUDIO_SSE2_MIX "Enable experimental constant-gain stereo SSE2 mixer" OFF)
+if(PS3RECOMP_AUDIO_SSE2_MIX)
+    target_compile_definitions(ps3recomp_runtime PRIVATE AUDIO_ENABLE_SSE2_MIX=1)
+endif()
 
 # Platform-specific link libraries
 if(WIN32)
