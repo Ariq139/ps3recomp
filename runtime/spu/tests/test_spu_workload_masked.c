@@ -29,8 +29,9 @@ void spu_coh_watch_remove(spu_coh_watch* w) { (void)w; }
 void spu_lockline_lock(void) { }
 void spu_lockline_unlock(void) { }
 void spu_mfc_release(spu_context* c) { (void)c; }
-void spu_coh_forget_range(uintptr_t lo, uintptr_t hi) { (void)lo; (void)hi; }
-void spu_mfc_forget_range(uintptr_t lo, uintptr_t hi) { (void)lo; (void)hi; }
+void spu_async_task_reset_thread_state(void) {}
+void spu_coh_forget_range(uintptr_t lo,uintptr_t hi) { (void)lo;(void)hi; }
+void spu_mfc_forget_range(uintptr_t lo,uintptr_t hi) { (void)lo;(void)hi; }
 int spu_run_spurs_job(spu_lifted_entry_fn e, int id, uint32_t ea, uint32_t sz)
 { (void)e; (void)id; (void)ea; (void)sz; return -1; }
 int spu_run_spurs_job_with_abi(spu_lifted_entry_fn e, int id, uint32_t ea,

@@ -16,6 +16,7 @@
 #include "ppu_fs.cpp"
 #include <thread>
 #include <vector>
+#include <chrono>
 #ifndef _WIN32
 #include <signal.h>
 #include <sys/mman.h>
@@ -30,6 +31,10 @@ void vm_write64(uint64_t a, uint64_t v) { uint64_t be = __builtin_bswap64(v); me
 void ppu_guest_caller(char* out, size_t n) { if (n) out[0] = 0; }
 void ps3_vfs_ps3game_fallback(char* path, size_t cap) { (void)path; (void)cap; }
 void ydkj_host_bt(const char* tag) { (void)tag; }
+bool ps3recomp_materialize_cpk_event_folder(const char* root) { (void)root; return false; }
+int ps3recomp_resolve_event_editor_path(const char* root, const char* guest,
+                                        char* out, size_t cap)
+{ (void)root; (void)guest; (void)out; (void)cap; return 0; }
 void ps3_hle_register_ctx(uint32_t, const char*, void (*)(ppu_context*)) {}
 }
 /* ps3_dev_flash_path (runtime/platform), which host_path calls for /dev_flash: the real one, it needs nothing. */
@@ -43,8 +48,8 @@ static void wr32(uint32_t a, uint32_t v) { vm_write32(a, v); }
 static void wr64(uint32_t a, uint64_t v) { vm_write64(a, v); }
 
 static int fails = 0;
-#define CHECK(c, ...) do { printf((c) ? "[PASS] " : "[FAIL] "); printf(__VA_ARGS__); printf("\n"); \
-                           if (!(c)) fails++; } while (0)
+#define CHECK(c, ...) do { const bool passed = !!(c); printf(passed ? "[PASS] " : "[FAIL] "); \
+                           printf(__VA_ARGS__); printf("\n"); if (!passed) fails++; } while (0)
 
 static const uint32_t WORDS = 1u << 16;   /* 256 KiB file */
 
@@ -131,6 +136,102 @@ static void test_aio_write_prefault(const char* dir)
 }
 #endif
 
+/* Exercise the actual async manager with a controlled service hook. This
+ * tests the queue and FILE lifetime without requiring a lifted callback OPD.
+ * Native PPU context/TLS integration is a separate runtime validation. */
+static std::thread aio_fixture_thread;
+static std::mutex aio_fixture_lock;
+static std::condition_variable aio_fixture_cv;
+static bool aio_fixture_entered=false, aio_fixture_continue=false;
+struct AioFixtureCompletion { int32_t id,error; uint64_t size; };
+static std::vector<AioFixtureCompletion> aio_fixture_done;
+static int32_t aio_fixture_start(ps3_ppu_service_fn entry, ps3_ppu_service_fn cleanup)
+{
+    aio_fixture_thread = std::thread([=] {
+        ppu_context c{}; c.thread_id=42; c.gpr[1]=0x80000; c.gpr[13]=0x90000;
+        entry(&c); cleanup(&c);
+    });
+    return CELL_OK;
+}
+static int aio_fixture_prepare(void*) { return 1; }
+static int aio_fixture_resolve(uint32_t, uint32_t* code, uint32_t* toc) { *code=0x10000; *toc=0; return 1; }
+static void aio_fixture_install_stop(void (*)(void)) {}
+static int aio_fixture_deliver(void* opaque,uint64_t,uint64_t,uint32_t,uint32_t,
+                               uint32_t,int32_t error,int32_t id,uint64_t size)
+{
+    auto* c=static_cast<ppu_context*>(opaque);
+    if (c->thread_id != 42) return 0;
+    std::unique_lock<std::mutex> hold(aio_fixture_lock);
+    if (!aio_fixture_entered) {
+        aio_fixture_entered=true; aio_fixture_cv.notify_all();
+        aio_fixture_cv.wait(hold,[]{return aio_fixture_continue;});
+    }
+    aio_fixture_done.push_back({id,error,size}); aio_fixture_cv.notify_all();
+    return 1;
+}
+static const ps3_aio_runtime_hooks aio_fixture_hooks = {
+    aio_fixture_start,aio_fixture_prepare,aio_fixture_resolve,aio_fixture_deliver,aio_fixture_install_stop
+};
+static int32_t aio_fixture_submit(uint32_t aio,int fd,uint64_t offset,uint32_t buf,
+                                  uint64_t bytes,uint32_t id_ptr)
+{
+    wr32(aio,fd); wr64(aio+8,offset); wr32(aio+0x10,buf); wr64(aio+0x18,bytes);
+    ppu_context c{}; c.gpr[3]=aio;c.gpr[4]=id_ptr;c.gpr[5]=0x900;
+    fs_aio_async_submit(&c,false);
+    return (int32_t)c.gpr[3];
+}
+static void test_async_queue(int fd)
+{
+    auto* manager=fs_aio_manager_create();
+    manager->hooks=&aio_fixture_hooks;
+    CHECK(fs_aio_async_init("/dev_hdd1")==CELL_OK,"async mount initialized");
+    CHECK(aio_fixture_submit(0x800,fd,0x1000,0x6000,16,0x290)==CELL_OK,"first request queued");
+    {
+        std::unique_lock<std::mutex> hold(aio_fixture_lock);
+        if (!aio_fixture_cv.wait_for(hold,std::chrono::seconds(5),[]{return aio_fixture_entered;})) {
+            CHECK(false,"service reached callback"); std::abort();
+        }
+    }
+    CHECK(holds(0x6000,0x1000,16),"guest bytes published before callback");
+    { std::lock_guard<std::mutex> hold(manager->mutex);
+      CHECK(manager->callback_admitted, "callback admitted before dispatch"); }
+    CHECK(fs_aio_async_cancel((int32_t)rd32(0x290))==(int32_t)CELL_EBUSY,"active cancellation rejected");
+    CHECK(aio_fixture_submit(0x840,fd,0x2000,0x6100,16,0x294)==CELL_OK,"second request queued during callback");
+    CHECK(aio_fixture_submit(0x880,fd,0x3000,0x6200,16,0x298)==CELL_OK,"third request queued during callback");
+    CHECK(fs_aio_async_cancel((int32_t)rd32(0x298))==CELL_OK,"queued cancellation accepted");
+    CHECK(fs_aio_async_finish("/dev_hdd1")==(int32_t)CELL_EBUSY,"finish never waits for active callback");
+    ppu_context close_ctx{}; close_ctx.gpr[3]=fd; cellFsClose(&close_ctx);
+    // Reuse the fd with different contents: the queued request must still read
+    // the old stream. The new file is deliberately not a valid AIO mount.
+    FILE* replacement=tmpfile();
+    if (!replacement) std::abort();
+    int newfd;
+    {std::lock_guard<std::mutex> hold(g_fs_mutex); newfd=fd_alloc_file(replacement);}
+    CHECK(newfd==fd,"numeric descriptor reused while old stream pinned");
+    {
+        std::lock_guard<std::mutex> hold(aio_fixture_lock);
+        aio_fixture_continue=true; aio_fixture_cv.notify_all();
+    }
+    {
+        std::unique_lock<std::mutex> hold(aio_fixture_lock);
+        if (!aio_fixture_cv.wait_for(hold,std::chrono::seconds(5),[]{return aio_fixture_done.size()==3;})) {
+            CHECK(false,"three completions delivered"); std::abort();
+        }
+        CHECK(aio_fixture_done[0].id==(int32_t)rd32(0x290) &&
+              aio_fixture_done[1].id==(int32_t)rd32(0x294) &&
+              aio_fixture_done[2].id==(int32_t)rd32(0x298),"completion FIFO and distinct IDs");
+        CHECK(aio_fixture_done[1].error==CELL_OK && aio_fixture_done[1].size==16 &&
+              holds(0x6100,0x2000,16),"pinned original file survived close/reuse");
+        CHECK(aio_fixture_done[2].error==(int32_t)CELL_ECANCELED &&
+              aio_fixture_done[2].size==0,"canceled request completes once with ECANCELED");
+    }
+    {std::unique_lock<std::mutex> hold(manager->mutex);
+     CHECK(manager->cv.wait_for(hold,std::chrono::seconds(5),[&]{return manager->pending==0;}),"all callbacks retired");}
+    CHECK(fs_aio_async_finish("/dev_hdd1")==CELL_OK,"idle mount finish");
+    close_ctx.gpr[3]=newfd; cellFsClose(&close_ctx);
+    fs_aio_process_stop(); aio_fixture_thread.join();
+}
+
 int main(int argc, char** argv)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -149,7 +250,11 @@ int main(int argc, char** argv)
     }
 
     ppu_vfs_root = dir;
-    ppu_context ctx;
+    ppu_context ctx{};
+    strcpy((char*)mem + 0x100, "/dev_hdd1");
+    ctx.gpr[3] = 0x100;
+    cellFsAioInit(&ctx);
+    CHECK((uint32_t)ctx.gpr[3] == CELL_OK, "initialize legacy AIO fixture");
 
     /* 1. An AIO write lands at its own offset and leaves the fd's position;
      *    reads and writes never share an id. First, so neither has drawn an
@@ -221,8 +326,7 @@ int main(int argc, char** argv)
     CHECK(total == 0, "%d racing AIO reads over %d threads, %d returned the wrong bytes",
           THREADS * ROUNDS, THREADS, total);
 
-    memset(&ctx, 0, sizeof ctx); ctx.gpr[3] = fd;
-    cellFsClose(&ctx);
+    test_async_queue((int)fd); // also closes/reuses fd and joins test service
     remove(host);
 #ifndef _WIN32
     test_aio_write_prefault(dir);

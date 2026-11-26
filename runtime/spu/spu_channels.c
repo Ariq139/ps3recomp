@@ -2230,6 +2230,7 @@ void spu_overlay_register_sig(const uint8_t sig[16], int image_id)
  * keeps in its own data can be lifted. A body larger than one DMA arrives as
  * consecutive GETs (contiguous EA and LS); those are appended to the same
  * file. One file per source EA: ovl_<ea>.bin. */
+static SPU_TLS uint32_t t_src, t_next_ea, t_next_lsa;
 static void spu_ovl_dump(spu_context* ctx, uint32_t ea, uint32_t lsa, const uint8_t* ls, uint32_t size)
 {
     static int s_on = -1; static char s_dir[400]; static uint32_t s_lsa = 0x5000;
@@ -2238,7 +2239,6 @@ static void spu_ovl_dump(spu_context* ctx, uint32_t ea, uint32_t lsa, const uint
                     char* c = strchr(s_dir, ','); if (c) { *c = 0; s_lsa = (uint32_t)strtoul(c + 1, 0, 0); } } }
     if (!s_on) return;
     static uint32_t s_seen[256]; static unsigned s_n;
-    static SPU_TLS uint32_t t_src, t_next_ea, t_next_lsa;
     FILE* f = NULL; char path[512];
     if (lsa == s_lsa && size >= 256) {
         for (unsigned i = 0; i < s_n; i++) if (s_seen[i] == ea) { t_src = 0; return; }
@@ -2395,6 +2395,16 @@ static void spu_ef_deliver_owed(spu_context* ctx, uint32_t wobj)
                 (unsigned)bits, wobj); }
 }
 
+static SPU_TLS int s_exit_seen;
+void spu_async_task_reset_thread_state(void)
+{
+    s_exit_seen = 0;
+    s_spu_halt_armed = 0;
+    g_spu_trampoline_fn = NULL;
+    t_ft_busy0 = 0;
+    t_src=t_next_ea=t_next_lsa=0;
+}
+
 void spu_spurs_taskset_syscall(spu_context* ctx)   /* non-static: also called by the pure interpreter (spu_interp.c) */
 {
     uint32_t raw = ctx->gpr[3]._u32[0];
@@ -2432,8 +2442,7 @@ void spu_spurs_taskset_syscall(spu_context* ctx)   /* non-static: also called by
      * that has since done work and calls EXIT again means it: returning there makes
      * it re-enter and spin (observed: 6x num=0 from link 0x26E18 once the task is
      * woken). Honour the first call, halt on the rest. Each task runs on its own
-     * host thread, so a thread-local count is per task. */
-    static _Thread_local int s_exit_seen = 0;
+     * host thread or an explicitly reset pooled worker. */
     if (num == 0 && ctx->image_id == 22 && !getenv("YDKJ_CRI_EXIT_HALT")) {
         if (s_exit_seen++ == 0) { ctx->gpr[3]._u32[0] = 0; return; }   /* bootstrap */
         { static int _n = 0; if (PS3_LOG_FIRST(_n, 8))
