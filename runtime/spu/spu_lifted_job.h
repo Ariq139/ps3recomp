@@ -125,9 +125,8 @@ static inline int32_t spu_run_interp_job(uint8_t* local_store, uint32_t entry_pc
     /* `ctx` is about to go out of scope: take it out of the reserving set
      * first, or the coherency walk dereferences this stack frame after it is
      * gone. See spu_coh_unregister. */
-    spu_mfc_release(&ctx);
     spu_coh_unregister(&ctx);
-    spu_mfc_release(&ctx);   /* or its MFC slot leaks and later SPUs share one engine */
+    spu_mfc_release(&ctx);   /* retire the private MFC engine exactly once */
     return (int32_t)ctx.stop_code;
 }
 
@@ -362,9 +361,8 @@ static inline int32_t spu_run_lifted_job_abi(spu_lifted_entry_fn entry,
     /* ctx is a stack local that may have taken a lock-line reservation; left
      * in the reserver set it is walked by the next PPU store to that line.
      * GH3's Havok task returning is what first hit it. */
-    spu_mfc_release(&ctx);
     spu_coh_unregister(&ctx);
-    spu_mfc_release(&ctx);   /* or its MFC slot leaks and later SPUs share one engine */
+    spu_mfc_release(&ctx);   /* retire the private MFC engine exactly once */
     if (local_store) memcpy(local_store, ctx.ls, SPU_LS_SIZE);  /* LS back out */
     return 0;
 }

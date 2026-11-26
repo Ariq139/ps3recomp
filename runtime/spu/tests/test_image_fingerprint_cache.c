@@ -1,4 +1,17 @@
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
+#include <string.h>
+#include <stddef.h>
+static unsigned comparisons;
+static int counted_memcmp(const void* a, const void* b, size_t n)
+{
+    ++comparisons;
+    return memcmp(a, b, n);
+}
+#define memcmp counted_memcmp
 #include "../spu_image_fingerprint_cache.h"
+#undef memcmp
 #include <assert.h>
 #include <stdio.h>
 
@@ -29,6 +42,32 @@ int main(void)
     for (unsigned i = 0; i < 1000; ++i)
         assert(spu_image_fingerprint_cached(&cache, images[0], size, counted_hash) == h);
     assert(hashes == 1);
+
+    /* Fill the table, then repeatedly dispatch its newest image from a
+     * different allocation. Exactly one complete comparison per hit,
+     * with no recomputed hash. Changing a final byte must still miss. */
+    spu_image_fingerprint_cache relocated = {0};
+    unsigned char moved[257];
+    for (unsigned i = 0; i < SPU_IMAGE_FINGERPRINT_SLOTS; ++i)
+        assert(spu_image_fingerprint_cached(&relocated, images[i], size, fingerprint)
+               == fingerprint(images[i], size));
+    memcpy(moved, images[SPU_IMAGE_FINGERPRINT_SLOTS-1], size);
+    unsigned cmp_before = comparisons;
+    for (unsigned i = 0; i < 1000; ++i) {
+        const void* p = i & 1 ? moved : images[SPU_IMAGE_FINGERPRINT_SLOTS-1];
+        assert(spu_image_fingerprint_cached(&relocated, p, size, counted_hash)
+               == fingerprint(p, size));
+    }
+    assert(comparisons - cmp_before == 1000 && hashes == 1);
+    moved[size-1] ^= 1;
+    assert(spu_image_fingerprint_cached(&relocated, moved, size, fingerprint)
+           == fingerprint(moved, size));
+    /* Changed address can match a non-recent cached image. */
+    memcpy(moved, images[0], size);
+    assert(spu_image_fingerprint_cached(&relocated, moved, size, fingerprint)
+           == fingerprint(moved, size));
+    for (unsigned i = 0; i < SPU_IMAGE_FINGERPRINT_SLOTS; ++i)
+        free(relocated.entries[i].snapshot);
 
     /* Same address, modified final byte: sparse probes would miss this. */
     images[0][size - 1] ^= 1;
