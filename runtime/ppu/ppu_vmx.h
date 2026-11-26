@@ -19,6 +19,17 @@
 #include <string.h>
 #include <math.h>
 
+/* Retain the reference implementation by default until the native path
+ * has been validated for a target. SSE2 is baseline on x86-64. */
+#if defined(PPU_VMX_ENABLE_SSE2) && PPU_VMX_ENABLE_SSE2 && \
+    !defined(PPU_VMX_FORCE_SCALAR) && !defined(_M_ARM64EC) && \
+    (defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2))
+# include <emmintrin.h>
+# define VMX_USE_SSE2 1
+#else
+# define VMX_USE_SSE2 0
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -46,6 +57,33 @@ VMX_INL uint32_t vmx_u(float f) { uint32_t u; memcpy(&u, &f, 4); return u; }
 #define VMX_ARGS_PREP const uint8_t* a = (const uint8_t*)a_; (void)a; \
     const uint8_t* b = (const uint8_t*)b_; (void)b; uint8_t r[16]
 #define VMX_OUT memcpy(d_, r, 16)
+
+#if VMX_USE_SSE2
+/* memcpy accepts unaligned and aliased byte storage without imposing a
+ * native-vector effective type. Load both inputs before storing the result. */
+VMX_INL __m128i vmx_x86_load(const void* p) {
+    __m128i x; memcpy(&x, p, 16); return x;
+}
+VMX_INL void vmx_x86_store(void* p, __m128i x) { memcpy(p, &x, 16); }
+VMX_INL __m128i vmx_x86_swap16(__m128i x) {
+    return _mm_or_si128(_mm_slli_epi16(x, 8), _mm_srli_epi16(x, 8));
+}
+VMX_INL __m128i vmx_x86_swap32(__m128i x) {
+    x = vmx_x86_swap16(x);
+    return _mm_or_si128(_mm_slli_epi32(x, 16), _mm_srli_epi32(x, 16));
+}
+VMX_INL __m128i vmx_x86_bytes(__m128i x) { return x; }
+
+/* A saturating result differs from the modular result exactly when at least
+ * one lane saturated. The guest VSCR SAT bit is sticky. */
+#define VMX_X86_SAT(name, convert, satop, modop) \
+VMX_INL void name(VMX_D, VMX_A, VMX_B, uint32_t* vscr) { \
+    const __m128i x = convert(vmx_x86_load(a_)), y = convert(vmx_x86_load(b_)); \
+    const __m128i r = satop(x, y); \
+    if (_mm_movemask_epi8(_mm_cmpeq_epi8(r, modop(x, y))) != 0xffff) *vscr |= VMX_SAT; \
+    vmx_x86_store(d_, convert(r)); \
+}
+#endif
 
 /* ---- saturation ---- */
 VMX_INL int32_t vmx_sat_s(int64_t x, int64_t lo, int64_t hi, uint32_t* vscr) {
@@ -116,17 +154,49 @@ VMX_BIN(vmx_vsubcuw, 4, vmx_w, vmx_sw, (uint32_t)(x >= y))
 #define VMX_SATOP(name, cnt, get, set, expr) \
 VMX_INL void name(VMX_D, VMX_A, VMX_B, uint32_t* vscr) { VMX_ARGS_PREP; \
     for (int i = 0; i < cnt; i++) { uint64_t x = get(a, i), y = get(b, i); set(r, i, expr); } VMX_OUT; }
+#if VMX_USE_SSE2
+VMX_X86_SAT(vmx_vaddubs, vmx_x86_bytes, _mm_adds_epu8, _mm_add_epi8)
+#else
 VMX_SATOP(vmx_vaddubs, 16, vmx_b, vmx_sb, (uint8_t)vmx_sat_u((int64_t)x + (int64_t)y, 0xFF, vscr))
+#endif
+#if VMX_USE_SSE2
+VMX_X86_SAT(vmx_vadduhs, vmx_x86_swap16, _mm_adds_epu16, _mm_add_epi16)
+#else
 VMX_SATOP(vmx_vadduhs, 8, vmx_h, vmx_sh, (uint16_t)vmx_sat_u((int64_t)x + (int64_t)y, 0xFFFF, vscr))
+#endif
 VMX_SATOP(vmx_vadduws, 4, vmx_w, vmx_sw, (uint32_t)vmx_sat_u((int64_t)x + (int64_t)y, 0xFFFFFFFFll, vscr))
+#if VMX_USE_SSE2
+VMX_X86_SAT(vmx_vaddsbs, vmx_x86_bytes, _mm_adds_epi8, _mm_add_epi8)
+#else
 VMX_SATOP(vmx_vaddsbs, 16, vmx_b, vmx_sb, (uint8_t)vmx_sat_s((int64_t)(int8_t)x + (int8_t)y, -128, 127, vscr))
+#endif
+#if VMX_USE_SSE2
+VMX_X86_SAT(vmx_vaddshs, vmx_x86_swap16, _mm_adds_epi16, _mm_add_epi16)
+#else
 VMX_SATOP(vmx_vaddshs, 8, vmx_h, vmx_sh, (uint16_t)vmx_sat_s((int64_t)(int16_t)x + (int16_t)y, -32768, 32767, vscr))
+#endif
 VMX_SATOP(vmx_vaddsws, 4, vmx_w, vmx_sw, (uint32_t)vmx_sat_s((int64_t)(int32_t)x + (int32_t)y, INT32_MIN, INT32_MAX, vscr))
+#if VMX_USE_SSE2
+VMX_X86_SAT(vmx_vsububs, vmx_x86_bytes, _mm_subs_epu8, _mm_sub_epi8)
+#else
 VMX_SATOP(vmx_vsububs, 16, vmx_b, vmx_sb, (uint8_t)vmx_sat_u((int64_t)x - (int64_t)y, 0xFF, vscr))
+#endif
+#if VMX_USE_SSE2
+VMX_X86_SAT(vmx_vsubuhs, vmx_x86_swap16, _mm_subs_epu16, _mm_sub_epi16)
+#else
 VMX_SATOP(vmx_vsubuhs, 8, vmx_h, vmx_sh, (uint16_t)vmx_sat_u((int64_t)x - (int64_t)y, 0xFFFF, vscr))
+#endif
 VMX_SATOP(vmx_vsubuws, 4, vmx_w, vmx_sw, (uint32_t)vmx_sat_u((int64_t)x - (int64_t)y, 0xFFFFFFFFll, vscr))
+#if VMX_USE_SSE2
+VMX_X86_SAT(vmx_vsubsbs, vmx_x86_bytes, _mm_subs_epi8, _mm_sub_epi8)
+#else
 VMX_SATOP(vmx_vsubsbs, 16, vmx_b, vmx_sb, (uint8_t)vmx_sat_s((int64_t)(int8_t)x - (int8_t)y, -128, 127, vscr))
+#endif
+#if VMX_USE_SSE2
+VMX_X86_SAT(vmx_vsubshs, vmx_x86_swap16, _mm_subs_epi16, _mm_sub_epi16)
+#else
 VMX_SATOP(vmx_vsubshs, 8, vmx_h, vmx_sh, (uint16_t)vmx_sat_s((int64_t)(int16_t)x - (int16_t)y, -32768, 32767, vscr))
+#endif
 VMX_SATOP(vmx_vsubsws, 4, vmx_w, vmx_sw, (uint32_t)vmx_sat_s((int64_t)(int32_t)x - (int32_t)y, INT32_MIN, INT32_MAX, vscr))
 
 /* even / odd multiplies: element i of the result is the product of source
@@ -354,6 +424,32 @@ VMX_INL uint32_t name(VMX_D, VMX_A, VMX_B) { VMX_ARGS_PREP; int all = 1, none = 
 VMX_INL void vmx_sb64(uint8_t* v, int i, uint64_t x) { v[i] = (uint8_t)x; }
 VMX_INL void vmx_sh64(uint8_t* v, int i, uint64_t x) { vmx_sh(v, i, (uint16_t)x); }
 VMX_INL void vmx_sw64(uint8_t* v, int i, uint64_t x) { vmx_sw(v, i, (uint32_t)x); }
+#if VMX_USE_SSE2
+/* Equality is endian-independent; greater-than first converts the guest
+ * lanes to native byte order. Unsigned comparison biases the sign bit.
+ * A true lane has every byte set, so mask results already have guest
+ * byte order. CR6[LT/EQ] records all/none, as in the scalar helpers. */
+#define VMX_X86_CMP(name, convert, op, bias) \
+VMX_INL uint32_t name(VMX_D, VMX_A, VMX_B) { \
+    const __m128i x = _mm_xor_si128(convert(vmx_x86_load(a_)), bias); \
+    const __m128i y = _mm_xor_si128(convert(vmx_x86_load(b_)), bias); \
+    const __m128i r = op(x, y); \
+    const int mask = _mm_movemask_epi8(r); \
+    vmx_x86_store(d_, r); \
+    return (uint32_t)((mask == 0xffff ? 8 : 0) | (mask == 0 ? 2 : 0)); \
+}
+VMX_X86_CMP(vmx_vcmpequb, vmx_x86_bytes, _mm_cmpeq_epi8, _mm_setzero_si128())
+VMX_X86_CMP(vmx_vcmpequh, vmx_x86_bytes, _mm_cmpeq_epi16, _mm_setzero_si128())
+VMX_X86_CMP(vmx_vcmpequw, vmx_x86_bytes, _mm_cmpeq_epi32, _mm_setzero_si128())
+VMX_X86_CMP(vmx_vcmpgtub, vmx_x86_bytes, _mm_cmpgt_epi8, _mm_set1_epi8(-128))
+VMX_X86_CMP(vmx_vcmpgtuh, vmx_x86_swap16, _mm_cmpgt_epi16, _mm_set1_epi16(-32768))
+VMX_X86_CMP(vmx_vcmpgtuw, vmx_x86_swap32, _mm_cmpgt_epi32, _mm_set1_epi32(INT32_MIN))
+VMX_X86_CMP(vmx_vcmpgtsb, vmx_x86_bytes, _mm_cmpgt_epi8, _mm_setzero_si128())
+VMX_X86_CMP(vmx_vcmpgtsh, vmx_x86_swap16, _mm_cmpgt_epi16, _mm_setzero_si128())
+VMX_X86_CMP(vmx_vcmpgtsw, vmx_x86_swap32, _mm_cmpgt_epi32, _mm_setzero_si128())
+#undef VMX_X86_CMP
+#undef VMX_X86_SAT
+#else
 VMX_CMP(vmx_vcmpequb, 16, vmx_b, vmx_sb64, x == y)
 VMX_CMP(vmx_vcmpequh, 8, vmx_h, vmx_sh64, x == y)
 VMX_CMP(vmx_vcmpequw, 4, vmx_w, vmx_sw64, x == y)
@@ -363,6 +459,7 @@ VMX_CMP(vmx_vcmpgtuw, 4, vmx_w, vmx_sw64, x > y)
 VMX_CMP(vmx_vcmpgtsb, 16, vmx_b, vmx_sb64, (int8_t)x > (int8_t)y)
 VMX_CMP(vmx_vcmpgtsh, 8, vmx_h, vmx_sh64, (int16_t)x > (int16_t)y)
 VMX_CMP(vmx_vcmpgtsw, 4, vmx_w, vmx_sw64, (int32_t)x > (int32_t)y)
+#endif
 VMX_CMP(vmx_vcmpeqfp, 4, vmx_w, vmx_sw64, vmx_f((uint32_t)x) == vmx_f((uint32_t)y))
 VMX_CMP(vmx_vcmpgefp, 4, vmx_w, vmx_sw64, vmx_f((uint32_t)x) >= vmx_f((uint32_t)y))
 VMX_CMP(vmx_vcmpgtfp, 4, vmx_w, vmx_sw64, vmx_f((uint32_t)x) > vmx_f((uint32_t)y))

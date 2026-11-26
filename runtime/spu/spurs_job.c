@@ -242,7 +242,8 @@ static int spu_run_spurs_job_internal(spu_lifted_entry_fn entry, int image_id,
         if (phases) phases->reset = spu_job_profile_now() - phase_start;
         return -1;
     }
-    spu_context_init(ctx, 0);
+    /* The validated image immediately overwrites this private LS prefix. */
+    spu_context_init_job_prefix(ctx, 0, size_bin);
     uint8_t* ls = ctx->ls;
     if (phases) {
         double now = spu_job_profile_now();

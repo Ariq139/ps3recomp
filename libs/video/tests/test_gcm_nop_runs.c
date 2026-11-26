@@ -190,6 +190,18 @@ int main(void)
     check(seen_n == 5 && seen_m[4] == PROBE_METHOD && seen_d[4] == 5,
           "pass 3: the first word of the next IO page is not skipped");
     check(s_fifo_getoff == put3, "pass 3: get reaches put");
+    /* Diagnostic history must not be necessary for FIFO execution.
+     * A targeted branch diagnostic keeps its ring even with full history off. */
+    const char* history_setting = getenv("GCM_FIFO_HISTORY");
+    const int want_history = !(history_setting && !strcmp(history_setting, "0"));
+    const int want_branch = want_history || getenv("GCM_WORD_STATS") || getenv("GCM_CIRCLE_DUMP");
+    check((s_tr_i != 0) == want_history, "per-word history follows GCM_FIFO_HISTORY");
+    check((s_cf_i != 0) == want_branch, "branch history follows diagnostic options");
+    if (want_branch) {
+        const u32 i = (s_cf_i - 1u) % 8;
+        check(s_cf_off[i] == put2 && s_cf_w[i] == (0x20000000u | tail),
+              "branch history retains the actual JUMP and IO offset");
+    }
 
     mirror_live = mirror_engine = 1;
     gw32(IO_ADDR + put3, (2u << 18) | (1u << 13) | 0x1F00u);
