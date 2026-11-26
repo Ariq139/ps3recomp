@@ -19,7 +19,6 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <stddef.h>
 
 void spu_mfc_release(spu_context* ctx);   /* spu_channels.c */
 
@@ -34,17 +33,9 @@ extern uint8_t* vm_base;
  * raw-SPU guest mappings. Published workers retain full initialization. */
 static inline void spu_job_init_private_ls(spu_context* ctx, const uint8_t* local_store)
 {
-    if (!local_store) {
-        spu_context_init(ctx, 0);
-        return;
-    }
-    const size_t ls_offset = offsetof(spu_context, ls_store);
-    const size_t ls_end = ls_offset + sizeof(ctx->ls_store);
-    memset(ctx, 0, ls_offset);
-    memset((uint8_t*)ctx + ls_end, 0, sizeof(*ctx) - ls_end);
-    ctx->ls = ctx->ls_store;
-    ctx->spu_id = 0;
-    ctx->status = SPU_STATUS_STOPPED;
+    /* Share the tested prefix initializer: the copied job image is exactly
+     * one full local store, and NULL keeps the complete-init fallback. */
+    spu_context_init_job_prefix(ctx, 0, local_store ? SPU_LS_SIZE : 0);
 }
 
 /* Run an UN-LIFTED SPU image via the interpreter. Same context/LS/ABI bring-up
