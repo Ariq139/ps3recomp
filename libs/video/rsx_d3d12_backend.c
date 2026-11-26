@@ -191,6 +191,7 @@ typedef struct {
     rsx_fp_shadow_desc tex_shadow[RSX_TEXTURE_UNITS];
     int tex_rt[RSX_TEXTURE_UNITS];      /* pre-pass: OffRT index sampled by unit, -1 = none */
     int tex_feedback[RSX_TEXTURE_UNITS]; /* snapshot the active color target before this draw */
+    u32 srv_table_draw;   /* immutable per-frame table owner, assigned in prepass */
     /* NV40 vertex TXL units use t16-t19 and are captured independently from
      * the fragment texture bank. 2D, 1D-as-one-row-2D, and cube are supported. */
     struct {
@@ -6394,6 +6395,71 @@ static D3D12_CPU_DESCRIPTOR_HANDLE off_rt_rtv(int slot)
 
 #include "rsx_d3d12_srv_cache.h"
 static rsx_d3d12_srv_cache s_srv_cache;
+_Static_assert(DRAW_SRV_STRIDE <= D3D12_SRV_BATCH_MAX, "SRV batch capacity");
+static rsx_d3d12_srv_request s_srv_pending[DRAW_SRV_STRIDE], s_srv_previous[DRAW_SRV_STRIDE];
+static u32 s_srv_mask, s_srv_first, s_srv_previous_draw;
+static int s_srv_batch_active, s_srv_previous_valid;
+
+static void srv_request_release(rsx_d3d12_srv_request* req)
+{
+    if (req->resource) req->resource->lpVtbl->Release(req->resource);
+    req->resource = NULL;
+}
+static void srv_batch_reset(void)
+{
+    for (u32 i = 0; i < DRAW_SRV_STRIDE; ++i) {
+        srv_request_release(&s_srv_pending[i]);
+        srv_request_release(&s_srv_previous[i]);
+    }
+    s_srv_mask = 0;
+    s_srv_previous_valid = s_srv_batch_active = 0;
+}
+static void srv_batch_begin(u32 first)
+{
+    static int enabled = -1;
+    if (enabled < 0) { const char* e = getenv("RSX_D3D12_SRV_BATCH"); enabled = e && !strcmp(e, "1"); }
+    s_srv_first = first;
+    s_srv_mask = 0;
+    s_srv_batch_active = enabled;
+}
+static u32 srv_batch_finish(u32 draw)
+{
+    if (!s_srv_batch_active) return draw;
+    s_srv_batch_active = 0;
+    const u32 full_mask = (1u << DRAW_SRV_STRIDE) - 1u;
+    int same = s_srv_mask == full_mask && s_srv_previous_valid;
+    for (u32 i = 0; same && i < DRAW_SRV_STRIDE; ++i)
+        same = s_srv_pending[i].resource == s_srv_previous[i].resource &&
+            !memcmp(&s_srv_pending[i].desc, &s_srv_previous[i].desc,
+                    sizeof(s_srv_pending[i].desc));
+    if (same) {
+        for (u32 i = 0; i < DRAW_SRV_STRIDE; ++i) srv_request_release(&s_srv_pending[i]);
+        return s_srv_previous_draw;
+    }
+    D3D12_CPU_DESCRIPTOR_HANDLE dst;
+    s_d3d.srv_heap->lpVtbl->GetCPUDescriptorHandleForHeapStart(s_d3d.srv_heap, &dst);
+    dst.ptr += (u64)s_srv_first * s_d3d.srv_inc;
+    if (s_srv_mask == full_mask)
+        rsx_d3d12_srv_cache_batch(&s_srv_cache, s_d3d.device, s_d3d.srv_inc,
+            dst, s_srv_pending, DRAW_SRV_STRIDE);
+    else {
+        /* Defensive fallback for any future partial table producer. */
+        for (u32 i = 0; i < DRAW_SRV_STRIDE; ++i) {
+            if (s_srv_mask & (1u << i))
+                rsx_d3d12_srv_cache_write(&s_srv_cache, s_d3d.device, s_d3d.srv_inc,
+                    dst, s_srv_pending[i].resource, &s_srv_pending[i].desc);
+            dst.ptr += s_d3d.srv_inc;
+        }
+    }
+    for (u32 i = 0; i < DRAW_SRV_STRIDE; ++i) {
+        srv_request_release(&s_srv_previous[i]);
+        s_srv_previous[i] = s_srv_pending[i]; /* transfer retained identity */
+        s_srv_pending[i].resource = NULL;
+    }
+    s_srv_previous_draw = draw;
+    s_srv_previous_valid = s_srv_mask == full_mask;
+    return draw;
+}
 
 /* Write a texture SRV (or a null SRV when res == NULL) at an absolute SRV
  * heap slot. Used to fill per-draw t0-t15 descriptor windows. */
@@ -6410,6 +6476,16 @@ static void srv_write_ex(u32 heap_slot, ID3D12Resource* res, DXGI_FORMAT fmt,
         sv.TextureCube.MipLevels = 1;
         sv.TextureCube.MostDetailedMip = 0;
         sv.TextureCube.ResourceMinLODClamp = 0.0f;
+    }
+    if (s_srv_batch_active && heap_slot >= s_srv_first &&
+        heap_slot - s_srv_first < DRAW_SRV_STRIDE) {
+        const u32 i = heap_slot - s_srv_first;
+        if (res) res->lpVtbl->AddRef(res);
+        srv_request_release(&s_srv_pending[i]);
+        s_srv_pending[i].resource = res;
+        s_srv_pending[i].desc = sv;
+        s_srv_mask |= 1u << i;
+        return;
     }
     D3D12_CPU_DESCRIPTOR_HANDLE h;
     s_d3d.srv_heap->lpVtbl->GetCPUDescriptorHandleForHeapStart(s_d3d.srv_heap, &h);
@@ -7221,6 +7297,7 @@ static void render_frame_impl(void)
     /* Reuse only this slot's command allocator, upload ranges, and descriptors
      * after its fence retires. The other slot can remain queued on the GPU. */
     if (!d3d12_acquire_submission_slot()) return;
+    srv_batch_reset();
     rsx_d3d12_srv_cache_reset(&s_srv_cache);
     if (s_d3d.vertex_buffer)
         s_d3d.vb_view.BufferLocation =
@@ -7717,6 +7794,7 @@ static void render_frame_impl(void)
          * resolves to an offscreen RT (sampled directly), an uploaded guest
          * texture, or a null SRV. */
         double _sv0 = perf_on() ? perf_now() : 0.0;
+        srv_batch_begin(DRAW_SRV_SLOT(slot, _d, 0));
         for (int _u = 0; _u < RSX_TEXTURE_UNITS; _u++) {
             u32 wslot = DRAW_SRV_SLOT(slot, _d, _u);
             if (!(sampled_mask & (1u << _u))) {
@@ -7883,9 +7961,11 @@ static void render_frame_impl(void)
                          D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
                          dr->vtex[_u].cube);
         }
+        dr->srv_table_draw = srv_batch_finish(_d);
         if (perf_on()) s_perf_srv += perf_now() - _sv0;
         d3d12_record_surface_writes(dr);
     }
+    srv_batch_reset();
 
     /* Transition render target to RENDER_TARGET state */
     D3D12_RESOURCE_BARRIER barrier = {0};
@@ -8418,7 +8498,7 @@ static void render_frame_impl(void)
                             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
                 }
                 D3D12_GPU_DESCRIPTOR_HANDLE gh = gh_base;
-                gh.ptr += (u64)DRAW_SRV_SLOT(slot, d, 0) * s_d3d.srv_inc;
+                gh.ptr += (u64)DRAW_SRV_SLOT(slot, dr->srv_table_draw, 0) * s_d3d.srv_inc;
                 s_d3d.cmd_list->lpVtbl->SetGraphicsRootDescriptorTable(s_d3d.cmd_list, 1, gh);
                 D3D12_GPU_DESCRIPTOR_HANDLE draw_sampler_table = default_sampler_table;
                 if (dpso && !d3d12_sampler_table_for_draw(
@@ -11570,6 +11650,7 @@ void rsx_d3d12_backend_shutdown(void)
     rsx_gpu_timer_destroy(&s_gpu_timer);
 
     d3d12_pipeline_cache_save();
+    srv_batch_reset();
     rsx_d3d12_srv_cache_shutdown(&s_srv_cache);
 
     /* Release D3D12 resources */
