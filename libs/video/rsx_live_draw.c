@@ -264,7 +264,7 @@ typedef struct {
     u64 content_hash;
     u32 last_hash_frame;
 } vtexcache_t;
-typedef struct { u64 key; ID3D12PipelineState* pso; } psocache_t;
+typedef struct { u64 key; ID3D12PipelineState* pso; u32 hash_next; } psocache_t;
 typedef struct {
     u64 hash;
     u32 source_length;
@@ -322,6 +322,8 @@ typedef struct {
     ID3D12Resource*            white_tex;
     texcache_t                 textures[MAX_TEXTURES];
     u32                        n_textures;
+    u32                        texture_heads[2 * MAX_TEXTURES];
+    u32                        texture_next[MAX_TEXTURES], texture_bucket[MAX_TEXTURES];
     vtexcache_t                vtex[MAX_VTEX];
     u32                        n_vtex;
     ID3D12Resource*            retired_textures[MAX_RETIRED_TEXTURES];
@@ -357,6 +359,7 @@ typedef struct {
     DXGI_FORMAT                downsample_fmt[4];
     psocache_t                 psos[MAX_PSOS];
     u32                        n_psos;
+    u32                        pso_heads[2 * MAX_PSOS];
     shader_blob_cache_t        vs_blobs;
     shader_blob_cache_t        ps_blobs;
 
@@ -372,6 +375,10 @@ typedef struct {
     u32                        ps_cb_used;
     rsx_fp_constant_block      fp_constants;
     float                      fp_alpha_ref;
+    rsx_fp_constant_block      last_fp_constants;
+    float                      last_fp_alpha_ref;
+    u32                        last_fp_offset;
+    int                        last_fp_valid;
     char                       fp_constant_mode;
 
     ID3D12Resource*            vb;
@@ -2545,6 +2552,37 @@ static void write_texture_srv(u32 index, const texcache_t* entry)
 /* Decode a guest texture descriptor into a cached SRV slot.  Unlike the old
  * descriptor-only cache, re-hash the source once per frame and refresh the
  * D3D resource when the game rewrites the same guest address. */
+static int ld_index_cache_enabled(void)
+{
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("RSX_LIVE_INDEX_CACHE"); on = e && !strcmp(e, "1"); }
+    return on;
+}
+static u32 ld_texture_bucket(const rsx_dsp_texture* t, u32 remap)
+{
+    u32 h = t->offset ^ (t->offset >> 12) ^ (t->location * 31u);
+    h = (h ^ t->format) * 16777619u;
+    h = (h ^ t->width) * 16777619u;
+    h = (h ^ t->height) * 16777619u;
+    h = (h ^ t->pitch) * 16777619u;
+    h = (h ^ remap) * 16777619u;
+    h = (h ^ t->cubemap) * 16777619u;
+    return (h ^ (h >> 16)) & (2u * MAX_TEXTURES - 1u);
+}
+static void ld_texture_index_insert(u32 index, u32 bucket)
+{
+    const u32 old = g.texture_bucket[index];
+    if (old) {
+        u32* link = &g.texture_heads[old - 1u];
+        while (*link && *link != index + 1u) link = &g.texture_next[*link - 1u];
+        if (*link) *link = g.texture_next[index];
+    }
+    u32* link = &g.texture_heads[bucket];
+    while (*link && *link < index + 1u) link = &g.texture_next[*link - 1u];
+    g.texture_next[index] = *link;
+    *link = index + 1u;
+    g.texture_bucket[index] = bucket + 1u;
+}
 static u32 texture_srv_slot(const rsx_dsp_texture* t)
 {
     const u32 remap = t->remap & 0xFFFF;
@@ -2552,7 +2590,12 @@ static u32 texture_srv_slot(const rsx_dsp_texture* t)
     if (refresh_enabled < 0)
         refresh_enabled = getenv("RSX_NO_TEX_REFRESH") ? 0 : 1;
 
-    for (u32 i = 0; i < g.n_textures; i++) {
+    const int indexed = ld_index_cache_enabled();
+    const u32 bucket = indexed ? ld_texture_bucket(t, remap) : 0u;
+    for (u32 link = indexed ? g.texture_heads[bucket] : 1u;
+         link && link <= g.n_textures;
+         link = indexed ? g.texture_next[link - 1u] : link + 1u) {
+        const u32 i = link - 1u;
         texcache_t* entry = &g.textures[i];
         if (entry->location != t->location || entry->offset != t->offset ||
             entry->format != t->format || entry->width != t->width ||
@@ -2699,6 +2742,10 @@ static u32 texture_srv_slot(const rsx_dsp_texture* t)
                     t->location, t->offset, t->format, t->width, t->height,
                     t->pitch);
     }
+    /* Failed nonfull entries are cached as white by the baseline too.
+     * Failed full-cache replacements leave the old key and index intact. */
+    if (indexed && (replacement.tex || !cache_was_full))
+        ld_texture_index_insert(index, bucket);
     return replacement.tex ? SRV_TEXTURE_BASE + index : SRV_WHITE;
 }
 
@@ -4930,8 +4977,9 @@ static ID3D12PipelineState* get_pso(
     g.fp_alpha_ref = rsx_fp_alpha_ref(
         rs.alpha_ref_raw, rs.alpha_ref_format);
 
-    u64 key = fnv1a(
+    const u64 vp_hash = fnv1a(
         vp_uc, vp_instrs * 16, 1469598103934665603ull);
+    u64 key = vp_hash;
     if (ld_fp_constants_buffered())
         key = rsx_fp_structural_hash(fp_uc, fp_size, key);
     else
@@ -5012,8 +5060,7 @@ static ID3D12PipelineState* get_pso(
 #endif
     g_ld_current_pso.valid = 1;
     g_ld_current_pso.key = key;
-    g_ld_current_pso.vp_hash = fnv1a(
-        vp_uc, vp_instrs * 16, 1469598103934665603ull);
+    g_ld_current_pso.vp_hash = vp_hash;
     g_ld_current_pso.vp_start = start;
     g_ld_current_pso.vp_instrs = vp_instrs;
     g_ld_current_pso.fp_location = fp_loc;
@@ -5034,7 +5081,12 @@ static ID3D12PipelineState* get_pso(
 #if defined(YZ_PERF_PROFILE)
     g_ld_profile.total.pso_lookups++;
 #endif
-    for (u32 i = 0; i < g.n_psos; i++) {
+    const int indexed = ld_index_cache_enabled();
+    const u32 bucket = indexed ? (u32)(key ^ (key >> 32) ^ (key >> 16)) & (2u * MAX_PSOS - 1u) : 0u;
+    for (u32 link = indexed ? g.pso_heads[bucket] : 1u;
+         link && link <= g.n_psos;
+         link = indexed ? g.psos[link - 1u].hash_next : link + 1u) {
+        const u32 i = link - 1u;
 #if defined(YZ_PERF_PROFILE)
         g_ld_profile.total.pso_probes++;
 #endif
@@ -5185,6 +5237,10 @@ static ID3D12PipelineState* get_pso(
 
     g.psos[g.n_psos].key = key;
     g.psos[g.n_psos].pso = pso;
+    if (indexed) {
+        g.psos[g.n_psos].hash_next = g.pso_heads[bucket];
+        g.pso_heads[bucket] = g.n_psos + 1u;
+    }
     g.n_psos++;
     return pso;
 }
@@ -5203,6 +5259,19 @@ static int ld_upload_pixel_constants(u32* out_offset)
     const u32 value_slots =
         g.fp_constants.count ? g.fp_constants.count : 1u;
     const u32 data_bytes = (value_slots + 1u) * 16u;
+    static int reuse = -1;
+    if (reuse < 0) { const char* e = getenv("RSX_LIVE_FP_CONSTANT_REUSE"); reuse = e && !strcmp(e, "1"); }
+    /* Keep an ordinary CPU-memory snapshot; never read write-combined GPU
+     * upload memory. Ring resets invalidate the offset before reuse. */
+    if (reuse && g.last_fp_valid &&
+        g.last_fp_constants.count == g.fp_constants.count &&
+        !memcmp(g.last_fp_constants.values, g.fp_constants.values,
+                (size_t)g.fp_constants.count * 16u) &&
+        !memcmp(&g.last_fp_alpha_ref, &g.fp_alpha_ref, sizeof(g.fp_alpha_ref)) &&
+        (u64)g.last_fp_offset + data_bytes <= g.ps_cb_used) {
+        if (out_offset) *out_offset = g.last_fp_offset;
+        return 1;
+    }
     u32 offset = 0;
     u32 allocation_bytes = 0;
     int plan = rsx_fp_constant_ring_plan(
@@ -5218,7 +5287,7 @@ static int ld_upload_pixel_constants(u32* out_offset)
         ld_flush(LD_FLUSH_PIXEL_CONSTANT_RING);
         if (!g.ready)
             return 0;
-        g.ps_cb_used = 0;
+        g.ps_cb_used = 0; g.last_fp_valid = 0;
         plan = rsx_fp_constant_ring_plan(
             g.ps_cb_used, PS_CB_RING_BYTES, data_bytes,
             &offset, &allocation_bytes);
@@ -5243,6 +5312,13 @@ static int ld_upload_pixel_constants(u32* out_offset)
         destination + value_slots * 16u,
         &g.fp_alpha_ref, sizeof(g.fp_alpha_ref));
     g.ps_cb_used += allocation_bytes;
+    if (reuse) {
+        g.last_fp_constants.count = g.fp_constants.count;
+        memcpy(g.last_fp_constants.values, g.fp_constants.values, (size_t)g.fp_constants.count * 16u);
+        memcpy(&g.last_fp_alpha_ref, &g.fp_alpha_ref, sizeof(g.fp_alpha_ref));
+        g.last_fp_offset = offset;
+        g.last_fp_valid = 1;
+    }
 #if defined(YZ_PERF_PROFILE)
     g_ld_profile.total.ps_constant_allocations++;
     g_ld_profile.total.ps_constant_upload_bytes += data_bytes;
@@ -6299,7 +6375,7 @@ static void ld_movie_reset_rings(void)
     g.vb_used = 0;
     g.ib_used = 0;
     g.cb_used = 0;
-    g.ps_cb_used = 0;
+    g.ps_cb_used = 0; g.last_fp_valid = 0;
     g.srv_ring_used = 0;
     g.smp_ring_used = 0;
     g.depth_cleared = 0;
@@ -7465,7 +7541,7 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
         g.vb_used = 0;
         g.ib_used = 0;
         g.cb_used = 0;
-        g.ps_cb_used = 0;
+        g.ps_cb_used = 0; g.last_fp_valid = 0;
         g.srv_ring_used = 0;
         g.smp_ring_used = 0;
     }
@@ -10579,7 +10655,7 @@ void rsx_live_draw_present(u32 buffer_id)
 #endif
 
     /* new frame: reset per-frame ring cursors */
-    g.vb_used = 0; g.ib_used = 0; g.cb_used = 0; g.ps_cb_used = 0;
+    g.vb_used = 0; g.ib_used = 0; g.cb_used = 0; g.ps_cb_used = 0; g.last_fp_valid = 0;
     g.srv_ring_used = 0; g.smp_ring_used = 0;
 #if !defined(YZ_PERF_CLEAN)
     g_ld_frame_vertex_constant_ring_recycles = 0;
