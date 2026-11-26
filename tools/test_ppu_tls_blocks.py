@@ -1,75 +1,58 @@
 #!/usr/bin/env python3
-"""Per-thread TLS blocks: every thread a title creates gets its own block.
-
-Builds the real ``ppu_tls_new_block`` (pulled verbatim out of
-runtime/ppu/ppu_loader.cpp) into a small host program and asks it for 100
-thread blocks with a 0x240-byte TLS image, the size of a small title's. Checks
-that every request is granted (0 means the thread silently shares the main
-thread's TLS), that no block overlaps another block or the main block's image,
-and that the .tdata image was copied into each block.
-"""
-import os
-import re
-import subprocess
-import tempfile
+"""Extract actual loader TLS allocator and check concurrent identity + churn reuse."""
+import os, re, subprocess, tempfile
 from pathlib import Path
-
 if os.name == 'nt':
-    print('SKIP: fixture currently requires a POSIX C++ compiler')
+    print('SKIP: standalone POSIX compiler fixture')
     raise SystemExit(0)
-
-root = Path(__file__).resolve().parents[1]
-src = (root / 'runtime/ppu/ppu_loader.cpp').read_text()
-m = re.search(r'static uint32_t ppu_tls_new_block\(void\)\n\{', src)
-assert m, 'ppu_tls_new_block not found'
-i, depth = m.end(), 1
-while depth:
-    depth += {'{': 1, '}': -1}.get(src[i], 0)
-    i += 1
-func = src[m.start():i]
-tls_img = re.search(r'^#define PPU_TLS_IMG\s+(\S+)', src, re.M).group(1)
-# #296 spells it VM_PPU_TLS_BASE from runtime/memory/vm.h; resolve that to the number.
-if not tls_img[0].isdigit():
-    vm_h = (root / 'runtime/memory/vm.h').read_text()
-    tls_img = re.search(r'^#define ' + tls_img + r'\s+(\S+)', vm_h, re.M).group(1)
-
-HARNESS = r'''
+root=Path(__file__).resolve().parents[1]
+src=(root/'runtime/ppu/ppu_loader.cpp').read_text()
+begin=src.index('static std::atomic<uint64_t> s_tls_slots')
+end=src.index('static void ppu_thread_entry_trampoline',begin)
+tls_img=re.search(r'^#define VM_PPU_TLS_BASE\s+(\S+)',(root/'runtime/memory/vm.h').read_text(),re.M).group(1)
+pre=r'''
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <thread>
+#include <vector>
+#include <cassert>
 #define PPU_TLS_IMG %s
 static uint8_t* vm_base;
-static uint32_t ppu_vm_size = 0x20000000u;
-static uint32_t g_tls_vaddr = 0x1000, g_tls_filesz = 0x100, g_tls_memsz = 0x240;
-%s
-int main()
-{
-    vm_base = (uint8_t*)calloc(ppu_vm_size, 1);
-    for (uint32_t i = 0; i < g_tls_filesz; i++) vm_base[g_tls_vaddr + i] = (uint8_t)(i + 1);
-    enum { N = 100 };
-    uint32_t blk[N];
-    int granted = 0, overlaps = 0, bad_copies = 0;
-    for (int i = 0; i < N; i++) {
-        uint32_t tp = ppu_tls_new_block();
-        blk[i] = tp ? tp - 0x7000u : 0;             /* TLS data starts at r13 - 0x7000 */
-        if (!tp) continue;
-        granted++;
-        if (blk[i] < PPU_TLS_IMG + g_tls_memsz) overlaps++;   /* main block's image */
-        for (int j = 0; j < i; j++)
-            if (blk[j] && blk[i] < blk[j] + g_tls_memsz && blk[j] < blk[i] + g_tls_memsz) overlaps++;
-        if (memcmp(vm_base + blk[i], vm_base + g_tls_vaddr, g_tls_filesz)) bad_copies++;
+static uint32_t ppu_vm_size=0x20000000u;
+static uint32_t g_tls_vaddr=0x1000,g_tls_filesz=0x100,g_tls_memsz=0x240;
+''' % tls_img
+test=r'''
+int main() {
+    vm_base=(uint8_t*)calloc(ppu_vm_size,1); assert(vm_base);
+    memset(vm_base+g_tls_vaddr,0x5a,g_tls_filesz);
+    std::atomic<unsigned> ready{0}; std::atomic<bool> release{false};
+    uint32_t blocks[100]={}; std::vector<std::thread> workers;
+    for (unsigned i=0;i<100;i++) workers.emplace_back([&,i] {
+        uint32_t tp=ppu_tls_new_block(); assert(tp);
+        blocks[i]=tp-0x7000u; assert(ppu_tls_new_block()==tp);
+        assert(!memcmp(vm_base+blocks[i],vm_base+g_tls_vaddr,g_tls_filesz));
+        ready.fetch_add(1);
+        while (!release.load()) std::this_thread::yield();
+        memset(vm_base+blocks[i],0xa5,g_tls_memsz);
+    });
+    while (ready.load()!=100) std::this_thread::yield();
+    for (unsigned i=0;i<100;i++) for (unsigned j=0;j<i;j++) assert(blocks[i]!=blocks[j]);
+    release.store(true); for(auto& t:workers)t.join();
+    for(unsigned i=0;i<600;i++) {
+        std::thread t([] { uint32_t tp=ppu_tls_new_block(); assert(tp);
+            uint32_t b=tp-0x7000u; assert(!memcmp(vm_base+b,vm_base+g_tls_vaddr,g_tls_filesz));
+            for(unsigned n=g_tls_filesz;n<g_tls_memsz;n++)assert(vm_base[b+n]==0);
+            memset(vm_base+b,0xbb,g_tls_memsz);
+        }); t.join();
     }
-    printf("granted %%d/%%d, overlaps %%d, bad copies %%d\n", granted, (int)N, overlaps, bad_copies);
-    return granted == N && !overlaps && !bad_copies ? 0 : 1;
+    puts("PASS concurrent TLS isolation and reuse after 600 thread exits");
 }
 '''
-
-with tempfile.TemporaryDirectory(prefix='ppu-tls-') as tmp:
-    c = Path(tmp) / 'tls.cpp'
-    exe = Path(tmp) / 'tls'
-    c.write_text(HARNESS % (tls_img, func))
-    subprocess.run([os.environ.get('CXX', 'c++'), '-std=c++17', '-O1', str(c), '-o', str(exe)], check=True)
-    r = subprocess.run([str(exe)], timeout=10)
-    print('PASS' if r.returncode == 0 else 'FAIL')
-    raise SystemExit(r.returncode)
+with tempfile.TemporaryDirectory() as d:
+    c=Path(d)/'tls.cpp'; exe=Path(d)/'tls'
+    c.write_text(pre+src[begin:end]+test)
+    subprocess.run([os.environ.get('CXX','c++'),'-std=c++17','-O1','-pthread','-UNDEBUG',str(c),'-o',str(exe)],check=True)
+    subprocess.run([str(exe)],check=True,timeout=60)

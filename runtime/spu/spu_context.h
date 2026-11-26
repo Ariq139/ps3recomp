@@ -13,6 +13,7 @@
 #include "../../include/ps3emu/ps3types.h"
 #include "../../include/ps3emu/log_first.h"
 #include <stdint.h>
+#include <stddef.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -515,12 +516,37 @@ void spu_mfc_forget_range(uintptr_t lo, uintptr_t hi);
  * NULL (spurs_policy.c). */
 spu_context* spu_thread_ls_peer(const spu_context* self, uint32_t spu_num);
 
-static inline void spu_context_init(spu_context* ctx, uint32_t spu_id)
+/* The nonzero defaults must stay identical for complete and job-specific
+ * initialization. Only a private context with an immediately overwritten
+ * image prefix may use the partial initializer below. */
+static inline void spu_context_init_defaults(spu_context* ctx, uint32_t spu_id)
 {
-    memset(ctx, 0, sizeof(*ctx));
     ctx->ls     = ctx->ls_store;   /* a raw SPU repoints this at guest memory */
     ctx->spu_id = spu_id;
     ctx->status = SPU_STATUS_STOPPED;
+}
+
+static inline void spu_context_init(spu_context* ctx, uint32_t spu_id)
+{
+    memset(ctx, 0, sizeof(*ctx));
+    spu_context_init_defaults(ctx, spu_id);
+}
+
+/* All bytes outside the exact image prefix, including padding and the
+ * rest of LS, are initialized. Caller MUST overwrite the entire prefix
+ * before publishing or executing the context. Invalid sizes fail safe. */
+static inline void spu_context_init_job_prefix(spu_context* ctx,
+                                                uint32_t spu_id, size_t image_size)
+{
+    if (!image_size || image_size > sizeof(ctx->ls_store)) {
+        spu_context_init(ctx, spu_id);
+        return;
+    }
+    const size_t ls_offset = offsetof(spu_context, ls_store);
+    const size_t after_image = ls_offset + image_size;
+    memset(ctx, 0, ls_offset);
+    memset((uint8_t*)ctx + after_image, 0, sizeof(*ctx) - after_image);
+    spu_context_init_defaults(ctx, spu_id);
 }
 
 /* ---------------------------------------------------------------------------

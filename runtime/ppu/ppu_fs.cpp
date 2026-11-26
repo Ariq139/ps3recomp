@@ -32,7 +32,9 @@
 #include <errno.h>
 #include <mutex>
 #include <atomic>
-#include <mutex>
+#include <condition_variable>
+#include <new>
+#include "ps3emu/aio_service.h"
 #include <sys/stat.h>
 #include "../platform/win32_dirent.h"   /* <dirent.h>, or a Win32 stand-in */
 #include "../platform/ps3_dev_flash.h"   /* ps3_dev_flash_path: PS3_DEV_FLASH may name several roots */
@@ -313,6 +315,31 @@ static void fs_set_dir(int fd, FILE* f, uint8_t dir)
 static char  g_dir_path[FS_MAX][1024];   /* host path per open dir (for readdir stat) */
 static std::mutex g_fs_mutex; /* descriptor table and FILE/DIR stream operations */
 
+/* Pin the FILE identity, not just its recyclable guest descriptor number.
+ * A close removes the descriptor immediately but defers fclose until its last
+ * queued transfer releases the pin. Everything here is under g_fs_mutex. */
+struct AioFilePin { FILE* file; int fd; unsigned refs; bool detached; };
+static AioFilePin* g_aio_pins[FS_MAX];
+static AioFilePin* fs_aio_pin_file_locked(int fd, FILE* f)
+{
+    AioFilePin*& p = g_aio_pins[fd];
+    if (!p) p = new (std::nothrow) AioFilePin{f, fd, 0, false};
+    if (p) ++p->refs;
+    return p;
+}
+static void fs_aio_unpin_file_locked(AioFilePin* p)
+{
+    if (!p || --p->refs) return;
+    if (p->detached) fclose(p->file);
+    else g_aio_pins[p->fd] = nullptr;
+    delete p;
+}
+static void fs_record_fd_path(int fd, const char* path)
+{
+    if (fd < 0) return;
+    snprintf(g_fd_path[fd], sizeof g_fd_path[fd], "%s", path);
+}
+
 /* Guest threads open, read and close concurrently (FIOS media threads, audio
  * streamers). Allocation and release take this lock, so two opens can no longer
  * claim the same slot, and every handler reads its slot once (fd_file/fd_dir)
@@ -340,6 +367,7 @@ static int fd_alloc_file(FILE* f)
     for (int i = 3; i < FS_MAX; i++)
         if (!g_files[i] && !g_dirs[i] && !sys_fs_owns_fd(i)) {
             g_fd_dir[i] = 0;
+            g_fd_path[i][0] = 0;
             __atomic_store_n(&g_files[i], f, __ATOMIC_RELEASE);
             return i;
         }
@@ -432,8 +460,7 @@ static void cellFsOpen(ppu_context* ctx)
         fd = fd_alloc_file(f);
         if (fd >= 0) {
             g_fd_usm[fd] = (strstr(gpath, ".usm") != nullptr) ? 1 : 0;
-            strncpy(g_fd_path[fd], gpath, sizeof g_fd_path[fd]-1);
-            g_fd_path[fd][sizeof g_fd_path[fd]-1] = 0;
+            fs_record_fd_path(fd, gpath);
         }
     }
     if (fd < 0) { fclose(f); ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_EMFILE; return; }
@@ -533,7 +560,7 @@ static void cellFsSdataOpen(ppu_context* ctx)
         free(dec);
         rewind(tf);
         int fd;
-        { std::lock_guard<std::mutex> fs_lock(g_fs_mutex); fd = fd_alloc_file(tf); }
+        { std::lock_guard<std::mutex> fs_lock(g_fs_mutex); fd = fd_alloc_file(tf); fs_record_fd_path(fd, gpath); }
         if (fd < 0) { fclose(tf); ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_EMFILE; return; }
         if (fd_ptr) vm_write32(fd_ptr, (uint32_t)fd);
         fprintf(stderr, "[fs] SdataOpen '%s' -> fd %d (NPD decrypted, 0x%zX bytes, magic '%c%c%c%c')\n",
@@ -544,7 +571,7 @@ static void cellFsSdataOpen(ppu_context* ctx)
         return;
     }
     int fd;
-    { std::lock_guard<std::mutex> fs_lock(g_fs_mutex); fd = fd_alloc_file(f); }
+    { std::lock_guard<std::mutex> fs_lock(g_fs_mutex); fd = fd_alloc_file(f); fs_record_fd_path(fd, gpath); }
     if (fd < 0) { fclose(f); ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_EMFILE; return; }
     if (fd_ptr) vm_write32(fd_ptr, (uint32_t)fd);
     fprintf(stderr, "[fs] SdataOpen '%s' -> fd %d (magic %c%c%c%c)\n", gpath, fd,
@@ -565,7 +592,12 @@ static void cellFsClose(ppu_context* ctx)
         if (f) {
             if (g_fd_usm[fd] && ps3_env_once("PS3_FSLOG_READS")) fprintf(stderr, "[USMRD] CLOSE usm fd=%d\n", fd);
             __atomic_store_n(&g_files[fd], (FILE*)nullptr, __ATOMIC_RELEASE);
-            g_fd_usm[fd] = 0; g_fd_dir[fd] = 0;
+            g_fd_usm[fd] = 0; g_fd_dir[fd] = 0; g_fd_path[fd][0] = 0;
+            if (AioFilePin* pin = g_aio_pins[fd]) {
+                pin->detached = true;
+                g_aio_pins[fd] = nullptr;
+                f = nullptr; // last request closes the old stream, not a reused fd
+            }
         }
     }
     if (f) fclose(f);
@@ -604,7 +636,31 @@ static void cellFsRead(ppu_context* ctx)
     FILE* f = fd_file(fd);
     if (!f) { ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_EBADF; return; }
     uint64_t raw_nbytes = ctx->gpr[5];
-    int64_t fpos_before = fs_tell64(f);
+    /* The pre-read position is used only by diagnostics (including the
+     * explicit EOF injection knob), not by ordinary stream operations. */
+    // Environment switches are immutable for a title run, as required
+    // by ps3_env_once. Parse once, rather than hash/probe on every read.
+    struct ReadDiagnostics {
+        int eof_fd, read_fd;
+        int64_t eof_limit;
+        bool reads, fs, summary, all, path, toc;
+    };
+    static const ReadDiagnostics diag = [] {
+        const char* eof = ps3_env_once("PS3_FSLOG_EOF");
+        const char* reads = ps3_env_once("PS3_FSLOG_READS");
+        const char* summary = ps3_env_once("PS3_FS_READ_SUMMARY");
+        const char* comma = eof ? strchr(eof, ',') : nullptr;
+        const bool all = ps3_env_once("FS_READ_ALL") != nullptr;
+        const bool path = ps3_env_once("FS_READ_PATH") != nullptr;
+        return ReadDiagnostics{eof ? atoi(eof) : -1, reads ? atoi(reads) : -1,
+            comma ? strtoll(comma + 1, nullptr, 10) : 0, reads != nullptr,
+            ps3_env_once("PS3_FSLOG") != nullptr,
+            !summary || strcmp(summary, "0") || all || path,
+            all, path, ps3_env_once("PS3_FSLOG_TOC") != nullptr};
+    }();
+    const int64_t fpos_before = ((diag.eof_fd >= 0 && fd == diag.eof_fd && diag.eof_limit > 0) ||
+           diag.reads || diag.fs)
+        ? fs_tell64(f) : -1;
     if (ppu_vm_size && (uint64_t)buf + nbytes > ppu_vm_size) nbytes = ppu_vm_size - buf;
     fs_prefault(buf, nbytes);
     fs_set_dir(fd, f, 1);
@@ -616,48 +672,46 @@ static void cellFsRead(ppu_context* ctx)
      * a second, so it cannot be watched to its end -- truncating the stream makes
      * the demuxer see EOF and the movie finish, which is what advances the title
      * to whatever follows the intro. Deliberately a testing knob, not a fix. */
-    { static int efd = -2; static int64_t elim = 0;
-      if (efd == -2) { const char* e = ps3_env_once("PS3_FSLOG_EOF");
-          if (e) { efd = atoi(e); const char* c = strchr(e, 44); elim = c ? strtoll(c + 1, nullptr, 10) : 0; }
-          else efd = -1; }
-      if (efd >= 0 && fd == efd && elim > 0 && fpos_before >= elim) {
+    { if (diag.eof_fd >= 0 && fd == diag.eof_fd && diag.eof_limit > 0 &&
+          fpos_before >= diag.eof_limit) {
           static int once = 0;
-          if (!once++) fprintf(stderr, "[fs] PS3_FSLOG_EOF: fd=%d truncated at %lld bytes\n", fd, (long long)elim);
+          if (!once++) fprintf(stderr, "[fs] PS3_FSLOG_EOF: fd=%d truncated at %lld bytes\n", fd, (long long)diag.eof_limit);
           n = 0;
       } }
-    if (g_fd_usm[fd] && ps3_env_once("PS3_FSLOG_READS")) fprintf(stderr, "[USMRD] READ usm fd=%d nbytes=%llu -> %zu magic=%02X%02X%02X%02X pos=%lld lr=0x%08X\n", fd, (unsigned long long)nbytes, n, vm_base[buf], vm_base[buf+1], vm_base[buf+2], vm_base[buf+3], (long long)fpos_before, (uint32_t)ctx->lr);
+    if (g_fd_usm[fd] && diag.reads) fprintf(stderr, "[USMRD] READ usm fd=%d nbytes=%llu -> %zu magic=%02X%02X%02X%02X pos=%lld lr=0x%08X\n", fd, (unsigned long long)nbytes, n, vm_base[buf], vm_base[buf+1], vm_base[buf+2], vm_base[buf+3], (long long)fpos_before, (uint32_t)ctx->lr);
     /* PS3_FSLOG_READS=<fd>: log every read on one descriptor. PS3_FSLOG caps at 20
      * lines and they are all spent before a movie ever opens, so it cannot
      * answer "is the streamer reading the .avi". */
-    { static int wfd = -2;
-      if (wfd == -2) { const char* e = ps3_env_once("PS3_FSLOG_READS"); wfd = e ? atoi(e) : -1; }
-      if (wfd >= 0 && fd == wfd)
-          fprintf(stderr, "[fsread] fd=%d want=%llu got=%zu pos=%ld\n",
-                  fd, (unsigned long long)nbytes, n, fpos_before); }
-    if (ps3_env_once("PS3_FSLOG")) { static int _fd=0; if(PS3_LOG_FIRST(_fd, 20)) fprintf(stderr,"[FSDBG] fd=%d raw_nbytes=0x%llX clamped=0x%llX buf=0x%08X fpos_before=%lld n=%zu eof=%d err=%d\n", fd,(unsigned long long)raw_nbytes,(unsigned long long)nbytes,buf,fpos_before,n,feof(f),ferror(f)); }
+    { if (diag.read_fd >= 0 && fd == diag.read_fd)
+          fprintf(stderr, "[fsread] fd=%d want=%llu got=%zu pos=%lld\n",
+                  fd, (unsigned long long)nbytes, n, (long long)fpos_before); }
+    if (diag.fs) { static int _fd=0; if(PS3_LOG_FIRST(_fd, 20)) fprintf(stderr,"[FSDBG] fd=%d raw_nbytes=0x%llX clamped=0x%llX buf=0x%08X fpos_before=%lld n=%zu eof=%d err=%d\n", fd,(unsigned long long)raw_nbytes,(unsigned long long)nbytes,buf,fpos_before,n,feof(f),ferror(f)); }
 #ifdef _WIN32
-    if (ps3_env_once("PS3_FSLOG") && buf==0 && raw_nbytes>0x10000) { static int _b=0; if(_b++<2){ void* fr[30]; unsigned short nn=RtlCaptureStackBackTrace(0,30,fr,0); uintptr_t mb=(uintptr_t)GetModuleHandleA(0); fprintf(stderr,"[FSBT] null-buf read caller rvas:"); for(unsigned short i=0;i<nn&&i<16;i++) fprintf(stderr," %llX",(unsigned long long)((uintptr_t)fr[i]-mb)); fprintf(stderr,"\n"); } }
+    if (diag.fs && buf==0 && raw_nbytes>0x10000) { static int _b=0; if(_b++<2){ void* fr[30]; unsigned short nn=RtlCaptureStackBackTrace(0,30,fr,0); uintptr_t mb=(uintptr_t)GetModuleHandleA(0); fprintf(stderr,"[FSBT] null-buf read caller rvas:"); for(unsigned short i=0;i<nn&&i<16;i++) fprintf(stderr," %llX",(unsigned long long)((uintptr_t)fr[i]-mb)); fprintf(stderr,"\n"); } }
 #endif
     /* Per-fd totals, not just the first 50 lines. The flat cap made "this file is
      * opened and never read" unfalsifiable: reads on a later-opened fd fall off
      * the end of the log and look identical to reads that never happen.
      * FS_READ_ALL=1 logs every read; otherwise a per-fd first-read line plus a
      * periodic summary is enough to tell the two apart. */
-    { static uint64_t tot=0; static int _n=0;
+    /* Preserve default diagnostics; clean benchmarks can disable these
+     * counters and log writes while keeping explicit read logging options. */
+    if (diag.summary) {
+      static uint64_t tot=0; static int _n=0;
       static uint64_t per_fd[64]; static uint32_t cnt_fd[64];
       tot+=n;
       if (fd>=0 && fd<64) { per_fd[fd]+=n; cnt_fd[fd]++; }
       int first_for_fd = (fd>=0 && fd<64 && cnt_fd[fd]==1);
-      if(PS3_LOG_FIRST(_n, 50) || first_for_fd || ps3_env_once("FS_READ_ALL"))
+      if(PS3_LOG_FIRST(_n, 50) || first_for_fd || diag.all)
         fprintf(stderr,"[fs] read fd=%d nbytes=%llu -> %zu (magic=%02X%02X%02X%02X, total=%llu)%s\n",
                 fd,(unsigned long long)nbytes,n,vm_base[buf],vm_base[buf+1],vm_base[buf+2],vm_base[buf+3],
                 (unsigned long long)tot, first_for_fd?"  <= FIRST READ ON THIS FD":"");
-      if (ps3_env_once("FS_READ_PATH") && fd>=0 && fd<64 && g_fd_path[fd][0])
+      if (diag.path && fd>=0 && fd<64 && g_fd_path[fd][0])
           fprintf(stderr, "        from %s\n", g_fd_path[fd]);
       if ((_n % 2000)==0) { fprintf(stderr,"[fs] read summary after %d reads:",_n);
           for (int i=0;i<64;i++) if (cnt_fd[i]) fprintf(stderr," fd%d=%ux/%lluB",i,cnt_fd[i],(unsigned long long)per_fd[i]);
           fprintf(stderr,"\n"); } }
-    if (ps3_env_once("PS3_FSLOG_TOC") && nbytes >= 50000) {  /* data.toc read -> who parses it? */
+    if (diag.toc && nbytes >= 50000) {  /* data.toc read -> who parses it? */
         fprintf(stderr, "[TOC] data.toc read into buf=0x%08X n=%zu; lr=0x%08llX; guest-stack RAs:\n", buf, n, (unsigned long long)ctx->lr);
         uint32_t sp = (uint32_t)ctx->gpr[1];
         for (uint32_t i = 0; i < 128 && sp + i*4 + 4 <= ppu_vm_size; i++) {
@@ -1333,9 +1387,10 @@ static void cellFsSdataOpenByFd(ppu_context* ctx)
  *
  * The completion callback is (CellFsAio* aio, s32 error, s32 id, u64 size).
  *
- * ponytail: the read runs synchronously and the callback fires before the
- * submit call returns. A title that submits, THEN arms the thing the callback
- * signals, would miss it -- move completion to a worker thread if one shows up.
+ * Default compatibility mode still transfers and calls back inline.
+ * PS3RECOMP_FS_AIO_WORKER=1 selects the experimental registered PPU service:
+ * bounded FIFO, positional host transfers, staged guest buffers and callbacks
+ * on that service's real guest context. See docs/FS_AIO_WORKER.md.
  */
 #ifdef _WIN32
 #  define HOST_FSEEK64(f,off) _fseeki64((f), (__int64)(off), SEEK_SET)
@@ -1360,7 +1415,20 @@ static uint64_t guest_be64(uint32_t a)
     return ((uint64_t)guest_be32(a) << 32) | guest_be32(a + 4);
 }
 
-static int s_aio_initialized;
+static std::atomic<int> s_aio_initialized{0};
+static bool fs_aio_async_enabled()
+{
+    static const bool enabled = [] {
+        const char* e = getenv("PS3RECOMP_FS_AIO_WORKER");
+        return e && !strcmp(e, "1");
+    }();
+    return enabled;
+}
+static int32_t fs_aio_async_init(const char* mount);
+static int32_t fs_aio_async_finish(const char* mount);
+static int32_t fs_aio_async_cancel(int32_t id);
+static void fs_aio_async_submit(ppu_context* ctx, bool write);
+static void fs_aio_process_stop(void);
 
 static void cellFsAioInit(ppu_context* ctx)
 {
@@ -1369,12 +1437,24 @@ static void cellFsAioInit(ppu_context* ctx)
     if (!mount_ea) { ctx->gpr[3] = (uint64_t)(int64_t)CELL_EFAULT; return; }
     guest_strcpy(mount, mount_ea, sizeof mount);
     if (!mount[0]) { ctx->gpr[3] = (uint64_t)(int64_t)CELL_EINVAL; return; }
+    if (fs_aio_async_enabled()) {
+        ctx->gpr[3] = (uint64_t)(int64_t)fs_aio_async_init(mount);
+        return;
+    }
     s_aio_initialized = 1;
     ctx->gpr[3] = CELL_OK;
 }
 
 static void cellFsAioFinish(ppu_context* ctx)
 {
+    if (fs_aio_async_enabled()) {
+        char mount[256];
+        const uint32_t ea = (uint32_t)ctx->gpr[3];
+        if (!ea) { ctx->gpr[3] = (uint64_t)(int64_t)(int32_t)CELL_EFAULT; return; }
+        guest_strcpy(mount, ea, sizeof mount);
+        ctx->gpr[3] = (uint64_t)(int64_t)fs_aio_async_finish(mount);
+        return;
+    }
     s_aio_initialized = 0;
     ctx->gpr[3] = CELL_OK;
 }
@@ -1383,7 +1463,10 @@ static void cellFsAioFinish(ppu_context* ctx)
  * RPCS3 currently reports EINVAL for cancellation in its unimplemented path. */
 static void cellFsAioCancel(ppu_context* ctx)
 {
-    (void)ctx->gpr[3]; /* request id */
+    if (fs_aio_async_enabled()) {
+        ctx->gpr[3] = (uint64_t)(int64_t)fs_aio_async_cancel((int32_t)ctx->gpr[3]);
+        return;
+    }
     ctx->gpr[3] = (uint64_t)(int64_t)CELL_EINVAL;
 }
 
@@ -1392,23 +1475,18 @@ static void cellFsAioCancel(ppu_context* ctx)
  * read and a write in flight together could both be id 1. */
 static std::atomic<int32_t> s_aio_next_id{1};
 
-static void fs_aio_submit(ppu_context* ctx, bool write)
+/* The transfer phase owns no PPU context and invokes no guest callback.
+ * A future I/O worker may execute this phase, but only after requests pin
+ * their fd, guest ranges and VM lifetime. Keep inline delivery until a
+ * guest-aware completion dispatcher can safely consume these results. */
+struct AioTransferResult {
+    int32_t error;
+    size_t bytes;
+};
+
+static AioTransferResult fs_aio_transfer(int fd, uint64_t offset, uint32_t buf,
+                                        uint64_t size, int32_t id, bool write)
 {
-    uint32_t aio    = (uint32_t)ctx->gpr[3];
-    uint32_t id_ptr = (uint32_t)ctx->gpr[4];
-    uint32_t cb_opd = (uint32_t)ctx->gpr[5];
-
-    if (!s_aio_initialized) { ctx->gpr[3] = (uint64_t)(int64_t)CELL_ENXIO; return; }
-    if (!aio || !vm_base) { ctx->gpr[3] = (uint64_t)(int64_t)CELL_EFAULT; return; }
-
-    int      fd     = (int)guest_be32(aio + 0x00);
-    uint64_t offset = guest_be64(aio + 0x08);
-    uint32_t buf    = guest_be32(aio + 0x10);
-    uint64_t size   = guest_be64(aio + 0x18);
-
-    int32_t id = s_aio_next_id++;
-    if (id_ptr) vm_write32(id_ptr, (uint32_t)id);
-
     size_t n = 0;
     int32_t err = CELL_EBADF;
     {
@@ -1451,9 +1529,351 @@ static void fs_aio_submit(ppu_context* ctx, bool write)
         fprintf(stderr, "[fs] aio %s id=%d fd=%d off=%llu size=%llu -> %zu\n", write ? "write" : "read",
                 id, fd, (unsigned long long)offset, (unsigned long long)size, n);
 
+    return {err, n};
+}
+
+
+/* Standalone filesystem fixtures do not link the PPU loader. They retain the
+ * synchronous path and may explicitly inject a synthetic service for tests. */
+#ifdef _MSC_VER
+extern "C" const ps3_aio_runtime_hooks* ppu_aio_runtime_hooks_absent(void) { return nullptr; }
+# ifdef _M_IX86
+#  pragma comment(linker, "/alternatename:_ppu_aio_runtime_hooks=_ppu_aio_runtime_hooks_absent")
+# else
+#  pragma comment(linker, "/alternatename:ppu_aio_runtime_hooks=ppu_aio_runtime_hooks_absent")
+# endif
+#else
+extern "C" __attribute__((weak)) const ps3_aio_runtime_hooks* ppu_aio_runtime_hooks(void) { return nullptr; }
+#endif
+
+static constexpr unsigned AIO_MAX_PENDING = 64;
+static constexpr size_t AIO_MAX_BYTES = 128u * 1024u * 1024u;
+struct AioAsyncRequest {
+    AioAsyncRequest* next = nullptr;
+    AioFilePin* pin = nullptr;
+    uint8_t* data = nullptr;
+    uint8_t* vm = nullptr;
+    uint32_t vm_size = 0, aio = 0, buf = 0, code = 0, toc = 0;
+    uint64_t offset = 0;
+    size_t size = 0;
+    int32_t id = 0;
+    unsigned mount = 0;
+    bool write = false, canceled = false;
+};
+struct AioMount { char name[64] = {}; unsigned pending = 0; };
+struct AioAsyncManager {
+    std::mutex mutex;
+    std::condition_variable cv;
+    const ps3_aio_runtime_hooks* hooks = nullptr;
+    AioMount mounts[8];
+    AioAsyncRequest *head = nullptr, *tail = nullptr, *active = nullptr;
+    size_t bytes = 0;
+    unsigned pending = 0;
+    bool starting = false, running = false, stopping = false, io_active = false;
+    bool callback_admitted = false;
+};
+static std::atomic<AioAsyncManager*> s_aio_manager{nullptr};
+static std::atomic<bool> s_aio_process_stopping{false};
+
+/* Process-owned lifetime: no static destructor or atexit join can deadlock
+ * on an in-flight guest callback. Finish ends a mount session; one dormant
+ * service is retained to avoid repeatedly allocating guest stacks/TLS. */
+static AioAsyncManager* fs_aio_manager_create()
+{
+    AioAsyncManager* p = s_aio_manager.load();
+    if (p) return p;
+    AioAsyncManager* n = new (std::nothrow) AioAsyncManager;
+    if (!n) return nullptr;
+    if (!s_aio_manager.compare_exchange_strong(p, n)) { delete n; return p; }
+    return n;
+}
+static bool fs_aio_mount_name(const char* name, char (&out)[64])
+{
+    size_t len = strlen(name);
+    if (len && name[len-1] == '/') --len;
+    if (len < 2 || len >= sizeof out || name[0] != '/' || memchr(name+1, '/', len-1)) return false;
+    memcpy(out, name, len); out[len] = 0;
+    return true;
+}
+static int fs_aio_mount_index(const AioAsyncManager& m, const char* name)
+{
+    for (unsigned i=0; i<8; ++i) if (m.mounts[i].name[0] && !strcmp(m.mounts[i].name,name)) return (int)i;
+    return -1;
+}
+static int fs_aio_file_mount(const AioAsyncManager& m, const char* path)
+{
+    for (unsigned i=0; i<8; ++i) {
+        size_t len = strlen(m.mounts[i].name);
+        if (len && !strncmp(path,m.mounts[i].name,len) && (path[len]=='/' || !path[len])) return (int)i;
+    }
+    return -1;
+}
+/* Only the manager lock is held on entry. Lock order is manager -> FS.
+ * Host transfers drop the FS lock before reacquiring the manager lock. */
+static void fs_aio_free_locked(AioAsyncManager& m, AioAsyncRequest* q)
+{
+    if (q->pin) {
+        std::lock_guard<std::mutex> fs_lock(g_fs_mutex);
+        fs_aio_unpin_file_locked(q->pin);
+    }
+    --m.mounts[q->mount].pending; --m.pending; m.bytes -= q->size;
+    free(q->data); delete q;
+}
+static void fs_aio_discard_queue_locked(AioAsyncManager& m)
+{
+    while (m.head) {
+        AioAsyncRequest* q = m.head; m.head = q->next;
+        fs_aio_free_locked(m,q);
+    }
+    m.tail = nullptr;
+}
+
+/* The actual disk phase never touches guest VM or invokes guest code. The
+ * stream is pinned and the shared FS and FILE locks serialize position and
+ * buffer state with normal I/O. */
+static AioTransferResult fs_aio_staged_transfer(AioAsyncRequest* q)
+{
+    std::lock_guard<std::mutex> fs_lock(g_fs_mutex);
+    FILE* f = q->pin->file;
+    size_t n = 0;
+    int32_t err = (int32_t)CELL_ECANCELED;
+    if (!q->canceled) {
+        HOST_LOCKFILE(f);
+        const int64_t pos = (int64_t)HOST_FTELL64(f);
+        if (pos < 0 || HOST_FSEEK64(f, (int64_t)q->offset) != 0) {
+            err = cell_fs_errno(errno);
+        } else {
+            n = q->write ? fwrite(q->data, 1, q->size, f) : fread(q->data, 1, q->size, f);
+            err = ferror(f) ? cell_fs_errno(errno) : (int32_t)CELL_OK;
+            if (q->write && n != q->size && err == CELL_OK) err = (int32_t)CELL_FS_EIO;
+            if (q->write && fflush(f) != 0 && err == CELL_OK) err = cell_fs_errno(errno);
+        }
+        clearerr(f);
+        if (pos >= 0 && HOST_FSEEK64(f,pos) != 0 && err == CELL_OK) err = cell_fs_errno(errno);
+        HOST_UNLOCKFILE(f);
+    }
+    fs_aio_unpin_file_locked(q->pin); q->pin = nullptr;
+    return {err,n};
+}
+
+static void fs_aio_service_cleanup(void*)
+{
+    auto* m = s_aio_manager.load();
+    if (!m) return;
+    std::lock_guard<std::mutex> hold(m->mutex);
+    // Also reached after a nonlocal guest thread exit. Never retry a callback.
+    m->stopping = true; m->starting = false; m->running = false; m->io_active = false;
+    m->callback_admitted = false;
+    if (m->active) { fs_aio_free_locked(*m,m->active); m->active = nullptr; }
+    fs_aio_discard_queue_locked(*m);
+    m->cv.notify_all();
+}
+static void fs_aio_service_entry(void* opaque)
+{
+    auto* m = s_aio_manager.load();
+    if (!m || !m->hooks->prepare(opaque)) return;
+    auto* ctx = static_cast<ppu_context*>(opaque);
+    const uint64_t sp = ctx->gpr[1], tp = ctx->gpr[13];
+    {
+        std::lock_guard<std::mutex> hold(m->mutex);
+        m->starting = false;
+        if (m->stopping || s_aio_process_stopping.load()) { m->cv.notify_all(); return; }
+        m->running = true; m->cv.notify_all();
+    }
+    for (;;) {
+        AioAsyncRequest* q;
+        {
+            std::unique_lock<std::mutex> hold(m->mutex);
+            m->cv.wait(hold,[&]{ return m->stopping || m->head; });
+            if (m->stopping || s_aio_process_stopping.load()) return;
+            q = m->head; m->head = q->next; if (!m->head) m->tail = nullptr;
+            m->active = q; m->io_active = true;
+        }
+        AioTransferResult result = fs_aio_staged_transfer(q);
+        {
+            std::lock_guard<std::mutex> hold(m->mutex);
+            m->io_active = false; m->cv.notify_all();
+            if (m->stopping || s_aio_process_stopping.load()) return;
+            // Admission is serialized with shutdown under the manager lock.
+            // Once admitted, completion is in flight and shutdown will not
+            // join it, even if guest dispatch has not begun executing yet.
+            m->callback_admitted = true;
+            // Guest must retain aio and buffer until completion. Never use a
+            // different VM mapping if the host changed it while I/O was pending.
+            if (vm_base != q->vm || ppu_vm_size != q->vm_size ||
+                !fs_guest_range_valid(q->aio, 0x28) ||
+                !fs_guest_range_valid(q->buf, q->size)) {
+                fprintf(stderr,"[fs] AIO VM/range changed before completion\n");
+                return; // cleanup quarantines queue; no stale guest writes/calls
+            }
+            if (!q->write && result.bytes) {
+                fs_prefault(q->buf,result.bytes);
+                vm_note_write(q->buf,result.bytes);
+                memcpy(vm_base + q->buf,q->data,result.bytes);
+            }
+        }
+        // No lock or owning automatic object survives across guest dispatch:
+        // a callback may submit again, finish, close, or nonlocally exit.
+        bool delivered = false;
+        try {
+            delivered = m->hooks->deliver(opaque,sp,tp,q->code,q->toc,q->aio,
+                                          result.error,q->id,result.bytes) != 0;
+        } catch (...) {
+            fprintf(stderr,"[fs] AIO callback escaped; stopping service\n");
+        }
+        {
+            std::lock_guard<std::mutex> hold(m->mutex);
+            m->callback_admitted = false;
+            fs_aio_free_locked(*m,q); m->active = nullptr; m->cv.notify_all();
+            if (!delivered || m->stopping || s_aio_process_stopping.load()) return;
+        }
+    }
+}
+
+static int32_t fs_aio_async_init(const char* mount)
+{
+    char name[64];
+    if (!fs_aio_mount_name(mount,name)) return (int32_t)CELL_EINVAL;
+    if (s_aio_process_stopping.load()) return (int32_t)CELL_ENXIO;
+    auto* m = fs_aio_manager_create();
+    if (!m) return (int32_t)CELL_ENOMEM;
+    std::unique_lock<std::mutex> hold(m->mutex);
+    if (m->stopping || s_aio_process_stopping.load()) return (int32_t)CELL_ENXIO;
+    if (!m->hooks) m->hooks = ppu_aio_runtime_hooks();
+    if (!m->hooks || !m->hooks->start || !m->hooks->prepare || !m->hooks->resolve ||
+        !m->hooks->deliver || !m->hooks->install_process_stop) return (int32_t)CELL_ENOSYS;
+    if (!m->running && !m->starting) {
+        m->starting = true;
+        const int32_t rc = m->hooks->start(fs_aio_service_entry,fs_aio_service_cleanup);
+        if (rc != CELL_OK) { m->starting = false; m->cv.notify_all(); return rc; }
+    }
+    m->cv.wait(hold,[&]{return !m->starting;});
+    if (!m->running || m->stopping || s_aio_process_stopping.load()) return (int32_t)CELL_EAGAIN;
+    if (fs_aio_mount_index(*m,name) >= 0) return (int32_t)CELL_OK;
+    for (auto& slot : m->mounts) if (!slot.name[0]) {
+        strcpy(slot.name,name); return (int32_t)CELL_OK;
+    }
+    return (int32_t)CELL_EKRESOURCE;
+}
+static int32_t fs_aio_async_finish(const char* mount)
+{
+    char name[64];
+    if (!fs_aio_mount_name(mount,name)) return (int32_t)CELL_EINVAL;
+    auto* m = s_aio_manager.load();
+    if (!m) return (int32_t)CELL_ENXIO;
+    std::lock_guard<std::mutex> hold(m->mutex);
+    if (m->stopping) return (int32_t)CELL_ENXIO;
+    int i = fs_aio_mount_index(*m,name);
+    if (i < 0) return (int32_t)CELL_ENXIO;
+    // Never join callbacks while the caller may own guest locks. Includes a
+    // callback attempting finish on its own mount.
+    if (m->mounts[i].pending) return (int32_t)CELL_EBUSY;
+    m->mounts[i].name[0] = 0;
+    return (int32_t)CELL_OK;
+}
+static int32_t fs_aio_async_cancel(int32_t id)
+{
+    auto* m = s_aio_manager.load();
+    if (!m) return (int32_t)CELL_EINVAL;
+    std::lock_guard<std::mutex> hold(m->mutex);
+    if (m->stopping) return (int32_t)CELL_ENXIO;
+    for (auto* q=m->head; q; q=q->next) if (q->id==id && !q->canceled) {
+        q->canceled = true; return (int32_t)CELL_OK;
+    }
+    if (m->active && m->active->id==id) return (int32_t)CELL_EBUSY;
+    return (int32_t)CELL_EINVAL;
+}
+static void fs_aio_process_stop()
+{
+    s_aio_process_stopping.store(true);
+    auto* m = s_aio_manager.load();
+    if (!m) return;
+    std::unique_lock<std::mutex> hold(m->mutex);
+    m->stopping = true;
+    fs_aio_discard_queue_locked(*m); m->cv.notify_all();
+    // Host I/O and service startup may be awaited; arbitrary guest callbacks
+    // (including callbacks admitted but not yet executing) must NOT be joined
+    // here. This is process termination, not VM reset.
+    m->cv.wait(hold,[&]{return !m->io_active && !m->starting;});
+}
+
+static void fs_aio_async_submit(ppu_context* ctx, bool write)
+{
+    auto result = [&](int32_t rc) { ctx->gpr[3] = (uint64_t)(int64_t)rc; };
+    const uint32_t aio = (uint32_t)ctx->gpr[3], id_ptr = (uint32_t)ctx->gpr[4], opd = (uint32_t)ctx->gpr[5];
+    if (!ppu_vm_size || !aio || !id_ptr || !opd ||
+        !fs_guest_range_valid(aio,0x28) || !fs_guest_range_valid(id_ptr,4) ||
+        !fs_guest_range_valid(opd,8)) { result(CELL_EFAULT); return; }
+    auto* m = s_aio_manager.load();
+    if (!m) { result(CELL_ENXIO); return; }
+    std::lock_guard<std::mutex> hold(m->mutex);
+    if (!m->running || m->stopping || s_aio_process_stopping.load()) { result(CELL_ENXIO); return; }
+    const int fd = (int)guest_be32(aio);
+    const uint64_t offset = guest_be64(aio+8), size = guest_be64(aio+0x18);
+    const uint32_t buf = guest_be32(aio+0x10);
+    if (offset > INT64_MAX || size > SIZE_MAX || size > AIO_MAX_BYTES) { result(CELL_EFBIG); return; }
+    if ((size && !buf) || !fs_guest_range_valid(buf,size)) { result(CELL_EFAULT); return; }
+    if (m->pending == AIO_MAX_PENDING || size > AIO_MAX_BYTES-m->bytes) { result(CELL_EAGAIN); return; }
+    const int32_t id = s_aio_next_id.load();
+    if (id <= 0 || id == INT32_MAX) { result(CELL_EKRESOURCE); return; }
+    uint32_t code=0,toc=0;
+    if (!m->hooks->resolve(opd,&code,&toc)) { result(CELL_EINVAL); return; }
+    auto* q = new (std::nothrow) AioAsyncRequest;
+    if (!q) { result(CELL_ENOMEM); return; }
+    q->data = (uint8_t*)malloc(size ? (size_t)size : 1u);
+    if (!q->data) { delete q; result(CELL_ENOMEM); return; }
+    int32_t err = (int32_t)CELL_OK;
+    {
+        std::lock_guard<std::mutex> fs_lock(g_fs_mutex);
+        FILE* f = fd_file(fd);
+        if (!f) err = (int32_t)CELL_EBADF;
+        else {
+            int i = fs_aio_file_mount(*m,g_fd_path[fd]);
+            if (i < 0) err = (int32_t)CELL_ENXIO;
+            else {
+                q->mount = (unsigned)i;
+                q->pin = fs_aio_pin_file_locked(fd,f);
+                if (!q->pin) err = (int32_t)CELL_ENOMEM;
+            }
+        }
+    }
+    if (err != CELL_OK) { free(q->data); delete q; result(err); return; }
+    q->vm=vm_base; q->vm_size=ppu_vm_size; q->aio=aio; q->buf=buf; q->code=code; q->toc=toc;
+    q->offset=offset; q->size=(size_t)size; q->id=id; q->write=write;
+    if (write && size) { fs_prefault(buf,size); memcpy(q->data,vm_base+buf,(size_t)size); }
+    s_aio_next_id.store(id+1);
+    vm_write32(id_ptr,(uint32_t)id);
+    if (m->tail) m->tail->next=q; else m->head=q;
+    m->tail=q; ++m->pending; ++m->mounts[q->mount].pending; m->bytes+=q->size;
+    // Publish the guest return value before making the queued request visible.
+    result(CELL_OK); m->cv.notify_one();
+}
+
+static void fs_aio_submit(ppu_context* ctx, bool write)
+{
+    if (fs_aio_async_enabled()) { fs_aio_async_submit(ctx, write); return; }
+    uint32_t aio    = (uint32_t)ctx->gpr[3];
+    uint32_t id_ptr = (uint32_t)ctx->gpr[4];
+    uint32_t cb_opd = (uint32_t)ctx->gpr[5];
+
+    if (!s_aio_initialized) { ctx->gpr[3] = (uint64_t)(int64_t)CELL_ENXIO; return; }
+    if (!aio || !vm_base) { ctx->gpr[3] = (uint64_t)(int64_t)CELL_EFAULT; return; }
+
+    int      fd     = (int)guest_be32(aio + 0x00);
+    uint64_t offset = guest_be64(aio + 0x08);
+    uint32_t buf    = guest_be32(aio + 0x10);
+    uint64_t size   = guest_be64(aio + 0x18);
+
+    int32_t id = s_aio_next_id++;
+    if (id_ptr) vm_write32(id_ptr, (uint32_t)id);
+
+    const AioTransferResult result = fs_aio_transfer(fd, offset, buf, size, id, write);
+
+    /* Preserve the established caller context, result ordering and
+     * synchronous completion timing; no queue or host worker is started. */
     ctx->gpr[3] = CELL_OK;
-    if (cb_opd) ps3_invoke_guest(cb_opd, aio, (uint64_t)(int64_t)err,
-                                 (uint64_t)(int64_t)id, (uint64_t)n, 0, 0, 0, 0);
+    if (cb_opd) ps3_invoke_guest(cb_opd, aio, (uint64_t)(int64_t)result.error,
+                                 (uint64_t)(int64_t)id, (uint64_t)result.bytes, 0, 0, 0, 0);
 }
 
 static void cellFsAioRead(ppu_context* ctx) { fs_aio_submit(ctx, false); }
@@ -1467,6 +1887,10 @@ static void cellFsAioWrite(ppu_context* ctx) { fs_aio_submit(ctx, true); }
 
 extern "C" void ppu_fs_register(void)
 {
+    if (fs_aio_async_enabled()) {
+        if (const auto* hooks = ppu_aio_runtime_hooks())
+            if (hooks->install_process_stop) hooks->install_process_stop(fs_aio_process_stop);
+    }
     ps3_hle_register_ctx(ps3_compute_nid("cellFsOpen"),     "cellFsOpen",     cellFsOpen);
     /* Register by the literal import NID: LBP imports 0xB1840B53 for
      * cellFsSdataOpen, which ps3_compute_nid("cellFsSdataOpen") does NOT match
