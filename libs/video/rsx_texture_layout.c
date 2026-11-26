@@ -2,6 +2,7 @@
  * ps3recomp - RSX texture layout (see rsx_texture_layout.h)
  */
 #include "rsx_texture_layout.h"
+#include "rsx_texture_simd.h"
 
 #include <stdlib.h>   /* getenv, atoi */
 #include <string.h>   /* memcpy       */
@@ -317,6 +318,42 @@ void rsx_texture_decode(void* dst, u32 dst_pitch,
                 if (!argb_as_rgba) v = (v >> 8) | (v << 24);
                 v |= alpha;
                 memcpy(drow + (size_t)x * 4u, &v, 4);
+            }
+        }
+        return;
+    }
+#endif
+
+#if RSX_TEXTURE_SSE2
+    /* Preserve scalar fallback for unusual layouts, small rows and tails. */
+    if (!tl->swizzled && sbpp == 2u && dbpp == 4u &&
+        (tl->base_format == 0x82u || tl->base_format == 0x83u ||
+         tl->base_format == 0x84u || tl->base_format == 0x97u || tl->base_format == 0x9Du)) {
+        for (u32 y = 0; y < h; ++y) {
+            const u8* srow = src + (size_t)y * tl->row_bytes;
+            u8* drow = d + (size_t)y * dst_pitch;
+            u32 x = 0;
+            for (; w - x >= 8u; x += 8u)
+                rsx_decode_packed16x8(drow + (size_t)x * 4u, srow + (size_t)x * 2u, tl->base_format);
+            for (; x < w; ++x)
+                decode_texel(tl, srow + (size_t)x * 2u, drow + (size_t)x * 4u, argb_as_rgba);
+        }
+        return;
+    }
+    if (tl->swizzled && w >= 2u && h >= 2u && !(w & (w - 1u)) && !(h & (h - 1u)) &&
+        sbpp == 4u && dbpp == 4u &&
+        (tl->base_format == 0x85u || tl->base_format == 0x9Eu)) {
+        const u32 xmask = rsx_swizzle_offset(w - 1u, 0, l2w, l2h);
+        for (u32 y = 0; y < h; y += 2u) {
+            const u32 yoff = rsx_swizzle_offset(0, y, l2w, l2h);
+            u8* top = d + (size_t)y * dst_pitch;
+            u8* bottom = top + dst_pitch;
+            u32 xoff = 0;
+            for (u32 x = 0; x < w; x += 2u) {
+                rsx_decode_argb_tile2x2(top + (size_t)x * 4u, bottom + (size_t)x * 4u,
+                    src + (size_t)(xoff | yoff) * 4u, argb_as_rgba, tl->base_format == 0x9Eu);
+                xoff = (xoff - xmask) & xmask;
+                xoff = (xoff - xmask) & xmask;
             }
         }
         return;

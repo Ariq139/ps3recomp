@@ -708,6 +708,28 @@ if(PS3RECOMP_BUILD_TESTS)
     add_test(NAME rsx_constant_snapshot_cache
         COMMAND test_constant_snapshot_cache)
 
+    # Texture decoding has exact-byte host tests: exercise the active SIMD
+    # dispatch, its forced-scalar fallback, and the standalone SSE2 helpers.
+    add_executable(test_rsx_texture_layout
+        libs/video/tests/test_texture_layout.c
+        libs/video/rsx_texture_layout.c)
+    target_include_directories(test_rsx_texture_layout PRIVATE include libs/video)
+    add_test(NAME rsx_texture_layout COMMAND test_rsx_texture_layout)
+
+    add_executable(test_rsx_texture_layout_scalar
+        libs/video/tests/test_texture_layout.c
+        libs/video/rsx_texture_layout.c)
+    target_include_directories(test_rsx_texture_layout_scalar PRIVATE include libs/video)
+    target_compile_definitions(test_rsx_texture_layout_scalar PRIVATE
+        RSX_TEXTURE_FORCE_SCALAR=1)
+    add_test(NAME rsx_texture_layout_scalar COMMAND test_rsx_texture_layout_scalar)
+
+    add_executable(test_rsx_texture_simd
+        libs/video/tests/test_texture_simd.c)
+    target_include_directories(test_rsx_texture_simd PRIVATE libs/video)
+    add_test(NAME rsx_texture_simd COMMAND test_rsx_texture_simd)
+    set_tests_properties(rsx_texture_simd PROPERTIES SKIP_RETURN_CODE 77)
+
     if(WIN32)
         add_executable(test_d3d12_srv_cache
             libs/video/tests/test_d3d12_srv_cache.c)
