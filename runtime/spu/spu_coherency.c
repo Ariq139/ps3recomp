@@ -5,10 +5,10 @@
  * plain: a bit per 128-byte line, a small table of the SPU contexts that have
  * ever reserved one, and the lock-line spinlock. Everything that WRITES it runs
  * with the lock-line lock held (the SPU's GETLLAR, the PPU's coherent store),
- * so the read-modify-write on a shared bitmap byte is serialized. Only
- * spu_coh_is_reserved reads without the lock, which is the entire point: it is
- * on every PPU store. The one other unlocked path is a GETLLAR that re-reserves
- * a marked line (spu_coh_reserve_fast); its ordering argument is there.
+ * so bitmap writers are serialized. The inline single-line and range readers
+ * observe atomically published bytes without the lock, as does a GETLLAR
+ * that re-reserves a marked line (spu_coh_reserve_fast); its ordering
+ * argument is there.
  */
 
 #include <stdlib.h>
@@ -146,9 +146,9 @@ static unsigned char s_coh_bitmap[SPU_COH_BITMAP_SZ];
 /* g_spu_coh_bits (spu_coh_bitmap.h) stays NULL until the first GETLLAR
  * anywhere. That keeps the PPU fast path off the bitmap entirely for a title
  * that runs no SPU code, and keeps every existing test that stores through
- * vm_write* paying one compare against a hot global. Written under the lock;
- * read unlocked, where a stale NULL costs at most one missed event on the very
- * first reservation of the run. */
+ * vm_write* paying one compare against a hot global. Published with a release
+ * store under the lock; unlocked readers acquire-load the pointer and bytes.
+ * A DMA that copies unlocked must still recheck after copying. */
 
 /* Every live virtual context may retain a reservation between scheduling
  * quanta; physical SPU count is not a bound on this set. All access is under
@@ -259,10 +259,10 @@ void spu_coh_reserve(spu_context* ctx, uint32_t ea)
      * the bitmap byte. */
     uint32_t line = ea >> SPU_COH_LINE_SHIFT;
     const unsigned char bit = (unsigned char)(1u << (line & 7));
-    if (!(s_coh_bitmap[line >> 3] & bit))
-        s_coh_bitmap[line >> 3] |= bit;
-    if (!g_spu_coh_bits)
-        g_spu_coh_bits = s_coh_bitmap;
+    unsigned char* byte = &s_coh_bitmap[line >> 3];
+    spu_coh_bitmap_mark_bit(byte, bit);
+    if (!__atomic_load_n(&g_spu_coh_bits, __ATOMIC_RELAXED))
+        __atomic_store_n(&g_spu_coh_bits, s_coh_bitmap, __ATOMIC_RELEASE);
 
     if (!ctx) return;
     spu_coh_live_begin(ctx, ea);   /* counted before the caller reads the line */

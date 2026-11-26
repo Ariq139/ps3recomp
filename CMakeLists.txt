@@ -649,6 +649,20 @@ if(PS3RECOMP_BUILD_TESTS)
         set_tests_properties(spu_lockline_wait PROPERTIES TIMEOUT 15)
 
     endif()
+    add_executable(test_spu_coh_bitmap_range
+        runtime/spu/tests/test_spu_coh_bitmap_range.c
+        runtime/spu/tests/test_spu_coh_bitmap_concurrent.cpp)
+    if(NOT WIN32)
+        target_link_libraries(test_spu_coh_bitmap_range PRIVATE Threads::Threads)
+    endif()
+    if(MSVC)
+        target_compile_options(test_spu_coh_bitmap_range PRIVATE /UNDEBUG)
+    else()
+        target_compile_options(test_spu_coh_bitmap_range PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME spu_coh_bitmap_range COMMAND test_spu_coh_bitmap_range)
+    set_tests_properties(spu_coh_bitmap_range PROPERTIES TIMEOUT 60)
+
     add_executable(test_rsx_present_policy tests/test_rsx_present_policy.c)
     target_include_directories(test_rsx_present_policy PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/libs/video")
