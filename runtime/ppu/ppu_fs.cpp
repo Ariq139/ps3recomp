@@ -643,7 +643,7 @@ static void cellFsRead(ppu_context* ctx)
     { if (diag.eof_fd >= 0 && fd == diag.eof_fd && diag.eof_limit > 0 &&
           fpos_before >= diag.eof_limit) {
           static int once = 0;
-          if (!once++) fprintf(stderr, "[fs] PS3_FSLOG_EOF: fd=%d truncated at %lld bytes\n", fd, (long long)elim);
+          if (!once++) fprintf(stderr, "[fs] PS3_FSLOG_EOF: fd=%d truncated at %lld bytes\n", fd, (long long)diag.eof_limit);
           n = 0;
       } }
     if (g_fd_usm[fd] && diag.reads) fprintf(stderr, "[USMRD] READ usm fd=%d nbytes=%llu -> %zu magic=%02X%02X%02X%02X pos=%lld lr=0x%08X\n", fd, (unsigned long long)nbytes, n, vm_base[buf], vm_base[buf+1], vm_base[buf+2], vm_base[buf+3], (long long)fpos_before, (uint32_t)ctx->lr);
