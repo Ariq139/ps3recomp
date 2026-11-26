@@ -539,6 +539,7 @@ typedef struct {
     int                   vp_fp_n;
     u32                   vp_fp_hash[VP_FP_HASH_BUCKETS];
     int                   vp_fp_next_replace;
+    u32                   vp_fp_last; /* last successful entry + 1 */
     VPFPBlobEntry         vp_fp_blob[VP_FP_BLOB_CACHE];
     int                   vp_fp_blob_n;
     u64                   vp_fp_blob_clock;
@@ -4277,6 +4278,7 @@ static HRESULT d3d12_pipeline_library_get_or_create(
 
 static void d3d12_vp_fp_hash_remove(u32 entry_index)
 {
+    if (s_d3d.vp_fp_last == entry_index + 1u) s_d3d.vp_fp_last = 0;
     if (entry_index >= (u32)s_d3d.vp_fp_n)
         return;
 
@@ -4565,6 +4567,23 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
     key.two_sided_lighting = two_sided_lighting;
     const size_t key_begin = offsetof(VPFPEntry, vs_idx);
     const size_t key_size = offsetof(VPFPEntry, sampler_layout) - key_begin;
+    /* Adjacent material draws frequently have the same complete key.
+     * Validate the current slot's bytes, not a saved COM pointer. A slot
+     * reused by ring eviction or a new generation cannot yield a false hit. */
+    static int last_key_cache = -1;
+    if (last_key_cache < 0) {
+        const char* e = getenv("RSX_D3D12_LAST_PSO");
+        last_key_cache = e && !strcmp(e, "1");
+    }
+    const u32 last = last_key_cache ? s_d3d.vp_fp_last : 0u;
+    if (last && last <= (u32)s_d3d.vp_fp_n) {
+        VPFPEntry* cached = &s_d3d.vp_fp[last - 1u];
+        if (cached->pso && !memcmp((const u8*)cached + key_begin,
+                                   (const u8*)&key + key_begin, key_size)) {
+            if (sampler_layout_out) *sampler_layout_out = cached->sampler_layout;
+            return cached->pso;
+        }
+    }
     const u64 key_hash = d3d12_pso_hash_bytes(14695981039346656037ull,
                                             (const u8*)&key + key_begin, key_size);
     const u32 bucket = (u32)key_hash & (VP_FP_HASH_BUCKETS - 1u);
@@ -4573,6 +4592,7 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
         if (cached->key_hash == key_hash &&
             memcmp((const u8*)cached + key_begin,
                    (const u8*)&key + key_begin, key_size) == 0) {
+            if (last_key_cache) s_d3d.vp_fp_last = link;
             if (sampler_layout_out) *sampler_layout_out = cached->sampler_layout;
             return cached->pso;
         }
@@ -5074,6 +5094,7 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
     entry->key_hash = key_hash;
     entry->hash_next = s_d3d.vp_fp_hash[bucket];
     s_d3d.vp_fp_hash[bucket] = entry_index + 1u;
+    if (last_key_cache) s_d3d.vp_fp_last = entry_index + 1u;
     if (sampler_layout_out) *sampler_layout_out = sampler_layout;
     return pso;
 }
@@ -11667,6 +11688,7 @@ void rsx_d3d12_backend_shutdown(void)
         s_d3d.vp_fp[i].pso = NULL;
     }
     s_d3d.vp_fp_n = 0;
+    s_d3d.vp_fp_last = 0;
     memset(s_d3d.vp_fp_hash, 0, sizeof(s_d3d.vp_fp_hash));
     s_d3d.vp_fp_next_replace = 0;
     for (int i = 0; i < s_d3d.vp_fp_blob_n; i++) {
