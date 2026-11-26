@@ -194,7 +194,25 @@ static void sys_lwmutex_create(ppu_context* ctx)
  * thread. Recursion is handled explicitly via the guest owner/recur fields
  * we stamp (only the holder ever writes owner=self, so the re-lock check is
  * race-free). Keyed by guest address in an open-addressed table. */
-#define LWM_HASH 65536u
+#define LWM_HASH_BITS 16u
+#define LWM_HASH (1u << LWM_HASH_BITS)
+/* All readers observe the slot's initial state before accepting its key,
+ * including hosts without x86's total store ordering. The supported
+ * Clang/GCC toolchains implement these operations on the existing long. */
+static inline long lwm_addr_load(const volatile long* addr)
+{
+    return __atomic_load_n(addr, __ATOMIC_ACQUIRE);
+}
+static inline void lwm_addr_publish(volatile long* addr, long value)
+{
+    __atomic_store_n(addr, value, __ATOMIC_RELEASE);
+}
+static inline uint32_t lwm_hash_home(uint32_t addr)
+{
+    /* High product bits mix aligned guest addresses across the whole table.
+     * The old low-bit mask aliases addresses separated by 64 KiB. */
+    return (uint32_t)(addr * 2654435761u) >> (32u - LWM_HASH_BITS);
+}
 struct LwmWaiter { struct LwmWaiter* next; HANDLE ev; volatile long granted; };
 static struct LwmSlot { volatile long addr; volatile long state;
     volatile long qlock; struct LwmWaiter* qhead; struct LwmWaiter* qtail;   /* waiters, FIFO */
@@ -220,9 +238,9 @@ static long long lwm_now_us(void){
 /* Find an EXISTING slot (no create) for hold-tracking. */
 static struct LwmSlot* lwm_find(uint32_t addr){
     if(!addr) return nullptr;
-    uint32_t h=(addr*2654435761u)&(LWM_HASH-1);
+    uint32_t h=lwm_hash_home(addr);
     for(uint32_t i=0;i<LWM_HASH;i++){ uint32_t idx=(h+i)&(LWM_HASH-1);
-        long cur=g_lwm[idx].addr;
+        long cur=lwm_addr_load(&g_lwm[idx].addr);
         if((uint32_t)cur==addr) return &g_lwm[idx];
         if(cur==0) return nullptr; }
     return nullptr;
@@ -230,23 +248,33 @@ static struct LwmSlot* lwm_find(uint32_t addr){
 static struct LwmSlot* lwm_slot(uint32_t addr)
 {
     if (!addr) return nullptr;
-    uint32_t h = (addr * 2654435761u) & (LWM_HASH - 1);
+    const uint32_t h = lwm_hash_home(addr);
+    /* The table never removes or relocates a slot. Cache successful lookups
+     * only; an address that has not been published yet must still probe the
+     * registry. This changes lookup, not the slot's lock/waiter state. */
+    struct SlotCache { uint32_t addr; LwmSlot* slot; };
+    static thread_local SlotCache cache[64];
+    SlotCache& cached = cache[h >> (LWM_HASH_BITS - 6u)];
+    if (cached.slot && cached.addr == addr) return cached.slot;
     for (uint32_t i = 0; i < LWM_HASH; i++) {
         uint32_t idx = (h + i) & (LWM_HASH - 1);
-        long cur = g_lwm[idx].addr;
-        if ((uint32_t)cur == addr) return &g_lwm[idx];
+        long cur = lwm_addr_load(&g_lwm[idx].addr);
+        if ((uint32_t)cur == addr) {
+            cached = {addr, &g_lwm[idx]};
+            return cached.slot;
+        }
         if (cur == 0) {
             while (_InterlockedExchange(&g_lwm_tab_lock, 1)) YieldProcessor();
             struct LwmSlot* r = nullptr;
-            if (g_lwm[idx].addr == 0) {
+            if (lwm_addr_load(&g_lwm[idx].addr) == 0) {
                 g_lwm[idx].state = 0;                                   /* free */
-                g_lwm[idx].addr = (long)addr;   /* publish AFTER init (x86 TSO: readers see init) */
+                lwm_addr_publish(&g_lwm[idx].addr, (long)addr); /* publish AFTER init */
                 r = &g_lwm[idx];
-            } else if ((uint32_t)g_lwm[idx].addr == addr) {
+            } else if ((uint32_t)lwm_addr_load(&g_lwm[idx].addr) == addr) {
                 r = &g_lwm[idx];
             }
             _InterlockedExchange(&g_lwm_tab_lock, 0);
-            if (r) return r;
+            if (r) { cached = {addr, r}; return r; }
             /* someone else claimed this slot for a different addr -> keep probing */
         }
     }
