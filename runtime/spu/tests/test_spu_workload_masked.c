@@ -29,8 +29,23 @@ void spu_coh_watch_remove(spu_coh_watch* w) { (void)w; }
 void spu_lockline_lock(void) { }
 void spu_lockline_unlock(void) { }
 void spu_mfc_release(spu_context* c) { (void)c; }
+void spu_coh_forget_range(uintptr_t lo, uintptr_t hi) { (void)lo; (void)hi; }
+void spu_mfc_forget_range(uintptr_t lo, uintptr_t hi) { (void)lo; (void)hi; }
 int spu_run_spurs_job(spu_lifted_entry_fn e, int id, uint32_t ea, uint32_t sz)
 { (void)e; (void)id; (void)ea; (void)sz; return -1; }
+int spu_run_spurs_job_with_abi(spu_lifted_entry_fn e, int id, uint32_t ea,
+                               uint32_t sz, const spu_job_abi* abi)
+{ (void)e; (void)id; (void)ea; (void)sz; (void)abi; return -1; }
+int spu_run_spurs_job_with_abi_snapshot(spu_lifted_entry_fn e, int id,
+                                        uint32_t ea, uint32_t sz,
+                                        const spu_job_abi* abi,
+                                        const uint8_t* image, const uint8_t* desc)
+{ (void)e; (void)id; (void)ea; (void)sz; (void)abi; (void)image; (void)desc; return -1; }
+int spu_run_spurs_job_profiled(spu_lifted_entry_fn e, int id, uint32_t ea,
+                               uint32_t sz, const spu_job_abi* abi,
+                               const uint8_t* image, const uint8_t* desc,
+                               spu_job_phase_times* phases)
+{ (void)e; (void)id; (void)ea; (void)sz; (void)abi; (void)image; (void)desc; (void)phases; return -1; }
 int spu_run_with_halt(void (*f)(spu_context*), spu_context* c) { (void)f; (void)c; return -1; }
 void spu_thread_publish_ctx(uint32_t tid, void* c) { (void)tid; (void)c; }
 uint64_t spurs_pm_build_context(uint8_t* ls, uint32_t a, uint32_t b, uint32_t c, uint32_t d)
