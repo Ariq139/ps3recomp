@@ -348,6 +348,7 @@ typedef struct {
     ID3DBlob* vs;
     ID3DBlob* raw_vs;
     int uses_c03;
+    u32 hash_next; /* stable slot+1, independent of realloc */
 } VPVSEntry;
 /* Queued draw records and PSOs retain these indices until execution. Grow
  * without eviction so compiling another program cannot change their meaning. */
@@ -535,6 +536,9 @@ typedef struct {
     VPVSEntry*            vp_vs;   /* stable indices; storage may grow */
     int                   vp_vs_capacity;
     int                   vp_vs_n;
+    u32                   vp_vs_heads[1024];
+    u32                   vp_tex_heads[1024];
+    u32                   vp_tex_next[VP_TEX_SLOTS], vp_tex_bucket[VP_TEX_SLOTS];
     VPFPEntry             vp_fp[VP_FP_CACHE];   /* guest-FP PSO cache            */
     int                   vp_fp_n;
     u32                   vp_fp_hash[VP_FP_HASH_BUCKETS];
@@ -2760,6 +2764,15 @@ typedef struct {
 } VPMetadata;
 static VPMetadata s_vp_metadata[64];
 
+static int d3d12_index_cache_enabled(void)
+{
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char* e = getenv("RSX_D3D12_INDEX_CACHE");
+        enabled = e && !strcmp(e, "1");
+    }
+    return enabled;
+}
 static int vp_get_vs(const rsx_state* st)
 {
     extern int rsx_vp_decompile_compact_textures(
@@ -2812,7 +2825,13 @@ static int vp_get_vs(const rsx_state* st)
     const u32 input_stride = input_count * 16u;
     hash ^= branch_base;
     hash *= 16777619u;
-    for (int i = 0; i < s_d3d.vp_vs_n; i++)
+    const int indexed = d3d12_index_cache_enabled();
+    const u32 vs_bucket = indexed ? (hash ^ (hash >> 16) ^ (vtex_mask * 31u) ^
+        (vtex_cube_mask * 131u) ^ (vtex_1d_mask * 257u) ^ input_mask) & 1023u : 0u;
+    for (u32 link = indexed ? s_d3d.vp_vs_heads[vs_bucket] : 1u;
+         link && link <= (u32)s_d3d.vp_vs_n;
+         link = indexed ? s_d3d.vp_vs[link - 1u].hash_next : link + 1u) {
+        const int i = (int)(link - 1u);
         if (s_d3d.vp_vs[i].hash == hash &&
             s_d3d.vp_vs[i].branch_base == branch_base &&
             s_d3d.vp_vs[i].vtex_mask == vtex_mask &&
@@ -2820,6 +2839,7 @@ static int vp_get_vs(const rsx_state* st)
             s_d3d.vp_vs[i].vtex_1d_mask == vtex_1d_mask &&
             s_d3d.vp_vs[i].input_mask == input_mask &&
             s_d3d.vp_vs[i].input_stride == input_stride) return i;
+    }
 
     static char hlsl[262144];
     rsx_vp_set_branch_base(branch_base);
@@ -2907,6 +2927,11 @@ static int vp_get_vs(const rsx_state* st)
     s_d3d.vp_vs[slot].vtex_1d_mask = vtex_1d_mask;
     s_d3d.vp_vs[slot].input_mask = input_mask;
     s_d3d.vp_vs[slot].input_stride = input_stride;
+    s_d3d.vp_vs[slot].hash_next = 0;
+    if (indexed) {
+        s_d3d.vp_vs[slot].hash_next = s_d3d.vp_vs_heads[vs_bucket];
+        s_d3d.vp_vs_heads[vs_bucket] = (u32)slot + 1u;
+    }
     s_d3d.vp_vs[slot].vs   = vb;
     s_d3d.vp_vs[slot].raw_vs = NULL;
     static char raw_hlsl[280 * 1024];
@@ -5209,6 +5234,23 @@ static u32 d3d12_texture_component_mapping(u32 control1, u32 basef)
  * than a statement-expression macro so the file still compiles under MSVC;
  * ps3recomp builds with clang-cl, but titles like Tokyo Jungle drive the build
  * through the Visual Studio generator. */
+/* Sorted bucket chains preserve the old fallback's slot order. A failed
+ * upload may leave an old hint; each lookup still checks resource and full
+ * key. The old scan remains the authority for allocation and eviction. */
+static void vp_tex_index_insert(u32 slot, u32 bucket)
+{
+    const u32 old = s_d3d.vp_tex_bucket[slot];
+    if (old) {
+        u32* link = &s_d3d.vp_tex_heads[old - 1u];
+        while (*link && *link != slot + 1u) link = &s_d3d.vp_tex_next[*link - 1u];
+        if (*link) *link = s_d3d.vp_tex_next[slot];
+    }
+    u32* link = &s_d3d.vp_tex_heads[bucket];
+    while (*link && *link < slot + 1u) link = &s_d3d.vp_tex_next[*link - 1u];
+    s_d3d.vp_tex_next[slot] = *link;
+    *link = slot + 1u;
+    s_d3d.vp_tex_bucket[slot] = bucket + 1u;
+}
 static u32 tex_csum(const u8* base, u32 nbytes)
 {
     u32 h = 2166136261u;
@@ -5345,6 +5387,31 @@ static int vp_upload_tex_slot(u32 off, u32 w, u32 h, u32 fmt, u32 row_pitch, int
                 s_perf_tex_hits++;
                 return (int)i;
             }
+        }
+    }
+    if (d3d12_index_cache_enabled()) {
+        for (u32 link = s_d3d.vp_tex_heads[hint_key]; link; link = s_d3d.vp_tex_next[link - 1u]) {
+            const u32 i = link - 1u;
+            VPTexSlot* c = &s_d3d.vp_tex[i];
+            if (!c->res || c->key != key_off || c->w != w || c->h != h ||
+                c->fmt != fmt || c->pitch != row_pitch || c->mips != mips || c->cube != cube)
+                continue;
+            const u32 nb = cube ? rsx_texture_cube_face_stride(fmt, w, h, mips, row_pitch) * 6u
+                                : tl.face_bytes;
+            if (!checked_valid || checked_off != c->off || checked_size != nb) {
+                checked_csum = TEX_CSUM(vm_base + c->off, nb);
+                checked_off = c->off; checked_size = nb; checked_valid = 1;
+            }
+            if (checked_csum == c->csum) {
+                c->used = 1;
+                c->last_use = ++s_vp_tex_clock;
+                s_perf_tex_hits++;
+                slot_hint[hint_key][slot_hint_next[hint_key]++ & 3u] = i + 1u;
+                return (int)i;
+            }
+            /* The old scan would select this stale unused slot; retain that
+             * exact replacement choice instead of skipping to a later hit. */
+            if (!c->used) break;
         }
     }
     int slot = -1, freeslot = -1;
@@ -5919,6 +5986,7 @@ static int vp_upload_tex_slot(u32 off, u32 w, u32 h, u32 fmt, u32 row_pitch, int
     { u32 nb = cube ? rsx_texture_cube_face_stride(fmt, w, h, mips, row_pitch) * 6u
                     : tl.face_bytes;
       t->csum = TEX_CSUM(vm_base + off, nb); }
+    if (d3d12_index_cache_enabled()) vp_tex_index_insert((u32)slot, hint_key);
     slot_hint[hint_key][slot_hint_next[hint_key]++ & 3u] = (u32)slot + 1u;
     #undef TEX_CSUM
     return slot;
@@ -11712,6 +11780,10 @@ void rsx_d3d12_backend_shutdown(void)
     free(s_d3d.vp_vs);
     s_d3d.vp_vs = NULL;
     s_d3d.vp_vs_n = s_d3d.vp_vs_capacity = 0;
+    memset(s_d3d.vp_vs_heads, 0, sizeof(s_d3d.vp_vs_heads));
+    memset(s_d3d.vp_tex_heads, 0, sizeof(s_d3d.vp_tex_heads));
+    memset(s_d3d.vp_tex_next, 0, sizeof(s_d3d.vp_tex_next));
+    memset(s_d3d.vp_tex_bucket, 0, sizeof(s_d3d.vp_tex_bucket));
     if (!s_d3d.initialized) return;
 
     wait_for_gpu();
