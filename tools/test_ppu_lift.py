@@ -1108,6 +1108,12 @@ extern "C" void vm_write64(uint64_t a, uint64_t v) { v = CONF_BSWAP64(v); memcpy
 # ---------------------------------------------------------------------------
 
 def main():
+    # The direct-store guard reads the SPU reservation bitmap concurrently
+    # with SPU reservation publication; both pointer and byte loads must be
+    # atomic to match the writer in runtime/spu/spu_coherency.c.
+    assert 'const unsigned char* bits = __atomic_load_n(&g_spu_coh_bits, __ATOMIC_ACQUIRE);' in HEADER_PREAMBLE
+    assert '__atomic_load_n(&bits[line >> 3], __ATOMIC_ACQUIRE)' in HEADER_PREAMBLE
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--emit", action="store_true", help="only write the C file")
     args = ap.parse_args()

@@ -18,6 +18,7 @@
 #include "spu_context.h"
 #include "../../include/ps3emu/log_first.h"
 #include "spu_coherency.h"
+#include "spu_coh_bitmap.h"
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
@@ -884,8 +885,8 @@ static inline int mfc_do_transfer(spu_context* spu, uint32_t lsa, uint64_t ea,
          * touches one queue line no longer holds every other SPU's atomics off
          * for the whole copy. Spans
          * that touch no reserved line keep the lock-free copy: bulk asset PUTs
-         * are large and hot, and the scan is a bitmap bit per 128 bytes against
-         * a global that stays zero until an SPU reserves its first line.
+         * are large and hot, and the range scan skips eight unmarked lines
+         * per bitmap byte (or the whole span before the bitmap is published).
          *
          * The unreserved path re-checks afterwards because a line can be
          * reserved between the scan and the end of the copy. That peer's
@@ -901,11 +902,7 @@ static inline int mfc_do_transfer(spu_context* spu, uint32_t lsa, uint64_t ea,
             spu_lockguard_check(spu, (uint32_t)ea, (const uint8_t*)ls_ptr, size, "PUT");
             uint32_t a0 = (uint32_t)ea & ~127u;
             uint32_t a1 = ((uint32_t)ea + size - 1u) & ~127u;
-            int span_reserved = 0;
-            for (uint32_t a = a0; ; a += 128u) {
-                if (spu_coh_is_reserved(a)) { span_reserved = 1; break; }
-                if (a == a1) break;
-            }
+            const int span_reserved = spu_coh_next_reserved(a0, a1) != UINT32_MAX;
             /* Lines the unlocked pass left for the locked one: a 16 KiB
              * transfer spans at most 129 lines. */
             uint64_t locked_lines[3] = {0, 0, 0};
@@ -943,13 +940,16 @@ static inline int mfc_do_transfer(spu_context* spu, uint32_t lsa, uint64_t ea,
                 spu_lockline_unlock();
             } else {
                 memcpy(ea_ptr, ls_ptr, size);
-                for (uint32_t a = a0; ; a += 128u) {
-                    if (spu_coh_is_reserved(a)) {
-                        spu_lockline_lock();
-                        spu_coh_notify_write_except(a, spu);
-                        spu_lockline_unlock();
-                    }
-                    if (a == a1) break;
+                /* Fresh scan: never recopy a line already written unlocked.
+                 * Resume after each notification rather than carrying a bitmap
+                 * byte snapshot across the lock/unlock boundary. */
+                uint32_t a = spu_coh_next_reserved(a0, a1);
+                while (a != UINT32_MAX) {
+                    spu_lockline_lock();
+                    spu_coh_notify_write_except(a, spu);
+                    spu_lockline_unlock();
+                    if (a == a1) break; /* also avoids wrap at 0xffffff80 */
+                    a = spu_coh_next_reserved(a + 128u, a1);
                 }
             }
         }
