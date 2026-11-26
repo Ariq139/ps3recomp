@@ -207,6 +207,11 @@ int rsx_fp_decompile_buffered_shadow_ex(
  * first `count` slots are written; the rest of `values` is left as it was. */
 int rsx_fp_collect_constants(
     const u8* ucode, u32 max_bytes, rsx_fp_constant_block* out);
+/* Optional payload byte offsets, one per inline constant, in decoder order.
+ * Returns -1 if the offset array is too small or the program is invalid. */
+int rsx_fp_collect_constants_layout(
+    const u8* ucode, u32 max_bytes, rsx_fp_constant_block* out,
+    u32* offsets, u32 offset_capacity);
 
 /* Canonical structural fragment-program hash. Instruction bytes and their
  * order are hashed; inline CONST payload bytes are skipped. Returns zero for

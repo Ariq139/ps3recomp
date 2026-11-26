@@ -16,6 +16,7 @@
 #include <string.h>
 #include <stdatomic.h>
 #include <stdint.h>
+#include <assert.h>
 #ifdef _WIN32
 # include <windows.h>
 #else
@@ -28,12 +29,18 @@
 #define JQ_WORKER_MAX 6
 #define CELL_SPURS_JQ_MAX_PORTS 64
 
+enum { JQ_FLAG_SYNC_JOB=1u, JQ_FLAG_EXCLUSIVE_JOB=2u, JQ_FLAG_NON_BLOCKING=4u };
+#define JQ_BARRIER_FLAGS (JQ_FLAG_SYNC_JOB | JQ_FLAG_EXCLUSIVE_JOB)
+
 typedef struct JqTask JqTask;
 struct JqTask {
-    JqTask* next;
+    JqTask* next; /* global worker dispatch list */
+    JqTask *pending_prev, *pending_next;
+    JqTask *barrier_prev, *barrier_next;
+    JqTask *tag_prev, *tag_next;
     u32 queue_slot, tag, id, job_ea, descriptor_size, binary_size;
     uint64_t tag_serial;
-    u32 owned_descriptor, flags;
+    u32 owned_descriptor, flags, pending_index;
     uint64_t sequence;
     uint8_t descriptor[256];
     uint8_t* binary;
@@ -44,7 +51,16 @@ typedef struct {
     u32 completedIds[CELL_SPURS_JQ_MAX_JOBS];
     s32 completionCodes[CELL_SPURS_JQ_MAX_JOBS];
     u32 completedHead;
+    /* Dense, unordered set of queued and executing jobs. Sequence and tag
+     * serials, not array positions, define guest-visible ordering. */
     JqTask* pending[CELL_SPURS_JQ_MAX_JOBS];
+    /* Ordered by submission sequence, including currently executing jobs. */
+    JqTask *pending_head, *pending_tail;
+    JqTask *barrier_head, *barrier_tail;
+    /* Each tag list is ordered by submission serial, including executing
+     * tasks. The oldest outstanding serial is sufficient for a snapshot wait. */
+    JqTask *tag_head[32], *tag_tail[32];
+    u32 pending_tag_mask;
 } JqState;
 typedef struct { int in_use; u32 port_ea, queue_slot; } JqPortState;
 
@@ -58,22 +74,45 @@ static uint64_t s_task_sequence;
 static JqTask* s_task_head;
 static JqTask* s_task_tail;
 static int s_pool_workers, s_pool_stopping;
+/* These counts are changed with s_jq_mutex held before/after each wait.
+ * Avoid adding two needless OS broadcasts to every completion. */
+static unsigned s_jq_completion_waiters, s_jq_worker_waiters, s_jq_producer_waiters;
 #ifdef _WIN32
 static SRWLOCK s_jq_mutex = SRWLOCK_INIT;
 static CONDITION_VARIABLE s_jq_cond = CONDITION_VARIABLE_INIT;
+static CONDITION_VARIABLE s_jq_worker_cond = CONDITION_VARIABLE_INIT;
+static CONDITION_VARIABLE s_jq_producer_cond = CONDITION_VARIABLE_INIT;
 static HANDLE s_jq_threads[JQ_WORKER_MAX];
 static void jq_lock(void) { AcquireSRWLockExclusive(&s_jq_mutex); }
 static void jq_unlock(void) { ReleaseSRWLockExclusive(&s_jq_mutex); }
-static void jq_notify(void) { WakeAllConditionVariable(&s_jq_cond); }
-static void jq_await(void) { SleepConditionVariableSRW(&s_jq_cond, &s_jq_mutex, INFINITE, 0); }
+static void jq_notify_workers(void) { if (s_jq_worker_waiters) WakeAllConditionVariable(&s_jq_worker_cond); }
+static void jq_notify_producers(void) { if (s_jq_producer_waiters) WakeAllConditionVariable(&s_jq_producer_cond); }
+static void jq_notify(void) {
+    if (s_jq_completion_waiters) WakeAllConditionVariable(&s_jq_cond);
+    jq_notify_workers();
+    jq_notify_producers();
+}
+static void jq_await(void) { ++s_jq_completion_waiters; SleepConditionVariableSRW(&s_jq_cond, &s_jq_mutex, INFINITE, 0); --s_jq_completion_waiters; }
+static void jq_await_worker(void) { ++s_jq_worker_waiters; SleepConditionVariableSRW(&s_jq_worker_cond, &s_jq_mutex, INFINITE, 0); --s_jq_worker_waiters; }
+static void jq_await_producer(void) { ++s_jq_producer_waiters; SleepConditionVariableSRW(&s_jq_producer_cond, &s_jq_mutex, INFINITE, 0); --s_jq_producer_waiters; }
 #else
 static pthread_mutex_t s_jq_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t s_jq_cond = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t s_jq_worker_cond = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t s_jq_producer_cond = PTHREAD_COND_INITIALIZER;
 static pthread_t s_jq_threads[JQ_WORKER_MAX];
 static void jq_lock(void) { pthread_mutex_lock(&s_jq_mutex); }
 static void jq_unlock(void) { pthread_mutex_unlock(&s_jq_mutex); }
-static void jq_notify(void) { pthread_cond_broadcast(&s_jq_cond); }
-static void jq_await(void) { pthread_cond_wait(&s_jq_cond, &s_jq_mutex); }
+static void jq_notify_workers(void) { if (s_jq_worker_waiters) pthread_cond_broadcast(&s_jq_worker_cond); }
+static void jq_notify_producers(void) { if (s_jq_producer_waiters) pthread_cond_broadcast(&s_jq_producer_cond); }
+static void jq_notify(void) {
+    if (s_jq_completion_waiters) pthread_cond_broadcast(&s_jq_cond);
+    jq_notify_workers();
+    jq_notify_producers();
+}
+static void jq_await(void) { ++s_jq_completion_waiters; pthread_cond_wait(&s_jq_cond, &s_jq_mutex); --s_jq_completion_waiters; }
+static void jq_await_worker(void) { ++s_jq_worker_waiters; pthread_cond_wait(&s_jq_worker_cond, &s_jq_mutex); --s_jq_worker_waiters; }
+static void jq_await_producer(void) { ++s_jq_producer_waiters; pthread_cond_wait(&s_jq_producer_cond, &s_jq_mutex); --s_jq_producer_waiters; }
 #endif
 
 static void jq_trace_port2(const char* op, u32 port_ea, u32 queue_ea,
@@ -112,18 +151,86 @@ static s32 jq_status_for_id(const JqState* q, u32 id)
         if (q->completedIds[i] == id) return q->completionCodes[i];
     return (s32)CELL_SPURS_JQ_ERROR_JOB_NOT_FOUND;
 }
+/* Pool lock held; callers have checked capacity. Each pending task stores
+ * its own index so completion can compact the set in constant time. */
+static void jq_pending_insert(JqState* q, JqTask* t)
+{
+    assert(t && q->jobCount < CELL_SPURS_JQ_MAX_JOBS);
+    assert(q->pending[q->jobCount] == NULL);
+    t->pending_index = q->jobCount;
+    q->pending[q->jobCount++] = t;
+
+    t->pending_prev = q->pending_tail;
+    t->pending_next = NULL;
+    if (q->pending_tail) q->pending_tail->pending_next = t;
+    else q->pending_head = t;
+    q->pending_tail = t;
+
+    const u32 tag = t->tag;
+    t->tag_prev = q->tag_tail[tag];
+    t->tag_next = NULL;
+    if (q->tag_tail[tag]) q->tag_tail[tag]->tag_next = t;
+    else q->tag_head[tag] = t;
+    q->tag_tail[tag] = t;
+    q->pending_tag_mask |= 1u << tag;
+
+    if (t->flags & JQ_BARRIER_FLAGS) {
+        t->barrier_prev = q->barrier_tail;
+        t->barrier_next = NULL;
+        if (q->barrier_tail) q->barrier_tail->barrier_next = t;
+        else q->barrier_head = t;
+        q->barrier_tail = t;
+    }
+}
+static void jq_pending_remove(JqState* q, JqTask* t)
+{
+    assert(t && q->jobCount && t->pending_index < q->jobCount);
+    assert(q->pending[t->pending_index] == t);
+    const u32 last = --q->jobCount;
+    const u32 index = t->pending_index;
+    if (index != last) {
+        JqTask* moved = q->pending[last];
+        q->pending[index] = moved;
+        moved->pending_index = index;
+    }
+    q->pending[last] = NULL;
+
+    if (t->pending_prev) t->pending_prev->pending_next = t->pending_next;
+    else q->pending_head = t->pending_next;
+    if (t->pending_next) t->pending_next->pending_prev = t->pending_prev;
+    else q->pending_tail = t->pending_prev;
+
+    const u32 tag = t->tag;
+    if (t->tag_prev) t->tag_prev->tag_next = t->tag_next;
+    else q->tag_head[tag] = t->tag_next;
+    if (t->tag_next) t->tag_next->tag_prev = t->tag_prev;
+    else q->tag_tail[tag] = t->tag_prev;
+    if (!q->tag_head[tag]) q->pending_tag_mask &= ~(1u << tag);
+    t->tag_prev = t->tag_next = NULL;
+
+    if (t->flags & JQ_BARRIER_FLAGS) {
+        if (t->barrier_prev) t->barrier_prev->barrier_next = t->barrier_next;
+        else q->barrier_head = t->barrier_next;
+        if (t->barrier_next) t->barrier_next->barrier_prev = t->barrier_prev;
+        else q->barrier_tail = t->barrier_prev;
+    }
+    t->pending_prev = t->pending_next = NULL;
+    t->barrier_prev = t->barrier_next = NULL;
+}
 static int jq_pending_id(const JqState* q, u32 id)
 {
-    for (u32 i = 0; i < CELL_SPURS_JQ_MAX_JOBS; ++i)
-        if (q->pending[i] && q->pending[i]->id == id) return 1;
+    for (u32 i = 0; i < q->jobCount; ++i)
+        if (q->pending[i]->id == id) return 1;
     return 0;
 }
 static int jq_pending_tag_before(u32 slot, u32 mask, const uint64_t target[32])
 {
     const JqState* q = &s_queues[slot];
-    for (u32 i = 0; i < CELL_SPURS_JQ_MAX_JOBS; ++i) {
-        const JqTask* t = q->pending[i];
-        if (t && (mask & (1u << t->tag)) && t->tag_serial <= target[t->tag])
+    /* No scan of the outstanding task set. Later submissions cannot
+     * extend an existing wait; out-of-order completion only unlinks tasks. */
+    mask &= q->pending_tag_mask;
+    for (u32 tag = 0; mask; ++tag, mask >>= 1) {
+        if ((mask & 1u) && q->tag_head[tag]->tag_serial <= target[tag])
             return 1;
     }
     return 0;
@@ -132,13 +239,11 @@ static int jq_pending_tag_before(u32 slot, u32 mask, const uint64_t target[32])
 static void jq_finish_locked(JqTask* t, s32 status)
 {
     JqState* q = &s_queues[t->queue_slot];
-    for (u32 i = 0; i < CELL_SPURS_JQ_MAX_JOBS; ++i)
-        if (q->pending[i] == t) { q->pending[i] = NULL; break; }
+    jq_pending_remove(q, t);
     q->completedIds[q->completedHead] = t->id;
     q->completionCodes[q->completedHead] = status;
     q->completedHead = (q->completedHead + 1u) % CELL_SPURS_JQ_MAX_JOBS;
     q->completeCount++;
-    if (q->jobCount) q->jobCount--;
     atomic_fetch_add_explicit(&s_tag_completed[t->queue_slot][t->tag], 1,
                               memory_order_release);
     atomic_fetch_sub_explicit(&s_active_job_dispatches, 1,
@@ -227,16 +332,16 @@ static s32 jq_execute(JqTask* t)
                                                t->descriptor)
         ? CELL_OK : (s32)CELL_SPURS_JQ_ERROR_JOB_NOT_FOUND;
 }
-enum { JQ_FLAG_SYNC_JOB=1u, JQ_FLAG_EXCLUSIVE_JOB=2u, JQ_FLAG_NON_BLOCKING=4u };
 static int jq_task_runnable(const JqTask* task)
 {
-    const JqState* q=&s_queues[task->queue_slot];
-    for(u32 i=0;i<CELL_SPURS_JQ_MAX_JOBS;++i) {
-        const JqTask* earlier=q->pending[i];
-        if(!earlier || earlier==task || earlier->sequence>=task->sequence) continue;
-        if((task->flags | earlier->flags) & (JQ_FLAG_SYNC_JOB|JQ_FLAG_EXCLUSIVE_JOB)) return 0;
-    }
-    return 1;
+    const JqState* q = &s_queues[task->queue_slot];
+    /* A barrier waits for every earlier pending job. An ordinary job waits
+     * only for earlier barriers. The ordered heads are sufficient for both
+     * predicates; arbitrary completion order does not change their meaning.
+     * Sequence numbers are assigned monotonically under the pool lock. */
+    if (task->flags & JQ_BARRIER_FLAGS)
+        return !q->pending_head || q->pending_head->sequence >= task->sequence;
+    return !q->barrier_head || q->barrier_head->sequence >= task->sequence;
 }
 static JqTask* jq_take_runnable(void)
 {
@@ -263,7 +368,7 @@ static void* jq_worker_main(void* arg)
     for (;;) {
         jq_lock();
         JqTask* t=NULL;
-        while (!(t=jq_take_runnable()) && !s_pool_stopping) jq_await();
+        while (!(t=jq_take_runnable()) && !s_pool_stopping) jq_await_worker();
         if (!t) { jq_unlock(); break; }
         jq_unlock();
         s32 result = jq_execute(t);
@@ -516,6 +621,7 @@ s32 cellSpursDestroyJobQueue(CellSpursJobQueue* jq)
         jq_unlock(); return (s32)CELL_SPURS_JQ_ERROR_INVALID_ARGUMENT;
     }
     q->accepting = 0;
+    jq_notify_producers();
     while (q->jobCount) jq_await();
     q->in_use = 0;
     for (int i = 0; i < CELL_SPURS_JQ_MAX_PORTS; ++i)
@@ -523,6 +629,34 @@ s32 cellSpursDestroyJobQueue(CellSpursJobQueue* jq)
             s_ports[i].in_use = 0;
     jq_unlock();
     return CELL_OK;
+}
+
+/* A nonblocking rejection before snapshot changes the observation point
+ * and error precedence (allocation/faults versus queue-full). Preserve the
+ * original order. Measure the exact work already discarded instead. */
+typedef struct {
+    uint64_t full, busy, aborted, binary_bytes, descriptor_bytes, guest_copy_bytes;
+} JqRejectProfile;
+static JqRejectProfile s_jq_reject_profile;
+static int s_jq_reject_profile_enabled = -1;
+
+/* Pool lock held. No diagnostics on the accepted hot path. */
+static void jq_note_rejected_locked(const JqTask* t, u32 flags, s32 rc)
+{
+    if (!(flags & JQ_FLAG_NON_BLOCKING)) return;
+    if (s_jq_reject_profile_enabled < 0) {
+        const char* e = getenv("SPURS_JQ_REJECT_PROFILE");
+        s_jq_reject_profile_enabled = e && !strcmp(e, "1");
+    }
+    if (!s_jq_reject_profile_enabled) return;
+    if (rc == (s32)CELL_SPURS_JQ_ERROR_QUEUE_FULL) ++s_jq_reject_profile.full;
+    else if (rc == (s32)CELL_SPURS_JQ_ERROR_BUSY) ++s_jq_reject_profile.busy;
+    else if (rc == (s32)CELL_SPURS_JQ_ERROR_ABORT) ++s_jq_reject_profile.aborted;
+    else return;
+    s_jq_reject_profile.binary_bytes += t->binary_size;
+    s_jq_reject_profile.descriptor_bytes += 2u * (uint64_t)t->descriptor_size;
+    if (t->owned_descriptor)
+        s_jq_reject_profile.guest_copy_bytes += t->descriptor_size;
 }
 
 s32 cellSpursShutdownJobQueue(void)
@@ -547,7 +681,15 @@ s32 cellSpursShutdownJobQueue(void)
     s_pool_workers = 0;
     s_pool_stopping = 0;
     jq_release_recycled_locked();
+    const JqRejectProfile rejected = s_jq_reject_profile;
+    const int report_rejected = s_jq_reject_profile_enabled == 1;
+    memset(&s_jq_reject_profile, 0, sizeof(s_jq_reject_profile));
     jq_unlock();
+    if (report_rejected)
+        fprintf(stderr, "[JQ-REJECT] full=%llu busy=%llu abort=%llu binary=%llu descriptor=%llu guest-copy=%llu bytes\n",
+            (unsigned long long)rejected.full, (unsigned long long)rejected.busy,
+            (unsigned long long)rejected.aborted, (unsigned long long)rejected.binary_bytes,
+            (unsigned long long)rejected.descriptor_bytes, (unsigned long long)rejected.guest_copy_bytes);
     return CELL_OK;
 }
 
@@ -632,21 +774,18 @@ static s32 jq_push_slot_mode_flags(u32 slot, u32 job_ea, u32 jobSize,
         if(flags & JQ_FLAG_NON_BLOCKING) {
             const s32 result = q->jobCount>=q->maxJobs || q->jobCount>=CELL_SPURS_JQ_MAX_JOBS
                 ? (s32)CELL_SPURS_JQ_ERROR_QUEUE_FULL : (s32)CELL_SPURS_JQ_ERROR_BUSY;
+            jq_note_rejected_locked(t, flags, result);
             jq_unlock();jq_free_task(t);return result;
         }
-        jq_await();
+        jq_await_producer();
     }
     if (!q->in_use || !q->accepting ||
         atomic_load_explicit(&s_queue_shutdown_requested, memory_order_acquire)) {
+        jq_note_rejected_locked(t, flags, (s32)CELL_SPURS_JQ_ERROR_ABORT);
         jq_unlock(); jq_free_task(t); return (s32)CELL_SPURS_JQ_ERROR_ABORT;
     }
     if (q->jobCount >= q->maxJobs || q->jobCount >= CELL_SPURS_JQ_MAX_JOBS) {
-        jq_unlock(); jq_free_task(t); return (s32)CELL_SPURS_JQ_ERROR_QUEUE_FULL;
-    }
-    u32 free_slot;
-    for (free_slot = 0; free_slot < CELL_SPURS_JQ_MAX_JOBS; ++free_slot)
-        if (!q->pending[free_slot]) break;
-    if (free_slot == CELL_SPURS_JQ_MAX_JOBS) {
+        jq_note_rejected_locked(t, flags, (s32)CELL_SPURS_JQ_ERROR_QUEUE_FULL);
         jq_unlock(); jq_free_task(t); return (s32)CELL_SPURS_JQ_ERROR_QUEUE_FULL;
     }
     if (synchronous_copy) q->copy_sync_active = 1;
@@ -658,8 +797,7 @@ static s32 jq_push_slot_mode_flags(u32 slot, u32 job_ea, u32 jobSize,
     if (q->nextJobId == 0) q->nextJobId = 1;
     t->tag_serial = atomic_fetch_add_explicit(&s_tag_submitted[slot][tag], 1,
                                                memory_order_acq_rel) + 1u;
-    q->pending[free_slot] = t;
-    q->jobCount++;
+    jq_pending_insert(q, t);
     q->submitCount++;
     atomic_fetch_add_explicit(&s_active_job_dispatches, 1, memory_order_acq_rel);
     if (id_ea) vm_write32(id_ea, t->id);
@@ -668,7 +806,9 @@ static s32 jq_push_slot_mode_flags(u32 slot, u32 job_ea, u32 jobSize,
         if (s_task_tail) s_task_tail->next = t;
         else s_task_head = t;
         s_task_tail = t;
-        jq_notify();
+        /* Only workers gain runnable work on enqueue. Completion and
+         * capacity predicates cannot become true until a job finishes. */
+        jq_notify_workers();
         jq_unlock();
         return CELL_OK;
     }
@@ -682,7 +822,7 @@ static s32 jq_push_slot_mode_flags(u32 slot, u32 job_ea, u32 jobSize,
     s32 result = jq_execute(t);
     jq_lock();
     jq_finish_locked(t, result);
-    q->copy_sync_active = 0; jq_notify();
+    q->copy_sync_active = 0; jq_notify_producers();
     jq_unlock();
     jq_free_task(t);
     return result;

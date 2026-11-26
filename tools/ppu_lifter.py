@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 # We import the disassembler from the same directory.
 # ---------------------------------------------------------------------------
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from register_regions import PPU_PURE_GPR, PureGprLine, promote_register_regions
 
 try:
     from ppu_disasm import (Instruction, disassemble_bytes, detect_functions,
@@ -227,8 +228,12 @@ static inline int vm_mm_st_ok(const ppu_mm* m, uint32_t ea, uint32_t n)
     if (!__builtin_expect(vm_mm_in(m->st_span, ea, n), 1) ||
         __builtin_expect((g_barrier_sync_watch | g_null_sweep_hi) != 0, 0))
         return 0;
-    const unsigned char* bits = g_spu_coh_bits;
-    if (bits) { const uint32_t line = ea >> 7; if ((bits[line >> 3] >> (line & 7)) & 1u) return 0; }
+    const unsigned char* bits = __atomic_load_n(&g_spu_coh_bits, __ATOMIC_ACQUIRE);
+    if (bits) {
+        const uint32_t line = ea >> 7;
+        const unsigned char marked = __atomic_load_n(&bits[line >> 3], __ATOMIC_ACQUIRE);
+        if ((marked >> (line & 7)) & 1u) return 0;
+    }
     return 1;
 }
 static inline uint8_t vm_read8_mm(const ppu_mm* m, uint64_t a)
@@ -876,6 +881,45 @@ def _crval_to_c(val: str, mask: int, decl_a: str, a_expr: str, b_expr: str) -> s
     return " || ".join(conds)
 
 
+# Current _branch_condition emits an explicit single-bit equality, not the
+# legacy mask predicate above. Recognize only an internal, CR-only goto.
+_CR_BIT_BRANCH_RE = re.compile(
+    r"^\s*if \(\(\(\(ctx->cr >> (?P<bit>\d+)\) & 1\) == (?P<expected>[01])\)\) "
+    r"goto (?P<target>loc_[0-9A-Fa-f]{8});$")
+_INT_CR_VAL = "((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u)"
+
+
+def _fuse_integer_cr_branch(line: str, branch: str, mset) -> str | None:
+    """Branch on the original typed operands, retaining the complete CR write.
+
+    This does not require proving the field dead along either successor, and
+    is valid for backward edges too. The operands are already captured in the
+    compare block's locals. A separate entry label between compare and branch
+    prevents adjacency; other predicates (CTR, SO, linked, indirect) are left
+    alone. Do not change FP NaN/exception semantics.
+    """
+    if (mset.group("ta") not in ("int64_t", "uint64_t")
+            or mset.group("tb") != mset.group("ta")
+            or mset.group("val") != _INT_CR_VAL):
+        return None
+    shift = int(mset.group("shift"))
+    if shift != int(mset.group("shift2")) or shift not in range(0, 29, 4):
+        return None
+    mbr = _CR_BIT_BRANCH_RE.fullmatch(branch)
+    if not mbr:
+        return None
+    # LT, GT and EQ are respectively bits 3, 2 and 1 of the nibble.
+    # SO is independent of the integer compare and is deliberately refused.
+    bit = int(mbr.group("bit")) - shift
+    expected = int(mbr.group("expected"))
+    op = {(3, 1): "<", (3, 0): ">=", (2, 1): ">", (2, 0): "<=",
+          (1, 1): "==", (1, 0): "!="}.get((bit, expected))
+    if op is None:
+        return None
+    return (line.rstrip()[:-1] + f"if (a {op} b) goto {mbr.group('target')}; "
+            "} /* CR branch fusion (state preserved) */")
+
+
 def _fuse_cr(body_lines: list[str]) -> list[str]:
     out = []
     i = 0
@@ -886,6 +930,11 @@ def _fuse_cr(body_lines: list[str]) -> list[str]:
         if not mset or i + 1 >= n:
             out.append(line)
             i += 1
+            continue
+        direct = _fuse_integer_cr_branch(line, body_lines[i + 1], mset)
+        if direct is not None:
+            out.append(direct)
+            i += 2
             continue
         mbr = _CRBR_RE.match(body_lines[i + 1])
         if not mbr or int(mbr.group("shift")) != int(mset.group("shift")):
@@ -1154,6 +1203,7 @@ class PPULifter:
                         internal_targets.add(_c)
 
         emitted_labels: set[int] = set()
+        promote_gprs = os.environ.get("PS3RECOMP_PROMOTE_PPU_GPRS") == "1" and not self.insn_patches
         for insn in range_insns:
             # Label
             if insn.addr in internal_targets:
@@ -1166,7 +1216,10 @@ class PPULifter:
             else:
                 c_line = self._translate(insn, func)
             if c_line:
-                func.body_lines.append(f"    {c_line}")
+                emitted = f"    {c_line}"
+                if promote_gprs and patch is None and insn.mnemonic in PPU_PURE_GPR:
+                    emitted = PureGprLine(emitted, "ppu", insn.addr, insn.mnemonic)
+                func.body_lines.append(emitted)
 
         # An in-range branch target with no decoded instruction at its address
         # (a branch into a data / undecoded region inside a too-large function
@@ -4212,7 +4265,10 @@ class PPULifter:
                       f"extern int {g};", "#endif"]
         lines.append(f"void {weak}{func.name}(ppu_context* ctx) {{")
         lines.append("    PPU_MM_SNAP")
-        for bline in _fuse_cr(func.body_lines):
+        body = _fuse_cr(func.body_lines)
+        if os.environ.get("PS3RECOMP_PROMOTE_PPU_GPRS") == "1" and not self.insn_patches:
+            body = promote_register_regions(body, "ppu")
+        for bline in body:
             lines.append(f"    {bline}" if not bline.endswith(":") else bline)
 
         # If a function doesn't end with blr/b/bctr (a return or unconditional
