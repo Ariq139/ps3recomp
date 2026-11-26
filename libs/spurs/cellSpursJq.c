@@ -253,12 +253,74 @@ static void jq_finish_locked(JqTask* t, s32 status)
 extern int32_t ps3_guest_memory_alloc(uint32_t, uint32_t, uint32_t*);
 extern int32_t ps3_guest_memory_free(uint32_t);
 
+/* Optional bounded allocation recycling. The allocation is private until
+ * jq_free_task, after its pending entry has retired and guest-owned copy has
+ * been freed. The existing queue mutex protects the pool as well; allocation
+ * and disposal callers run outside that lock. */
+#define JQ_ALLOC_CLASSES 11u /* 256 B through 256 KiB */
+#define JQ_ALLOC_PER_CLASS 2u
+static JqTask* s_alloc_free[JQ_ALLOC_CLASSES];
+static unsigned s_alloc_count[JQ_ALLOC_CLASSES];
+
+static int jq_recycle_enabled(void)
+{
+    static atomic_int cached;
+    int value = atomic_load_explicit(&cached, memory_order_relaxed);
+    if (!value) {
+        const char* e = getenv("SPURS_JQ_ALLOC_RECYCLE");
+        value = e && !strcmp(e, "1") ? 2 : 1;
+        atomic_store_explicit(&cached, value, memory_order_relaxed);
+    }
+    return value == 2;
+}
+static unsigned jq_alloc_class(u32 bytes)
+{
+    unsigned c = 0;
+    while (bytes > (256u << c)) ++c; /* caller validated 1..0x40000 */
+    return c;
+}
+static JqTask* jq_alloc_task(u32 bytes)
+{
+    if (!jq_recycle_enabled()) return (JqTask*)malloc(sizeof(JqTask) + bytes);
+    const unsigned c = jq_alloc_class(bytes);
+    jq_lock();
+    JqTask* t = s_alloc_free[c];
+    if (t) {
+        s_alloc_free[c] = t->next;
+        --s_alloc_count[c];
+    }
+    jq_unlock();
+    return t ? t : (JqTask*)malloc(sizeof(JqTask) + (256u << c));
+}
 static void jq_free_task(JqTask* t)
 {
     if (!t) return;
     if (t->owned_descriptor) ps3_guest_memory_free(t->owned_descriptor);
-    /* The immutable binary snapshot is the tail of this allocation. */
+    if (jq_recycle_enabled()) {
+        const unsigned c = jq_alloc_class(t->binary_size);
+        jq_lock();
+        if (!atomic_load_explicit(&s_queue_shutdown_requested, memory_order_acquire) &&
+            s_alloc_count[c] < JQ_ALLOC_PER_CLASS) {
+            t->next = s_alloc_free[c];
+            s_alloc_free[c] = t;
+            ++s_alloc_count[c];
+            jq_unlock();
+            return;
+        }
+        jq_unlock();
+    }
     free(t);
+}
+static void jq_release_recycled_locked(void)
+{
+    for (unsigned c = 0; c < JQ_ALLOC_CLASSES; ++c) {
+        while (s_alloc_free[c]) {
+            JqTask* t = s_alloc_free[c];
+            s_alloc_free[c] = t->next;
+            free(t);
+        }
+        s_alloc_count[c] = 0;
+    }
 }
 static s32 jq_execute(JqTask* t)
 {
@@ -618,6 +680,7 @@ s32 cellSpursShutdownJobQueue(void)
     jq_lock();
     s_pool_workers = 0;
     s_pool_stopping = 0;
+    jq_release_recycled_locked();
     const JqRejectProfile rejected = s_jq_reject_profile;
     const int report_rejected = s_jq_reject_profile_enabled == 1;
     memset(&s_jq_reject_profile, 0, sizeof(s_jq_reject_profile));
@@ -660,7 +723,7 @@ static JqTask* jq_prepare(u32 job_ea, u32 descriptor_size)
     /* One allocation instead of a header allocation plus a binary allocation.
      * Keep a private byte-for-byte snapshot for every in-flight job. No
      * shared-image lifetime, guest-memory, or completion rules change. */
-    JqTask* t = (JqTask*)malloc(sizeof(*t) + (size_t)binary_size);
+    JqTask* t = jq_alloc_task(binary_size);
     if (!t) return NULL;
     memset(t, 0, sizeof(*t));
     memcpy(t->descriptor, descriptor, descriptor_size);
