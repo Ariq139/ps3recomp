@@ -2930,6 +2930,17 @@ static void gcm_rsx_process_fifo_unlocked(void)
     if (!s_gcm_context_ea && !s_gcm_syscall_mode) return;
     if (!s_inited) { rsx_state_init(&s_state); s_inited = 1; }
     const int wdiag = gcm_word_diag();
+    /* GCM_FIFO_HISTORY=0: omit the per-word failure-history ring for a
+     * clean performance run. Default on preserves existing fault dumps.
+     * Explicit branch diagnostics still retain their own JUMP/CALL history.
+     * Like the other walker options, configure before starting the title. */
+    static int history = -1;
+    static int branch_history = -1;
+    if (history < 0) {
+        const char* e = getenv("GCM_FIFO_HISTORY");
+        history = !(e && !strcmp(e, "0"));
+        branch_history = history || getenv("GCM_WORD_STATS") || getenv("GCM_CIRCLE_DUMP");
+    }
     const int live_draw = rsx_live_draw_enabled();
     const int draw_engine = rsx_draw_engine_enabled();
     /* rsx_state feeds only the legacy vtable backend. With the draw engine
@@ -3082,11 +3093,15 @@ static void gcm_rsx_process_fifo_unlocked(void)
          * ring the title is writing. A park in another region is where the
          * walker gave up, not how far it got through the ring. */
         if (s_fifo_getoff < put) s_last_ring_off = s_fifo_getoff + 4;
-        s_tr_off[s_tr_i % GCM_TRACE_N] = s_fifo_getoff;
-        s_tr_w[s_tr_i % GCM_TRACE_N] = w;
-        s_tr_i++;
-        if (w && ((w & 0xE0000003u) == 0x20000000u || (w & 3u) == 1u || (w & 3u) == 2u)) {
-            s_cf_off[s_cf_i % 8] = s_fifo_getoff; s_cf_w[s_cf_i % 8] = w; s_cf_i++; }
+        if (history) {
+            s_tr_off[s_tr_i % GCM_TRACE_N] = s_fifo_getoff;
+            s_tr_w[s_tr_i % GCM_TRACE_N] = w;
+            s_tr_i++;
+        }
+        if (branch_history && w &&
+            ((w & 0xE0000003u) == 0x20000000u || (w & 3u) == 1u || (w & 3u) == 2u)) {
+            s_cf_off[s_cf_i % 8] = s_fifo_getoff; s_cf_w[s_cf_i % 8] = w; s_cf_i++;
+        }
         /* GCM_WORD_STATS=<secs>: NOP words vs headers vs jumps/calls/returns
          * walked -- a frame that is mostly NOPs is reserved space someone
          * (an SPU job) was supposed to fill. */
