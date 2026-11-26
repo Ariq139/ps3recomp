@@ -179,8 +179,9 @@ u32 rsx_fp_sanitize_constant_word(u32 w)
     return 0;
 }
 
-int rsx_fp_collect_constants(
-    const u8* ucode, u32 max_bytes, rsx_fp_constant_block* out)
+int rsx_fp_collect_constants_layout(
+    const u8* ucode, u32 max_bytes, rsx_fp_constant_block* out,
+    u32* offsets, u32 offset_capacity)
 {
     if (!ucode || !out)
         return -1;
@@ -197,6 +198,10 @@ int rsx_fp_collect_constants(
             if (off + 16 > max_bytes ||
                 out->count >= RSX_FP_MAX_INLINE_CONSTANTS)
                 return -1;
+            if (offsets) {
+                if (out->count >= offset_capacity) return -1;
+                offsets[out->count] = off;
+            }
             for (u32 component = 0; component < 4; ++component)
                 out->values[out->count][component] =
                     rsx_fp_sanitize_constant_word(
@@ -208,6 +213,12 @@ int rsx_fp_collect_constants(
             return (int)out->count;
     }
     return -1;
+}
+
+int rsx_fp_collect_constants(
+    const u8* ucode, u32 max_bytes, rsx_fp_constant_block* out)
+{
+    return rsx_fp_collect_constants_layout(ucode, max_bytes, out, NULL, 0);
 }
 
 static u64 fp_hash_bytes(const void* data, u32 size, u64 hash)

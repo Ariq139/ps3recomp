@@ -20,6 +20,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Options
 # ---------------------------------------------------------------------------
 option(PS3RECOMP_BUILD_TESTS "Build unit tests" OFF)
+option(PS3RECOMP_SPU_LOCKLINE_SRW "Use a native parking lock for Windows SPU coherency" OFF)
+option(PS3RECOMP_SPU_LOOKUP_CACHE_HASH_MIX
+    "Mix full SPU lookup keys before selecting cache buckets (experimental)" OFF)
 
 # cellFiber switches host contexts with Windows fibers on Windows and the
 # ucontext routines everywhere else. Apple arm64 has a third, opt-in option: a
@@ -155,6 +158,16 @@ add_library(ps3recomp_runtime STATIC
     ${HLE_SOURCES}
     ${RUNTIME_SOURCES}
 )
+if(PS3RECOMP_SPU_LOCKLINE_SRW)
+    if(NOT WIN32)
+        message(FATAL_ERROR "PS3RECOMP_SPU_LOCKLINE_SRW requires Windows")
+    endif()
+    target_compile_definitions(ps3recomp_runtime PRIVATE PS3RECOMP_SPU_LOCKLINE_SRW=1)
+endif()
+if(PS3RECOMP_SPU_LOOKUP_CACHE_HASH_MIX)
+    target_compile_definitions(ps3recomp_runtime PRIVATE
+        PS3RECOMP_SPU_LOOKUP_CACHE_HASH_MIX=1)
+endif()
 # cellFiber picks its host context path on this; nothing else reads it.
 if(PS3RECOMP_FIBER_BACKEND STREQUAL "aarch64")
     target_compile_definitions(ps3recomp_runtime PRIVATE PS3RECOMP_FIBER_HOST_AARCH64=1)
@@ -163,6 +176,12 @@ endif()
 target_include_directories(ps3recomp_runtime PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
 )
+
+# VMX helpers are inline in the generated PPU code and runtime consumers.
+option(PS3RECOMP_PPU_VMX_SSE2 "Enable experimental native integer VMX SSE2" OFF)
+if(PS3RECOMP_PPU_VMX_SSE2)
+    target_compile_definitions(ps3recomp_runtime PUBLIC PPU_VMX_ENABLE_SSE2=1)
+endif()
 
 # HLE modules include their own headers
 target_include_directories(ps3recomp_runtime PRIVATE
@@ -180,6 +199,11 @@ target_include_directories(ps3recomp_runtime PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/runtime/spu"
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
 )
+
+option(PS3RECOMP_AUDIO_SSE2_MIX "Enable experimental constant-gain stereo SSE2 mixer" OFF)
+if(PS3RECOMP_AUDIO_SSE2_MIX)
+    target_compile_definitions(ps3recomp_runtime PRIVATE AUDIO_ENABLE_SSE2_MIX=1)
+endif()
 
 # Platform-specific link libraries
 if(WIN32)
@@ -497,6 +521,13 @@ endif()
 # ---------------------------------------------------------------------------
 if(PS3RECOMP_BUILD_TESTS)
     include(CTest)
+    if(WIN32)
+        add_executable(test_spu_lockline_srw runtime/spu/tests/test_spu_lockline_srw.c)
+        target_include_directories(test_spu_lockline_srw PRIVATE include)
+        target_compile_definitions(test_spu_lockline_srw PRIVATE PS3RECOMP_SPU_LOCKLINE_SRW=1)
+        add_test(NAME spu_lockline_srw COMMAND test_spu_lockline_srw)
+        set_tests_properties(spu_lockline_srw PROPERTIES TIMEOUT 40)
+    endif()
     # sync_stress is written directly against the Win32 threading API
     # (WaitForMultipleObjects, joinable HANDLEs, Interlocked*, CRITICAL_SECTION).
     # Off Windows all of that comes from runtime/platform/win32_compat.h, so
@@ -618,6 +649,20 @@ if(PS3RECOMP_BUILD_TESTS)
         set_tests_properties(spu_lockline_wait PROPERTIES TIMEOUT 15)
 
     endif()
+    add_executable(test_spu_coh_bitmap_range
+        runtime/spu/tests/test_spu_coh_bitmap_range.c
+        runtime/spu/tests/test_spu_coh_bitmap_concurrent.cpp)
+    if(NOT WIN32)
+        target_link_libraries(test_spu_coh_bitmap_range PRIVATE Threads::Threads)
+    endif()
+    if(MSVC)
+        target_compile_options(test_spu_coh_bitmap_range PRIVATE /UNDEBUG)
+    else()
+        target_compile_options(test_spu_coh_bitmap_range PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME spu_coh_bitmap_range COMMAND test_spu_coh_bitmap_range)
+    set_tests_properties(spu_coh_bitmap_range PROPERTIES TIMEOUT 60)
+
     add_executable(test_rsx_present_policy tests/test_rsx_present_policy.c)
     target_include_directories(test_rsx_present_policy PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/libs/video")

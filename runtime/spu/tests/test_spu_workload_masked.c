@@ -34,6 +34,19 @@ void spu_coh_forget_range(uintptr_t lo,uintptr_t hi) { (void)lo;(void)hi; }
 void spu_mfc_forget_range(uintptr_t lo,uintptr_t hi) { (void)lo;(void)hi; }
 int spu_run_spurs_job(spu_lifted_entry_fn e, int id, uint32_t ea, uint32_t sz)
 { (void)e; (void)id; (void)ea; (void)sz; return -1; }
+int spu_run_spurs_job_with_abi(spu_lifted_entry_fn e, int id, uint32_t ea,
+                               uint32_t sz, const spu_job_abi* abi)
+{ (void)e; (void)id; (void)ea; (void)sz; (void)abi; return -1; }
+int spu_run_spurs_job_with_abi_snapshot(spu_lifted_entry_fn e, int id,
+                                        uint32_t ea, uint32_t sz,
+                                        const spu_job_abi* abi,
+                                        const uint8_t* image, const uint8_t* desc)
+{ (void)e; (void)id; (void)ea; (void)sz; (void)abi; (void)image; (void)desc; return -1; }
+int spu_run_spurs_job_profiled(spu_lifted_entry_fn e, int id, uint32_t ea,
+                               uint32_t sz, const spu_job_abi* abi,
+                               const uint8_t* image, const uint8_t* desc,
+                               spu_job_phase_times* phases)
+{ (void)e; (void)id; (void)ea; (void)sz; (void)abi; (void)image; (void)desc; (void)phases; return -1; }
 int spu_run_with_halt(void (*f)(spu_context*), spu_context* c) { (void)f; (void)c; return -1; }
 void spu_thread_publish_ctx(uint32_t tid, void* c) { (void)tid; (void)c; }
 uint64_t spurs_pm_build_context(uint8_t* ls, uint32_t a, uint32_t b, uint32_t c, uint32_t d)
@@ -82,6 +95,47 @@ int main(void)
     /* A masked registration that does not fit its size is refused. */
     spu_workload_register_img_masked(0x2222ULL, prog_a, 4, "bad", 0x100, 0xF0, 0x20);
     assert(spu_workload_find(0x2222ULL) == NULL);
+
+    /* Exact lookup: zero is a valid fingerprint, and these distinct keys
+     * deliberately collide in the index. Full keys still select independently. */
+    const uint64_t k0 = 0, k1 = UINT64_C(0x100000001);
+    assert(spu_workload_bucket(k0) == spu_workload_bucket(k1));
+    const unsigned before = spu_workload_count();
+    spu_workload_register_img(k0, prog_a, 10, "zero");
+    spu_workload_register_img(k1, prog_b, 11, "collision");
+    assert(spu_workload_count() == before + 2);
+    assert(spu_workload_find_img(k0, &id) == prog_a && id == 10);
+    assert(spu_workload_find_img(k1, &id) == prog_b && id == 11);
+
+    /* Updating an entry must preserve job ABI and the registration count. */
+    const spu_job_abi abi = { SPU_JOB_ABI_CONTEXT2, 7, 0, 0, 0 };
+    spu_job_abi got_abi;
+    spu_workload_set_job_abi(k0, &abi);
+    spu_workload_register_img(k0, prog_b, 12, "updated");
+    assert(spu_workload_count() == before + 2);
+    assert(spu_workload_find_img(k0, &id) == prog_b && id == 12);
+    assert(spu_workload_get_job_abi(12, &got_abi) &&
+           got_abi.flags == abi.flags && got_abi.context_tag == 7);
+    spu_workload_set_job_context_tag(k0, 9);
+    assert(spu_workload_job_context_tag(12) == 9);
+    assert(spu_workload_find_img(k1, &id) == prog_b && id == 11);
+
+    /* Fill the registry, verify hits/misses and updates even at capacity. */
+    uint64_t key = UINT64_C(0x8000000000000000);
+    while (spu_workload_count() < SPU_WORKLOAD_MAX) {
+        if (!spu_workload_find(key)) {
+            spu_workload_register_img(key, prog_a, 20, "fill");
+            assert(spu_workload_find(key) == prog_a);
+        }
+        ++key;
+    }
+    assert(!spu_workload_find(key));
+    spu_workload_register_img(key, prog_a, 21, "full");
+    assert(spu_workload_count() == SPU_WORKLOAD_MAX);
+    assert(spu_workload_find_img(key, &id) == NULL && id == 0);
+    spu_workload_register_img(k1, prog_a, 13, "collision updated");
+    assert(spu_workload_find_img(k1, &id) == prog_a && id == 13);
+    assert(spu_workload_find_img(fp, &id) == prog_b && id == 3);
 
     printf("test_spu_workload_masked: ok\n");
     return 0;

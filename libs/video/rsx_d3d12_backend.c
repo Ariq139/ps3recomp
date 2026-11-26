@@ -453,6 +453,7 @@ typedef struct {
     u64          submission_fence_values[FRAME_COUNT]; /* retire point for each CPU/GPU slot */
     u64          next_fence_value;
     u64          last_fence_value;
+    u64          completed_fence_value; /* monotonic observed retirement watermark */
     u32          frame_index;
     u32          present_buffer_id;   /* buffer the current flip names (for
                                        * the CPU-blit scanout fallback) */
@@ -795,6 +796,8 @@ static rsx_constant_snapshot_cache s_vp_cb_cache;
 #include "rsx_d3d12_gpu_timer.h"
 static rsx_d3d12_gpu_timer s_gpu_timer;
 static double s_perf_fence_wait = 0.0;
+enum { FENCE_IDLE, FENCE_SLOT, FENCE_BACKBUFFER, FENCE_REASON_COUNT };
+static struct { double seconds; u32 calls, parks; } s_perf_fence_reason[FENCE_REASON_COUNT];
 static u32 s_perf_fence_calls = 0, s_perf_rt_recreates = 0, s_perf_rt_evicts = 0;
 static double s_perf_tex = 0.0, s_perf_vtx = 0.0, s_perf_rf = 0.0;
 static double s_perf_record = 0.0, s_perf_pre = 0.0, s_perf_srv = 0.0, s_perf_pso = 0.0;
@@ -1395,6 +1398,7 @@ static int init_d3d12(u32 width, u32 height)
     memset(s_d3d.fence_values, 0, sizeof(s_d3d.fence_values));
     memset(s_d3d.submission_fence_values, 0, sizeof(s_d3d.submission_fence_values));
     s_d3d.next_fence_value = s_d3d.last_fence_value = 0;
+    s_d3d.completed_fence_value = 0;
     s_gpu_work_pending = 0;
     s_batch_slot_acquired = 0;
 
@@ -1880,34 +1884,105 @@ static int init_d3d12(u32 width, u32 height)
 /* Queue submissions are serialized on the render thread. A completed drain
  * remains valid until another command list is submitted. */
 
-static int wait_for_fence_value(u64 target, const char* context)
+/* A single monotonically increasing fence orders all submitted work.
+ * Never return success on a device-removal sentinel. The existing backend
+ * WAIT_FOR_IDLE callback cannot propagate an error to the guest; returning
+ * on an unrecoverable synchronization error would let the FIFO publish
+ * false completion. Stop the process with a failure status on that path,
+ * without running teardown which might recycle unretired GPU resources.
+ * A debug abort/core dump is explicit opt-in. A merely slow GPU is NOT
+ * a terminal failure and must continue waiting. */
+static void d3d12_sync_stop(const char* context, u64 target, HRESULT failure)
 {
-    if (!target || s_d3d.fence->lpVtbl->GetCompletedValue(s_d3d.fence) >= target)
-        return 1;
+    const HRESULT reason = s_d3d.device
+        ? s_d3d.device->lpVtbl->GetDeviceRemovedReason(s_d3d.device) : E_FAIL;
+    fprintf(stderr, "[D3D12] unrecoverable synchronization failure: %s target=%llu hr=0x%08lX device=0x%08lX\n",
+            context, (unsigned long long)target, (long)failure, (long)reason);
+    fflush(stderr);
+    const char* crash = getenv("D3D12_ABORT_ON_SYNC_FAILURE");
+    if (crash && !strcmp(crash, "1")) abort();
+    /* No guest-visible failure channel or safe recovery protocol exists.
+     * _Exit avoids arbitrary exit handlers on the FIFO/renderer thread. */
+    _Exit(EXIT_FAILURE);
+}
+static u64 d3d12_poll_completed_fence(void)
+{
+    const u64 value = s_d3d.fence->lpVtbl->GetCompletedValue(s_d3d.fence);
+    if (value == ~(u64)0)
+        d3d12_sync_stop("device removed while polling fence", s_d3d.last_fence_value, DXGI_ERROR_DEVICE_REMOVED);
+    if (value > s_d3d.completed_fence_value)
+        s_d3d.completed_fence_value = value;
+    return value;
+}
+static int wait_for_fence_value_impl(u64 target, const char* context, u32* parked)
+{
+    if (!target || target <= s_d3d.completed_fence_value) return 1;
+    u64 completed = d3d12_poll_completed_fence();
+    if (completed >= target) return 1;
+
     HRESULT hr = s_d3d.fence->lpVtbl->SetEventOnCompletion(
         s_d3d.fence, target, s_d3d.fence_event);
-    if (FAILED(hr)) {
-        printf("[D3D12] %s SetEventOnCompletion failed (0x%08lX)\n", context, hr);
-        return 0;
+    int use_event = SUCCEEDED(hr);
+    if (!use_event) {
+        const HRESULT reason = s_d3d.device->lpVtbl->GetDeviceRemovedReason(s_d3d.device);
+        if (FAILED(reason)) d3d12_sync_stop(context, target, reason);
+        fprintf(stderr, "[D3D12] %s fence event registration failed (0x%08lX); polling completion\n",
+                context, (long)hr);
     }
-    for (int tries = 0; tries < 3; tries++) {
-        if (WaitForSingleObject(s_d3d.fence_event, 2000) == WAIT_OBJECT_0)
-            return 1;
-        HRESULT rr = s_d3d.device->lpVtbl->GetDeviceRemovedReason(s_d3d.device);
-        printf("[D3D12] %s STUCK %ds: want %llu got %llu removed=0x%08lX\n",
-               context, 2 * (tries + 1), (unsigned long long)target,
-               (unsigned long long)s_d3d.fence->lpVtbl->GetCompletedValue(s_d3d.fence),
-               (long)rr);
-        fflush(stdout);
-        if (rr != 0) break;
+
+    *parked = 1;
+    const ULONGLONG start = GetTickCount64();
+    ULONGLONG next_report = start + 2000;
+    for (;;) {
+        ULONGLONG now = GetTickCount64();
+        if (use_event) {
+            /* An unrelated/stale event does not consume a retry budget and
+             * is not evidence that this target has retired. */
+            const DWORD ms = now >= next_report ? 1u : (DWORD)(next_report - now);
+            const DWORD wake = WaitForSingleObject(s_d3d.fence_event, ms);
+            if (wake != WAIT_OBJECT_0 && wake != WAIT_TIMEOUT) {
+                use_event = 0;
+                fprintf(stderr, "[D3D12] %s fence event wait failed; polling completion\n", context);
+            }
+        } else {
+            Sleep(1);
+        }
+        completed = d3d12_poll_completed_fence();
+        if (completed >= target) return 1;
+        now = GetTickCount64();
+        if (now >= next_report || !use_event) {
+            const HRESULT reason = s_d3d.device->lpVtbl->GetDeviceRemovedReason(s_d3d.device);
+            if (FAILED(reason)) d3d12_sync_stop(context, target, reason);
+        }
+        if (now >= next_report) {
+            fprintf(stderr, "[D3D12] %s waiting %llums: want %llu got %llu (device alive)\n",
+                    context, (unsigned long long)(now - start),
+                    (unsigned long long)target, (unsigned long long)completed);
+            fflush(stderr);
+            next_report = now + 2000;
+        }
+        /* No hard timeout: a live but slow device is not safe to recycle. */
     }
-    return s_d3d.fence->lpVtbl->GetCompletedValue(s_d3d.fence) >= target;
+}
+
+static int wait_for_fence_value(u64 target, const char* context)
+{
+    u32 parked = 0;
+    if (!perf_on()) return wait_for_fence_value_impl(target, context, &parked);
+    const int reason = !strcmp(context, "submission-slot") ? FENCE_SLOT :
+                       !strcmp(context, "backbuffer-retire") ? FENCE_BACKBUFFER : FENCE_IDLE;
+    const double start = perf_now();
+    const int result = wait_for_fence_value_impl(target, context, &parked);
+    s_perf_fence_reason[reason].seconds += perf_now() - start;
+    s_perf_fence_reason[reason].calls++;
+    s_perf_fence_reason[reason].parks += parked;
+    return result;
 }
 
 #include "rsx_d3d12_retire.h"
 static D3D12RetiredResource* s_retired_resources;
 static void d3d12_collect_retired(int force) {
- rsx_d3d12_retire_collect(&s_retired_resources,force ? ~(u64)0 : s_d3d.fence->lpVtbl->GetCompletedValue(s_d3d.fence));
+ rsx_d3d12_retire_collect(&s_retired_resources,force ? ~(u64)0 : d3d12_poll_completed_fence());
 }
 static int d3d12_retire_resource(ID3D12Resource** resource) {
  return rsx_d3d12_retire_add(&s_retired_resources,resource,s_d3d.next_fence_value+1u);
@@ -1919,7 +1994,8 @@ static void d3d12_signal_submission(u32 slot)
     HRESULT hr = s_d3d.cmd_queue->lpVtbl->Signal(s_d3d.cmd_queue, s_d3d.fence, value);
     if (FAILED(hr)) {
         printf("[D3D12] queue fence signal failed (0x%08lX)\n", hr);
-        return;
+        d3d12_sync_stop("queue Signal", value, hr);
+        return; /* unreachable */
     }
     s_d3d.last_fence_value = value;
     s_d3d.fence_values[s_d3d.frame_index] = value;
@@ -8022,6 +8098,17 @@ static void render_frame_impl(void)
             int cur_m[3] = {-1, -1, -1};           /* MRT B/C/D: -1 = unbound   */
             double _rec0 = perf_on() ? perf_now() : 0.0;
             int seen_small_vp = 0, captured = 0;
+            /* Command-list-local, opt-in A/B: no PSO pointer caching (PSOs
+             * may be evicted during lookup), no skipped transitions/copies.
+             * Invalidate on alternate draw paths and target changes. */
+            const char* state_cache_env = getenv("RSX_D3D12_STATE_CACHE");
+            const int state_cache = state_cache_env && !strcmp(state_cache_env, "1");
+            int raster_valid = 0, output_valid = 0, root_valid = 0, fpcb_valid = 0;
+            D3D12_VIEWPORT last_vp = {0};
+            D3D12_RECT last_sc = {0};
+            UINT last_stencil = 0;
+            float last_blend[4] = {0};
+            UINT64 last_sampler = 0, last_vpcb = 0, last_fpcb = 0;
             for (u32 d = 0; d < s_d3d.draw_count && d < MAX_DRAWS; d++) {
                 const D3D12DrawRecord* dr = &s_d3d.draws[d];
                 if (!dr->is_vp) continue;
@@ -8036,6 +8123,7 @@ static void render_frame_impl(void)
                     else if (seen_small_vp && !captured &&
                              dr->vp_w == s_d3d.width && is_display_target_key(dr->rt_off)) {
                         captured = 1;
+                        raster_valid = output_valid = root_valid = fpcb_valid = 0;
                         screen_copy_capture(fi, cur_rt);
                         subvp_capture(fi, cur_rt);
                         s_d3d.cmd_list->lpVtbl->OMSetRenderTargets(
@@ -8061,6 +8149,7 @@ static void render_frame_impl(void)
                     want_ds_readonly != cur_ds_readonly ||
                     wantm[0] != cur_m[0] ||
                     wantm[1] != cur_m[1] || wantm[2] != cur_m[2]) {
+                    raster_valid = output_valid = root_valid = fpcb_valid = 0;
                     D3D12_CPU_DESCRIPTOR_HANDLE rh[4];
                     UINT nrt = want_none ? 0u : 1u;
                     if (nrt) rh[0] = rtv_handle;
@@ -8145,6 +8234,7 @@ static void render_frame_impl(void)
                     for (int _m = 0; _m < 3; _m++) cur_m[_m] = wantm[_m];
                 }
                 if (dr->is_clear) {
+                    raster_valid = output_valid = root_valid = fpcb_valid = 0;
                     D3D12_CPU_DESCRIPTOR_HANDLE rh =
                         (cur_rt >= 0) ? off_rt_rtv(cur_rt) : rtv_handle;
                     /* RT_CLEARDBG=1: clear offscreen targets to magenta rather
@@ -8286,8 +8376,15 @@ static void render_frame_impl(void)
                                       (LONG)sx1c, (LONG)sy1c};
                     dvp_x = dvp.TopLeftX; dvp_y = dvp.TopLeftY;
                     dvp_w = dvp.Width;    dvp_h = dvp.Height;
-                    s_d3d.cmd_list->lpVtbl->RSSetViewports(s_d3d.cmd_list, 1, &dvp);
-                    s_d3d.cmd_list->lpVtbl->RSSetScissorRects(s_d3d.cmd_list, 1, &dsc);
+                    if (!state_cache || !raster_valid || memcmp(&last_vp, &dvp, sizeof(dvp))) {
+                        s_d3d.cmd_list->lpVtbl->RSSetViewports(s_d3d.cmd_list, 1, &dvp);
+                        if (state_cache) last_vp = dvp;
+                    }
+                    if (!state_cache || !raster_valid || memcmp(&last_sc, &dsc, sizeof(dsc))) {
+                        s_d3d.cmd_list->lpVtbl->RSSetScissorRects(s_d3d.cmd_list, 1, &dsc);
+                        if (state_cache) last_sc = dsc;
+                    }
+                    raster_valid = state_cache;
                 }
                 /* Per-draw descriptor table: fragment SRVs occupy t0-t15,
                  * vertex SRVs t16-t19. Transition sampled offscreen targets
@@ -8327,16 +8424,28 @@ static void render_frame_impl(void)
                 if (dpso && !d3d12_sampler_table_for_draw(
                         dr, &draw_sampler_layout, &draw_sampler_table))
                     draw_sampler_table = default_sampler_table;
-                s_d3d.cmd_list->lpVtbl->SetGraphicsRootDescriptorTable(
-                    s_d3d.cmd_list, 3, draw_sampler_table);
-                /* Per-draw constants: this draw's vp_cb + FP texscale slots. */
-                s_d3d.cmd_list->lpVtbl->SetGraphicsRootConstantBufferView(s_d3d.cmd_list, 0,
-                    s_d3d.vp_cb->lpVtbl->GetGPUVirtualAddress(s_d3d.vp_cb)
-                    + ((u64)s_d3d.vp_parity * MAX_DRAWS + dr->vp_cb_slot) * VP_CB_STRIDE);
-                if (s_d3d.vp_fpcb)
-                    s_d3d.cmd_list->lpVtbl->SetGraphicsRootConstantBufferView(s_d3d.cmd_list, 2,
-                        s_d3d.vp_fpcb->lpVtbl->GetGPUVirtualAddress(s_d3d.vp_fpcb)
-                        + ((u64)s_d3d.vp_parity * MAX_DRAWS + dr->cb_slot) * VP_FPCB_STRIDE);
+                if (!state_cache || !root_valid || last_sampler != draw_sampler_table.ptr) {
+                    s_d3d.cmd_list->lpVtbl->SetGraphicsRootDescriptorTable(
+                        s_d3d.cmd_list, 3, draw_sampler_table);
+                    if (state_cache) last_sampler = draw_sampler_table.ptr;
+                }
+                /* Compare the actual GPU address, never guest slot identity. */
+                const UINT64 vpcb = s_d3d.vp_cb->lpVtbl->GetGPUVirtualAddress(s_d3d.vp_cb)
+                    + ((u64)s_d3d.vp_parity * MAX_DRAWS + dr->vp_cb_slot) * VP_CB_STRIDE;
+                if (!state_cache || !root_valid || last_vpcb != vpcb) {
+                    s_d3d.cmd_list->lpVtbl->SetGraphicsRootConstantBufferView(s_d3d.cmd_list, 0, vpcb);
+                    if (state_cache) last_vpcb = vpcb;
+                }
+                if (s_d3d.vp_fpcb) {
+                    const UINT64 fpcb = s_d3d.vp_fpcb->lpVtbl->GetGPUVirtualAddress(s_d3d.vp_fpcb)
+                        + ((u64)s_d3d.vp_parity * MAX_DRAWS + dr->cb_slot) * VP_FPCB_STRIDE;
+                    if (!state_cache || !fpcb_valid || last_fpcb != fpcb) {
+                        s_d3d.cmd_list->lpVtbl->SetGraphicsRootConstantBufferView(s_d3d.cmd_list, 2, fpcb);
+                        if (state_cache) last_fpcb = fpcb;
+                    }
+                }
+                fpcb_valid = state_cache && s_d3d.vp_fpcb != NULL;
+                root_valid = state_cache;
                 /* DRAWARGS=<N>: the arguments actually handed to the GPU, plus
                  * the target they are aimed at. A zero vertex count, or a start
                  * vertex past the buffer, rasterises nothing while every other
@@ -8372,10 +8481,16 @@ static void render_frame_impl(void)
                       s_d3d.cmd_list->lpVtbl->OMSetRenderTargets(
                         s_d3d.cmd_list, bn, bn ? brh : NULL, FALSE, &active_dsv);
                   } }
-                s_d3d.cmd_list->lpVtbl->OMSetStencilRef(
-                    s_d3d.cmd_list, dr->stencil.front_ref & 0xFFu);
-                s_d3d.cmd_list->lpVtbl->OMSetBlendFactor(s_d3d.cmd_list,
-                                                         dr->blend_color);
+                const UINT stencil_ref = dr->stencil.front_ref & 0xFFu;
+                if (!state_cache || !output_valid || last_stencil != stencil_ref) {
+                    s_d3d.cmd_list->lpVtbl->OMSetStencilRef(s_d3d.cmd_list, stencil_ref);
+                    if (state_cache) last_stencil = stencil_ref;
+                }
+                if (!state_cache || !output_valid || memcmp(last_blend, dr->blend_color, sizeof(last_blend))) {
+                    s_d3d.cmd_list->lpVtbl->OMSetBlendFactor(s_d3d.cmd_list, dr->blend_color);
+                    if (state_cache) memcpy(last_blend, dr->blend_color, sizeof(last_blend));
+                }
+                output_valid = state_cache;
                 d3d12_apply_flat_vertex_order(dr);
                 const u32 draw_stride = dr->vp_stride ? dr->vp_stride : VP_VERT_STRIDE;
                 D3D12_VERTEX_BUFFER_VIEW draw_vbv;
@@ -8865,8 +8980,13 @@ skip_dump_consider: ;
       } }
 
     /* Present */
-    if (s_present_this_frame)
-        s_d3d.swap_chain->lpVtbl->Present(s_d3d.swap_chain, 1, 0); /* vsync */   /* skipped for an offscreen-only batch */
+    if (s_present_this_frame) {
+        const HRESULT hr = s_d3d.swap_chain->lpVtbl->Present(s_d3d.swap_chain, 1, 0);
+        if (FAILED(hr)) {
+            fprintf(stderr, "[D3D12] Present failed (0x%08lX)\n", (long)hr);
+            d3d12_sync_stop("Present", s_d3d.last_fence_value, hr);
+        }
+    } /* vsync; skipped for offscreen-only batches */
 
     move_to_next_frame(s_present_this_frame);
 
@@ -8950,6 +9070,11 @@ static void render_frame(void)
         }
         fprintf(stderr, "[PERF-SYNC] fence %.3fs %u calls | RT recreate %u evict %u\n",
                 s_perf_fence_wait, s_perf_fence_calls, s_perf_rt_recreates, s_perf_rt_evicts);
+        fprintf(stderr, "[PERF-FENCE] idle %.3fs %u calls/%u parks | slot %.3fs %u/%u | backbuffer %.3fs %u/%u\n",
+                s_perf_fence_reason[FENCE_IDLE].seconds, s_perf_fence_reason[FENCE_IDLE].calls, s_perf_fence_reason[FENCE_IDLE].parks,
+                s_perf_fence_reason[FENCE_SLOT].seconds, s_perf_fence_reason[FENCE_SLOT].calls, s_perf_fence_reason[FENCE_SLOT].parks,
+                s_perf_fence_reason[FENCE_BACKBUFFER].seconds, s_perf_fence_reason[FENCE_BACKBUFFER].calls, s_perf_fence_reason[FENCE_BACKBUFFER].parks);
+        memset(s_perf_fence_reason, 0, sizeof(s_perf_fence_reason));
         fprintf(stderr, "[PERF-VTX] pool %u dispatches %llu items | expanded %u draws %llu primitives\n",
                 s_perf_vtx_pool_calls, (unsigned long long)s_perf_vtx_pool_items,
                 s_perf_vtx_expanded_draws, (unsigned long long)s_perf_vtx_expanded_primitives);
