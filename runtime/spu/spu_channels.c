@@ -405,6 +405,32 @@ typedef struct spu_mfc_slot {
 static spu_mfc_slot* s_mfc_slots;
 static SRWLOCK s_mfc_claim_lock = SRWLOCK_INIT;
 
+/* A bounded, optional free list of detached allocations, not live engines.
+ * All operations run under the registry writer lock. */
+#define SPU_MFC_RECYCLE_MAX 16u
+static spu_mfc_slot* s_mfc_recycled;
+static unsigned s_mfc_recycled_count;
+static int spu_mfc_recycle_enabled(void)
+{
+    static int cached = -1; /* registry writer lock serializes access */
+    if (cached < 0) {
+        const char* e = getenv("SPU_MFC_RECYCLE");
+        cached = e && !strcmp(e, "1");
+    }
+    return cached;
+}
+static void spu_mfc_dispose_locked(spu_mfc_slot* slot)
+{
+    if (spu_mfc_recycle_enabled() && s_mfc_recycled_count < SPU_MFC_RECYCLE_MAX) {
+        slot->ctx = NULL;
+        slot->next = s_mfc_recycled;
+        s_mfc_recycled = slot;
+        ++s_mfc_recycled_count;
+    } else {
+        free(slot);
+    }
+}
+
 /* SPU_PCSAMPLE=<secs>: every <secs>, print image and pc of every context
  * holding an MFC slot -- i.e. every live SPU that has done DMA. Answers
  * "which SPU task never returned, and where is it" without a debugger. */
@@ -513,7 +539,13 @@ static mfc_engine* mfc_for(spu_context* ctx)
             return &slot->mfc;
         }
     }
-    spu_mfc_slot* slot = (spu_mfc_slot*)malloc(sizeof(*slot));
+    spu_mfc_slot* slot = s_mfc_recycled;
+    if (slot) {
+        s_mfc_recycled = slot->next;
+        --s_mfc_recycled_count;
+    } else {
+        slot = (spu_mfc_slot*)malloc(sizeof(*slot));
+    }
     if (!slot) {
         fprintf(stderr, "[SPU] cannot allocate private MFC engine for context %p\n", (void*)ctx);
         fflush(stderr);
@@ -537,7 +569,7 @@ void spu_mfc_release(spu_context* ctx)
         spu_mfc_slot* slot = *link;
         *link = slot->next;
         spu_mfc_cache_invalidate();
-        free(slot);
+        spu_mfc_dispose_locked(slot);
         break;
     }
     ReleaseSRWLockExclusive(&s_mfc_claim_lock);
@@ -554,7 +586,7 @@ void spu_mfc_forget_range(uintptr_t lo, uintptr_t hi)
         if (owner >= lo && owner < hi) {
             *link = slot->next;
             spu_mfc_cache_invalidate();
-            free(slot);
+            spu_mfc_dispose_locked(slot);
         } else {
             link = &slot->next;
         }
@@ -1231,11 +1263,31 @@ static void spu_ft_wait_span(spu_context* ctx, uint32_t channel, uint64_t t0)
     t_ft_busy0 = t1;
 }
 
+/* Keep the compatibility poll for every channel. Only opt-in private
+ * mailbox/signal waits may lengthen it; LR events can depend on the 128-byte
+ * snapshot comparison, and raw-SPU stop latency must remain unchanged. */
+static DWORD spu_ch_poll_interval(const spu_context* ctx, uint32_t channel)
+{
+    if (ctx->ls != ctx->ls_store ||
+        (channel != SPU_RdInMbox && channel != SPU_RdSigNotify1 &&
+         channel != SPU_RdSigNotify2)) return 10;
+    const char* e = getenv("SPU_CH_POLL_MS");
+    if (!e || !*e) return 10;
+    char* end = NULL;
+    unsigned long n = strtoul(e, &end, 10);
+    if (!end || *end || n < 10 || n > 100) return 10;
+    return (DWORD)n;
+}
+
 /* Block the calling SPU host thread until `channel` is readable. */
 static void spu_ch_wait(spu_context* ctx, uint32_t channel, const char* op)
 {
     if (!yz_ch_block() || spu_ch_ready(ctx, channel)) return;
     const uint64_t ft_t0 = PS3_FT_ON() ? ps3_ft_now() : 0;
+    const DWORD poll_ms = spu_ch_poll_interval(ctx, channel);
+    const char* diag_env = getenv("SPU_CH_POLL_DIAG");
+    const int poll_diag = diag_env && !strcmp(diag_env, "1");
+    unsigned long long wait_calls = 0, wait_unsignaled = 0;
 
     { static unsigned long bn = 0; unsigned long n = ++bn;
       if (n <= 50 || (n % 512) == 0)
@@ -1253,9 +1305,15 @@ static void spu_ch_wait(spu_context* ctx, uint32_t channel, const char* op)
                 spu_honour_stop_request(ctx);
             }
             AcquireSRWLockExclusive((SRWLOCK*)&ctx->ch_wait_lock);
-            if (!spu_ch_ready(ctx, channel))
-                SleepConditionVariableSRW((CONDITION_VARIABLE*)&ctx->ch_wait_cv,
-                                          (SRWLOCK*)&ctx->ch_wait_lock, 10, 0);
+            if (!spu_ch_ready(ctx, channel)) {
+                const BOOL signaled = SleepConditionVariableSRW(
+                    (CONDITION_VARIABLE*)&ctx->ch_wait_cv,
+                    (SRWLOCK*)&ctx->ch_wait_lock, poll_ms, 0);
+                if (poll_diag) {
+                    ++wait_calls;
+                    if (!signaled) ++wait_unsignaled;
+                }
+            }
             ReleaseSRWLockExclusive((SRWLOCK*)&ctx->ch_wait_lock);
             unsigned long long waited = GetTickCount64() - start;
             if (waited >= next_hb) {
@@ -1269,6 +1327,9 @@ static void spu_ch_wait(spu_context* ctx, uint32_t channel, const char* op)
         }
     }
     yz_lockstep_block_end(ctx);            /* rejoin the rotation, reacquire the token */
+    if (poll_diag && wait_calls)
+        fprintf(stderr, "[ch-poll] spu=%X ch=%u interval=%lu ms waits=%llu unsignaled=%llu\n",
+                ctx->spu_id, channel, (unsigned long)poll_ms, wait_calls, wait_unsignaled);
     if (ft_t0) spu_ft_wait_span(ctx, channel, ft_t0);
     ctx->status = SPU_STATUS_RUNNING;
 }
@@ -1707,6 +1768,21 @@ static void spu_report_cross_image(uint32_t addr, int want, int got)
  * cache here, not just in spu_lifted_lookup(), since the musttail dispatcher
  * and full resolver call spu_lookup() directly. Registration remains subject
  * to the existing startup/single-writer contract. */
+/* Address bits above the direct-mapped cache index still matter: hot
+ * overlay entrypoints separated by 1–2 KiB otherwise evict each other
+ * systematically. Mix the whole pair before selecting the bucket. Full
+ * key and registry generation checks below are unchanged. */
+static inline uint32_t spu_lookup_cache_hash(uint32_t addr, int image_id)
+{
+    uint32_t h = ((addr >> 2) ^ ((uint32_t)image_id * 0x9E3779B1u));
+#if defined(PS3RECOMP_SPU_LOOKUP_CACHE_HASH_MIX) && \
+    PS3RECOMP_SPU_LOOKUP_CACHE_HASH_MIX
+    h ^= h >> 16;
+    h *= 0x7FEB352Du;
+    h ^= h >> 15;
+#endif
+    return h;
+}
 #ifndef PS3RECOMP_SPU_LOOKUP_CACHE_SLOTS
 #define PS3RECOMP_SPU_LOOKUP_CACHE_SLOTS 256u
 #endif
@@ -1729,7 +1805,7 @@ spu_fn spu_lookup(uint32_t addr, int image_id)
 #if PS3RECOMP_SPU_LOOKUP_CACHE_SLOTS > 0
     const uint32_t epoch =
         atomic_load_explicit(&s_registry_count, memory_order_acquire) + 1u;
-    const uint32_t slot = ((addr >> 2) ^ ((uint32_t)image_id * 2654435761u)) &
+    const uint32_t slot = spu_lookup_cache_hash(addr, image_id) &
                          (PS3RECOMP_SPU_LOOKUP_CACHE_SLOTS - 1u);
     spu_lookup_cache_entry* cache = &s_lookup_cache[slot];
     if (cache->epoch == epoch && cache->addr == addr &&
@@ -1773,7 +1849,7 @@ typedef struct { uint32_t addr, gen; int image; spu_fn fn; } spu_lookup_memo;
 static SPU_TLS spu_lookup_memo t_lookup_memo[SPU_LOOKUP_MEMO_SIZE];
 static spu_fn spu_lookup_memoized(uint32_t addr, int image_id)
 {
-    spu_lookup_memo* m = &t_lookup_memo[((addr >> 2) ^ ((uint32_t)image_id * 0x9E3779B1u)) &
+    spu_lookup_memo* m = &t_lookup_memo[spu_lookup_cache_hash(addr, image_id) &
                                         (SPU_LOOKUP_MEMO_SIZE - 1)];
     const uint32_t gen = s_registry_count + 1;   /* +1: zero-init never matches */
     if (m->gen != gen || m->addr != addr || m->image != image_id) {

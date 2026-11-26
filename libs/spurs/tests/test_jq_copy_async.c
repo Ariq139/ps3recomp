@@ -32,8 +32,32 @@ int spu_workload_dispatch_job_snapshot(const uint8_t* image,uint32_t size,uint32
  assert(vm_read32(ea+0x60)==0x12345678 && desc[0x60]==0x12);SetEvent(entered);
  assert(WaitForSingleObject(release_job,3000)==WAIT_OBJECT_0);assert(vm_read32(ea+0x60)==0x12345678);return 1;
 }
+/* Exercise the real preparation/free paths before workers start. */
+static void test_recycling(void) {
+ assert(_putenv_s("SPURS_JQ_ALLOC_RECYCLE","1")==0);
+ vm_write64(0x1400,0x1800); vm_write16(0x1408,1);
+ guest[0x1800]=0x11;
+ JqTask* a=jq_prepare(0x1400,128); assert(a && a->binary[0]==0x11);
+ guest[0x1800]=0x22;
+ JqTask* b=jq_prepare(0x1400,128); assert(b && a!=b && a->binary[0]==0x11 && b->binary[0]==0x22);
+ a->id=99; a->flags=7;
+ jq_free_task(a);
+ assert(s_alloc_count[0]==1);
+ guest[0x1800]=0x33;
+ JqTask* c=jq_prepare(0x1400,128);
+ assert(c==a && c->id==0 && c->flags==0 && c->binary[0]==0x33 && b->binary[0]==0x22);
+ jq_free_task(b); jq_free_task(c);
+ assert(s_alloc_count[0]==2);
+ JqTask *live[3];
+ for(unsigned i=0;i<3;++i) { live[i]=jq_prepare(0x1400,128); assert(live[i]); }
+ for(unsigned i=0;i<3;++i) jq_free_task(live[i]);
+ assert(s_alloc_count[0]==JQ_ALLOC_PER_CLASS);
+ assert(cellSpursShutdownJobQueue()==0);
+ for(unsigned i=0;i<JQ_ALLOC_CLASSES;++i) assert(!s_alloc_free[i] && !s_alloc_count[i]);
+}
 int main(int argc,char** argv) {
  (void)argv;
+ test_recycling();
  assert(_putenv_s("SPURS_JQ_ASYNC_COPY",argc>1 ? "0" : "1")==0);
  entered=CreateEvent(NULL,TRUE,FALSE,NULL);release_job=CreateEvent(NULL,TRUE,FALSE,NULL);assert(jq_create_state(0x1000,4)==0);
  vm_write64(0x1400,0x1800);vm_write16(0x1408,1);vm_write32(0x1460,0x12345678);guest[0x1800]=0xCC;

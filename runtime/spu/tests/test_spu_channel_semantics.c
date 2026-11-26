@@ -208,6 +208,30 @@ static void test_atomic_commands_use_an_aligned_lsa(void)
     }
 }
 
+static void test_poll_interval_policy(void)
+{
+    const char* saved = getenv("SPU_CH_POLL_MS");
+    char* prior = saved ? strdup(saved) : NULL;
+    if (saved && !prior) { CHECK(0); return; }
+    CHECK(unsetenv("SPU_CH_POLL_MS") == 0);
+    CHECK(spu_ch_poll_interval(&g_spu, SPU_RdInMbox) == 10);
+    CHECK(setenv("SPU_CH_POLL_MS", "50", 1) == 0);
+    CHECK(spu_ch_poll_interval(&g_spu, SPU_RdInMbox) == 50);
+    CHECK(spu_ch_poll_interval(&g_spu, SPU_RdSigNotify1) == 50);
+    CHECK(spu_ch_poll_interval(&g_spu, SPU_RdSigNotify2) == 50);
+    CHECK(spu_ch_poll_interval(&g_spu, SPU_RdEventStat) == 10);
+    uint8_t* original = g_spu.ls;
+    g_spu.ls = g_guest_mem;
+    CHECK(spu_ch_poll_interval(&g_spu, SPU_RdInMbox) == 10);
+    g_spu.ls = original;
+    CHECK(setenv("SPU_CH_POLL_MS", "101", 1) == 0);
+    CHECK(spu_ch_poll_interval(&g_spu, SPU_RdInMbox) == 10);
+    CHECK(setenv("SPU_CH_POLL_MS", "0", 1) == 0);
+    CHECK(spu_ch_poll_interval(&g_spu, SPU_RdInMbox) == 10);
+    if (prior) { CHECK(setenv("SPU_CH_POLL_MS", prior, 1) == 0); free(prior); }
+    else CHECK(unsetenv("SPU_CH_POLL_MS") == 0);
+}
+
 int main(int argc, char** argv)
 {
     const int handoffs = argc > 1 ? atoi(argv[1]) : 2000;
@@ -215,6 +239,7 @@ int main(int argc, char** argv)
     spu_context_init(&g_spu, 0);
     g_spu.image_id = -1;
     g_spu_force_ch_block = 1;           /* blocking reads, as for a raw SPU */
+    test_poll_interval_policy();
 
     test_wake_is_ordered_after_the_waiter();
     test_blocking_read_handoff(handoffs);
