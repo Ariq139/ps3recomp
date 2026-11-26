@@ -663,6 +663,20 @@ if(PS3RECOMP_BUILD_TESTS)
     add_test(NAME spu_coh_bitmap_range COMMAND test_spu_coh_bitmap_range)
     set_tests_properties(spu_coh_bitmap_range PROPERTIES TIMEOUT 60)
 
+    # The private SPU job initializer skips clearing LS only when the caller
+    # immediately supplies the full image. Compare every context byte against
+    # ordinary initialization at the prefix-size boundary cases.
+    add_executable(test_spu_context_job_prefix
+        runtime/spu/tests/test_spu_context_job_prefix.c)
+    target_include_directories(test_spu_context_job_prefix PRIVATE include runtime/spu)
+    if(MSVC)
+        target_compile_options(test_spu_context_job_prefix PRIVATE /UNDEBUG)
+    else()
+        target_compile_options(test_spu_context_job_prefix PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME spu_context_job_prefix COMMAND test_spu_context_job_prefix)
+    set_tests_properties(spu_context_job_prefix PROPERTIES TIMEOUT 30)
+
     add_executable(test_rsx_present_policy tests/test_rsx_present_policy.c)
     target_include_directories(test_rsx_present_policy PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/libs/video")
