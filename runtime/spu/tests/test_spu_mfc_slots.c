@@ -117,9 +117,35 @@ static void transient_job(spu_context* ctx)
     engine->tag_completed = 0;
 }
 
+static void test_private_ls_init(void)
+{
+    static spu_context expected, actual;
+    static uint8_t image[SPU_LS_SIZE];
+    for (unsigned i = 0; i < sizeof(image); ++i)
+        image[i] = (uint8_t)(i ^ (i >> 8));
+    memset(&actual, 0xA5, sizeof(actual));
+    spu_context_init(&expected, 0);
+    memcpy(expected.ls, image, sizeof(image));
+    spu_job_init_private_ls(&actual, image);
+    memcpy(actual.ls, image, sizeof(image));
+    CHECK(actual.ls == actual.ls_store);
+    CHECK(!memcmp(actual.ls, image, sizeof(image)));
+    /* Normalize only the self pointer; all remaining context bytes, including
+     * padding and LS, must match full initialization. */
+    actual.ls = expected.ls;
+    CHECK(!memcmp(&actual, &expected, sizeof(actual)));
+    memset(&actual, 0xA5, sizeof(actual));
+    spu_job_init_private_ls(&actual, NULL);
+    spu_context_init(&expected, 0);
+    CHECK(actual.ls == actual.ls_store);
+    actual.ls = expected.ls;
+    CHECK(!memcmp(&actual, &expected, sizeof(actual)));
+}
+
 int main(void)
 {
     printf("SPU MFC engine slots\n");
+    test_private_ls_init();
 
     for (int r = 0; r < ROUNDS; r++) {
         for (int w = 0; w < NCTX; w++) {

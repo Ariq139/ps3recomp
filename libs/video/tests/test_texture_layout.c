@@ -841,8 +841,104 @@ static void test_remap_rejects_null(void)
     rsx_texture_component_remap(0xAAE4u, FMT_A8R8G8B8, NULL);   /* must not crash */
 }
 
+/* Exercise the production 2x2 Morton path over square and rectangular POT
+ * textures, with padded destination rows and both source-channel layouts. */
+static void test_decode_swizzled_argb_tiles(void)
+{
+    static const u32 formats[] = {0x85u, 0x9Eu};
+    u8 source[16 * 16 * 4];
+    u8 output[(16 * 4 + 8) * 16];
+    for (u32 fi = 0; fi < sizeof(formats) / sizeof(formats[0]); ++fi) {
+        for (u32 l2w = 1; l2w <= 4; ++l2w) {
+            for (u32 l2h = 1; l2h <= 4; ++l2h) {
+                const u32 w = 1u << l2w, h = 1u << l2h;
+                const u32 pitch = w * 4u + 8u;
+                rsx_tex_layout tl;
+                rsx_texture_layout(formats[fi], w, h, &tl);
+                CHECK(tl.swizzled);
+                for (u32 y = 0; y < h; ++y) {
+                    for (u32 x = 0; x < w; ++x) {
+                        const u32 off = rsx_swizzle_offset(x, y, l2w, l2h) * 4u;
+                        source[off + 0] = (u8)(1u + x + 3u * y);
+                        source[off + 1] = (u8)(11u + 5u * x + y);
+                        source[off + 2] = (u8)(31u + x + 7u * y);
+                        source[off + 3] = (u8)(61u + 3u * x + 2u * y);
+                    }
+                }
+                for (int already_rgba = 0; already_rgba <= 1; ++already_rgba) {
+                    memset(output, 0xCD, sizeof(output));
+                    rsx_texture_decode(output, pitch, source, w, h, &tl, already_rgba);
+                    for (u32 y = 0; y < h; ++y) {
+                        for (u32 x = 0; x < w; ++x) {
+                            const u32 off = y * pitch + x * 4u;
+                            const u32 so = rsx_swizzle_offset(x, y, l2w, l2h) * 4u;
+                            const u8 alpha = formats[fi] == 0x9Eu ? 255u
+                                          : source[so + (already_rgba ? 3u : 0u)];
+                            const u8 want[4] = {
+                                already_rgba ? source[so] : source[so + 1],
+                                already_rgba ? source[so + 1] : source[so + 2],
+                                already_rgba ? source[so + 2] : source[so + 3],
+                                alpha
+                            };
+                            CHECK(!memcmp(output + off, want, sizeof(want)));
+                        }
+                        for (u32 x = w * 4u; x < pitch; ++x)
+                            CHECK(output[y * pitch + x] == 0xCD);
+                    }
+                    for (u32 i = pitch * h; i < sizeof(output); ++i)
+                        CHECK(output[i] == 0xCD);
+                }
+            }
+        }
+    }
+}
+
+/* Exhaust every packed word in each supported format. An odd-width,
+ * pitched, deliberately unaligned row exercises the SIMD loop and tail. */
+static void test_decode_packed16_exhaustive(void)
+{
+    static const u32 formats[] = {0x82u, 0x83u, 0x84u, 0x97u, 0x9Du};
+    enum { W = 17, SP = 39, DP = 75 };
+    u8 source[SP + 1], output[DP + 1];
+    for (unsigned f = 0; f < sizeof(formats)/sizeof(formats[0]); ++f) {
+        rsx_tex_layout tl;
+        rsx_texture_layout_pitched(formats[f] | 0x20u, W, 1, SP, &tl);
+        for (u32 base = 0; base < 65536u; base += W) {
+            memset(source, 0xA5, sizeof source); memset(output, 0xCD, sizeof output);
+            for (u32 x = 0; x < W; ++x) {
+                const u32 v = (base + x) & 65535u;
+                source[1 + x*2] = (u8)(v >> 8); source[2 + x*2] = (u8)v;
+            }
+            rsx_texture_decode(output + 1, DP, source + 1, W, 1, &tl, 0);
+            for (u32 x = 0; x < W; ++x) {
+                const u32 v = (base + x) & 65535u;
+                u8 want[4];
+                switch(formats[f]) {
+                    case 0x83u:
+                        want[0]=(u8)(((v>>8)&15u)*17u); want[1]=(u8)(((v>>4)&15u)*17u);
+                        want[2]=(u8)((v&15u)*17u); want[3]=(u8)((v>>12)*17u); break;
+                    case 0x84u:
+                        want[0]=(u8)((v>>11)*255u/31u); want[1]=(u8)(((v>>5)&63u)*255u/63u);
+                        want[2]=(u8)((v&31u)*255u/31u); want[3]=255; break;
+                    case 0x97u:
+                        want[0]=(u8)((v>>11)*255u/31u); want[1]=(u8)(((v>>6)&31u)*255u/31u);
+                        want[2]=(u8)(((v>>1)&31u)*255u/31u); want[3]=(v&1u)?255:0; break;
+                    default:
+                        want[0]=(u8)(((v>>10)&31u)*255u/31u); want[1]=(u8)(((v>>5)&31u)*255u/31u);
+                        want[2]=(u8)((v&31u)*255u/31u); want[3]=(formats[f]==0x9Du || v&0x8000u)?255:0; break;
+                }
+                CHECK(!memcmp(output + 1 + x*4, want, 4));
+            }
+            CHECK(output[0] == 0xCD);
+            for (u32 i = 1+W*4; i < sizeof output; ++i) CHECK(output[i] == 0xCD);
+        }
+    }
+}
+
 int main(void)
 {
+    test_decode_swizzled_argb_tiles();
+    test_decode_packed16_exhaustive();
     test_argb();
     test_g8b8();
     test_compressed();
