@@ -309,6 +309,56 @@ if(P5_SPU_AVX2)
     endforeach()
 endif()
 
+# Release loop selection is deliberately explicit: beta addresses and
+# fingerprints are not evidence for the retail build. Capture first, then
+# NATIVE requires a successful replay of supplied release captures.
+set(P5_RELEASE_SPU_LOOP_MODE "OFF" CACHE STRING "Release SPU loop: OFF, CAPTURE, NATIVE")
+set_property(CACHE P5_RELEASE_SPU_LOOP_MODE PROPERTY STRINGS OFF CAPTURE NATIVE)
+set(P5_RELEASE_SPU_LOOP_SOURCE "" CACHE FILEPATH "Exact release lifted SPU source (under SPU_DIR)")
+set(P5_RELEASE_SPU_LOOP_SHA256 "" CACHE STRING "SHA256 of the exact lifted source")
+set(P5_RELEASE_SPU_LOOP_FUNCTION "" CACHE STRING "Generated function name")
+set(P5_RELEASE_SPU_LOOP_START "" CACHE STRING "Loop start PC")
+set(P5_RELEASE_SPU_LOOP_ENTRY "" CACHE STRING "Loop entry PC")
+set(P5_RELEASE_SPU_LOOP_EXIT "" CACHE STRING "Loop exit PC")
+set(P5_RELEASE_SPU_LOOP_IMAGE "" CACHE STRING "Runtime image ID for capture verification")
+set(P5_RELEASE_SPU_LOOP_CAPTURES "" CACHE STRING "Semicolon-separated real capture files")
+set(P5_RELEASE_SPU_REPLAY_COMPILER "" CACHE FILEPATH "Optional clang/cc replay compiler")
+string(TOUPPER "${P5_RELEASE_SPU_LOOP_MODE}" release_loop_mode)
+if(NOT release_loop_mode MATCHES "^(OFF|CAPTURE|NATIVE)$")
+    message(FATAL_ERROR "Invalid P5_RELEASE_SPU_LOOP_MODE")
+endif()
+if(NOT release_loop_mode STREQUAL "OFF")
+    if(NOT PORT_ENABLE_SPU OR NOT P5_RELEASE_SPU_LOOP_SOURCE OR
+       NOT P5_RELEASE_SPU_LOOP_SHA256 OR NOT P5_RELEASE_SPU_LOOP_FUNCTION OR
+       "${P5_RELEASE_SPU_LOOP_START}" STREQUAL "" OR
+       "${P5_RELEASE_SPU_LOOP_ENTRY}" STREQUAL "" OR
+       "${P5_RELEASE_SPU_LOOP_EXIT}" STREQUAL "")
+        message(FATAL_ERROR "Release loop needs exact lifted source, SHA256, function and PCs")
+    endif()
+    get_filename_component(release_source "${P5_RELEASE_SPU_LOOP_SOURCE}" ABSOLUTE BASE_DIR "${SPU_DIR}")
+    list(FIND SPU_LIFTED "${release_source}" release_source_index)
+    if(release_source_index EQUAL -1)
+        message(FATAL_ERROR "Selected release loop source is not a lifted title SPU TU")
+    endif()
+    file(SHA256 "${release_source}" release_digest)
+    string(TOLOWER "${P5_RELEASE_SPU_LOOP_SHA256}" release_expected)
+    if(NOT release_digest STREQUAL release_expected)
+        message(FATAL_ERROR "Release SPU source SHA256 mismatch")
+    endif()
+    set(replay_flags "")
+    if(P5_SPU_AVX2)
+        list(APPEND replay_flags "-mavx2")
+    endif()
+    include("${PS3RECOMP_DIR}/cmake/PS3RecompSPUKernel.cmake")
+    ps3recomp_outline_spu_loop(${PROJECT_NAME} "${release_source}"
+        "${P5_RELEASE_SPU_LOOP_FUNCTION}" "${P5_RELEASE_SPU_LOOP_START}"
+        "${P5_RELEASE_SPU_LOOP_ENTRY}" "${P5_RELEASE_SPU_LOOP_EXIT}"
+        "${release_loop_mode}" release_transformed
+        SOURCE_SHA "${release_expected}" IMAGE "${P5_RELEASE_SPU_LOOP_IMAGE}"
+        COMPILER "${P5_RELEASE_SPU_REPLAY_COMPILER}"
+        CAPTURES ${P5_RELEASE_SPU_LOOP_CAPTURES} CFLAGS ${replay_flags})
+endif()
+
 target_include_directories(${PROJECT_NAME} PRIVATE
     "${RECOMP_DIR}"                            # the generated ppu_recomp.h
     "${PS3RECOMP_DIR}/include"
@@ -383,6 +433,140 @@ if(MSVC)
 else()
     set_source_files_properties(${RECOMP_SOURCES} PROPERTIES
         COMPILE_OPTIONS "-w;-ffp-contract=off")
+endif()
+
+# Optional whole-program and profile-guided optimization. Keep ordinary
+# Release and source-specific SPU/PPU flags untouched when disabled.
+option(P5_ENABLE_IPO "Enable checked Release interprocedural optimization" OFF)
+set(P5_PGO_MODE "OFF" CACHE STRING "P5 profiling mode: OFF, GENERATE or USE")
+set_property(CACHE P5_PGO_MODE PROPERTY STRINGS OFF GENERATE USE)
+set(P5_PGO_DATA "" CACHE FILEPATH "LLVM merged .profdata file")
+if(P5_ENABLE_IPO)
+    include(CheckIPOSupported)
+    check_ipo_supported(RESULT _p5_ipo_ok OUTPUT _p5_ipo_error LANGUAGES C CXX)
+    if(NOT _p5_ipo_ok)
+        message(FATAL_ERROR "P5 IPO unavailable: ${_p5_ipo_error}")
+    endif()
+    set_property(TARGET ${PROJECT_NAME} ps3recomp_runtime
+        PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+endif()
+
+if(NOT P5_PGO_MODE MATCHES "^(OFF|GENERATE|USE)$")
+    message(FATAL_ERROR "P5_PGO_MODE must be OFF, GENERATE or USE")
+endif()
+if(NOT P5_PGO_MODE STREQUAL "OFF")
+    if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE STREQUAL "Release")
+        message(FATAL_ERROR "P5 PGO requires a Release build")
+    endif()
+    if(NOT CMAKE_C_COMPILER_ID MATCHES "^(Clang|AppleClang)$" OR
+       NOT CMAKE_CXX_COMPILER_ID MATCHES "^(Clang|AppleClang)$")
+        message(FATAL_ERROR
+            "P5 PGO requires Clang. Native cl.exe is not supported by the "
+            "runtime/lifted sources; GCC PGO is not configured.")
+    endif()
+
+    if(NOT CMAKE_C_COMPILER_VERSION STREQUAL CMAKE_CXX_COMPILER_VERSION)
+        message(FATAL_ERROR "P5 PGO requires matching Clang C and C++ compiler versions")
+    endif()
+
+    if(P5_PGO_MODE STREQUAL "GENERATE")
+        set(_p5_pgo_flag "-fprofile-instr-generate")
+    else()
+        if(NOT P5_PGO_DATA)
+            message(FATAL_ERROR "Set P5_PGO_DATA to merged LLVM .profdata")
+        endif()
+        get_filename_component(_p5_profile "${P5_PGO_DATA}" ABSOLUTE)
+        if(NOT EXISTS "${_p5_profile}")
+            message(FATAL_ERROR "Missing PGO data: ${_p5_profile}")
+        endif()
+        set(_p5_pgo_flag "-fprofile-instr-use=${_p5_profile}")
+    endif()
+
+    # CMake's clang-cl link rule commonly invokes link.exe/lld-link
+    # directly, not the compiler driver. Instrumented COFF objects carry
+    # the compiler-rt default-library directive; help the linker find it.
+    if(MSVC OR CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+        if(NOT WIN32 OR NOT CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC"
+           OR NOT CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+            message(FATAL_ERROR "Use matching Windows clang-cl C and C++ compilers")
+        endif()
+        set(_p5_pgo_compile "/clang:${_p5_pgo_flag}")
+        if(P5_PGO_MODE STREQUAL "GENERATE")
+            set(P5_CLANG_PROFILE_LIB_DIR "" CACHE PATH
+                "Optional matching clang-cl compiler-rt profile library directory")
+            if(P5_CLANG_PROFILE_LIB_DIR)
+                get_filename_component(_p5_profile_libdir "${P5_CLANG_PROFILE_LIB_DIR}" ABSOLUTE)
+            else()
+                execute_process(COMMAND "${CMAKE_C_COMPILER}" /clang:-print-resource-dir
+                    RESULT_VARIABLE _p5_c_status OUTPUT_VARIABLE _p5_c_resource
+                    OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_VARIABLE _p5_c_error)
+                execute_process(COMMAND "${CMAKE_CXX_COMPILER}" /clang:-print-resource-dir
+                    RESULT_VARIABLE _p5_cxx_status OUTPUT_VARIABLE _p5_cxx_resource
+                    OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_VARIABLE _p5_cxx_error)
+                if(NOT _p5_c_status STREQUAL "0" OR NOT _p5_cxx_status STREQUAL "0"
+                   OR NOT _p5_c_resource STREQUAL _p5_cxx_resource)
+                    message(FATAL_ERROR
+                        "Could not locate a shared clang-cl resource directory: "
+                        "${_p5_c_error} ${_p5_cxx_error}. Use matching compilers "
+                        "or set P5_CLANG_PROFILE_LIB_DIR.")
+                endif()
+                file(TO_CMAKE_PATH "${_p5_cxx_resource}/lib/windows" _p5_profile_libdir)
+            endif()
+            file(GLOB _p5_profile_libs "${_p5_profile_libdir}/clang_rt.profile*.lib")
+            if(NOT _p5_profile_libs)
+                message(FATAL_ERROR
+                    "No clang-cl compiler-rt profile library under ${_p5_profile_libdir}. "
+                    "Install matching compiler-rt or set P5_CLANG_PROFILE_LIB_DIR.")
+            endif()
+            # A glob alone cannot establish that compiler-rt matches the
+            # architecture/linker. Link (do not run) instrumented C and C++
+            # with the exact selected library directory. This happens only
+            # when the user configures the optional training build.
+            set(_p5_probe_source "${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/p5-pgo-probe-src")
+            file(MAKE_DIRECTORY "${_p5_probe_source}")
+            file(WRITE "${_p5_probe_source}/probe.c"
+                "int pgo_probe_c(int x) { return x ? x + 1 : 2; }\n")
+            file(WRITE "${_p5_probe_source}/probe.cpp"
+                "extern \"C\" int pgo_probe_c(int); int main(int n, char**) { return pgo_probe_c(n); }\n")
+            file(WRITE "${_p5_probe_source}/CMakeLists.txt" [=[
+cmake_minimum_required(VERSION 3.20)
+project(P5ProfileProbe LANGUAGES C CXX)
+add_executable(p5_profile_probe probe.c probe.cpp)
+target_compile_options(p5_profile_probe PRIVATE "${P5_PROBE_FLAG}")
+target_link_directories(p5_profile_probe PRIVATE "${P5_PROBE_LIBDIR}")
+]=])
+            set(_p5_saved_try_config "${CMAKE_TRY_COMPILE_CONFIGURATION}")
+            set(CMAKE_TRY_COMPILE_CONFIGURATION Release)
+            unset(_p5_profile_link_ok CACHE)
+            try_compile(_p5_profile_link_ok
+                "${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/p5-pgo-probe-build"
+                "${_p5_probe_source}" P5ProfileProbe p5_profile_probe
+                CMAKE_FLAGS "-DP5_PROBE_FLAG:STRING=${_p5_pgo_compile}"
+                    "-DP5_PROBE_LIBDIR:PATH=${_p5_profile_libdir}"
+                    "-DCMAKE_BUILD_TYPE:STRING=Release"
+                OUTPUT_VARIABLE _p5_profile_link_output)
+            set(CMAKE_TRY_COMPILE_CONFIGURATION "${_p5_saved_try_config}")
+            if(NOT _p5_profile_link_ok)
+                message(FATAL_ERROR
+                    "clang-cl profiling runtime link probe failed for the active "
+                    "compiler/linker/target; check compiler-rt installation:\n${_p5_profile_link_output}")
+            endif()
+            # Every executable that consumes the instrumented static runtime
+            # (including optional SDK smoke tests) needs the same search path.
+            target_link_directories(ps3recomp_runtime INTERFACE
+                "$<$<CONFIG:Release>:${_p5_profile_libdir}>")
+        endif()
+    else()
+        set(_p5_pgo_compile "${_p5_pgo_flag}")
+        if(P5_PGO_MODE STREQUAL "GENERATE")
+            target_link_options(ps3recomp_runtime INTERFACE
+                "$<$<CONFIG:Release>:${_p5_pgo_flag}>")
+        endif()
+    endif()
+    foreach(_p5_t IN ITEMS ${PROJECT_NAME} ps3recomp_runtime)
+        target_compile_options(${_p5_t} PRIVATE
+            "$<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:C,CXX>>:${_p5_pgo_compile}>")
+    endforeach()
 endif()
 
 # ---------------------------------------------------------------------------

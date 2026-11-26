@@ -70,6 +70,39 @@ static void chain(ppu_context* ctx)
 }
 
 static void leaf(ppu_context*) { ++s_leaf_calls; }
+static void hash_even(ppu_context* c) { c->gpr[3] = 0x1234; }
+static void hash_odd(ppu_context* c) { c->gpr[3] = 0x5678; }
+
+/* Distinct aligned addresses with identical low 18 bits collide in the
+ * original hash. Check both the full table and the indirect-call cache,
+ * including an overwritten target after it has been cached. */
+static unsigned test_hash_dispatch()
+{
+    constexpr uint32_t base = 0x00040000, stride = 0x00040000;
+    constexpr unsigned count = 128;
+    for (unsigned i = 0; i < count; ++i)
+        ppu_register_function(base + i * stride, (i & 1) ? hash_odd : hash_even);
+    ppu_context ctx = {};
+    unsigned fails = 0;
+    for (unsigned pass = 0; pass < 2; ++pass) {
+        for (unsigned i = 0; i < count; ++i) {
+            ctx.ctr = base + i * stride;
+            ctx.gpr[3] = 0;
+            ps3_indirect_call(&ctx);
+            fails += ctx.gpr[3] != ((i & 1) ? 0x5678u : 0x1234u);
+        }
+    }
+    ctx.ctr = base;
+    ps3_indirect_call(&ctx);
+    fails += ctx.gpr[3] != 0x1234u;
+    ppu_register_function(base, hash_odd);
+    ctx.ctr = base;
+    ps3_indirect_call(&ctx);
+    fails += ctx.gpr[3] != 0x5678u;
+    std::printf("[%s] aligned address dispatch and cache invalidation (%u failures)\n",
+                fails ? "FAIL" : "PASS", fails);
+    return fails;
+}
 
 static ppu_context s_ctx;
 static void coroutine_main(void)
@@ -117,5 +150,6 @@ int main()
     std::printf("[%s] indirect call to a leaf on the home thread afterwards: %s\n",
                 s_leaf_calls == 1 ? "PASS" : "FAIL", s_leaf_calls == 1 ? "ran" : "skipped");
     fails += s_leaf_calls != 1;
+    fails += test_hash_dispatch();
     return fails ? 1 : 0;
 }

@@ -8,7 +8,9 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
-from outline_spu_loop import outline
+import struct
+from outline_spu_loop import outline, validate_capture
+from spu_kernel_replay import SNAPSHOT_BYTES
 from promote_spu_kernel import transform
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -56,6 +58,31 @@ loc_00000104:
     ctx->pc = 0x110; g_spu_trampoline_fn = after; return;
 }
 '''
+
+# Check the capture identity/layout gate independently of real replay.
+# This synthetic header is deliberately not asserted to be executable proof.
+header = b'SPUKRN01' + struct.pack('<8I', 1, SNAPSHOT_BYTES, 7, 0x104, 0, 0, 0, 0)
+candidate = header + bytes(2 * SNAPSHOT_BYTES)
+validate_capture(candidate, 7, 0x104)
+for data, image, entry in ((candidate[:-1], 7, 0x104),
+                           (candidate, 8, 0x104), (candidate, 7, 0x108)):
+    try:
+        validate_capture(data, image, entry)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError('invalid capture accepted')
+with tempfile.TemporaryDirectory() as directory:
+    src, out = Path(directory)/'input.c', Path(directory)/'output.c'
+    src.write_text(SOURCE)
+    cmd = [os.sys.executable, str(ROOT/'tools/outline_spu_loop.py'),
+           '--source', str(src), '--function', 'kernel', '--start', '0x100',
+           '--entry', '0x104', '--exit', '0x110', '--mode', 'NATIVE',
+           '--output', str(out), '--require-verified', '--source-sha256']
+    for digest in ('0'*64, hashlib.sha256(src.read_bytes()).hexdigest()):
+        rejected = subprocess.run(cmd+[digest], capture_output=True, timeout=30)
+        assert rejected.returncode != 0 and not out.exists()
+print('release verification gate: missing/wrong captures and wrong source rejected')
 
 def emit(source=SOURCE,mode='NATIVE',exit_pc=0x110):
     return outline(source.encode(),'kernel',0x100,0x104,exit_pc,mode)[0]
