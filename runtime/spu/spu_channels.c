@@ -1714,9 +1714,12 @@ static void spu_report_cross_image(uint32_t addr, int want, int got)
 static inline uint32_t spu_lookup_cache_hash(uint32_t addr, int image_id)
 {
     uint32_t h = ((addr >> 2) ^ ((uint32_t)image_id * 0x9E3779B1u));
+#if defined(PS3RECOMP_SPU_LOOKUP_CACHE_HASH_MIX) && \
+    PS3RECOMP_SPU_LOOKUP_CACHE_HASH_MIX
     h ^= h >> 16;
     h *= 0x7FEB352Du;
     h ^= h >> 15;
+#endif
     return h;
 }
 #ifndef PS3RECOMP_SPU_LOOKUP_CACHE_SLOTS
