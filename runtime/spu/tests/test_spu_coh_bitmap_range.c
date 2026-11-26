@@ -10,8 +10,7 @@ static unsigned char bitmap[1u << (32 - SPU_COH_LINE_SHIFT - 3)];
 static void mark(uint32_t addr)
 {
     const uint32_t line = addr >> SPU_COH_LINE_SHIFT;
-    __atomic_fetch_or(&bitmap[line >> 3], (unsigned char)(1u << (line & 7u)),
-                      __ATOMIC_RELEASE);
+    spu_coh_bitmap_mark_bit(&bitmap[line >> 3], (unsigned char)(1u << (line & 7u)));
 }
 
 static uint32_t scalar_next(uint32_t first, uint32_t last)
@@ -40,6 +39,9 @@ static void check_range(uint32_t first, uint32_t last)
 
 int main(void)
 {
+    extern int spu_coh_bitmap_concurrent_test(void);
+    assert(spu_coh_bitmap_concurrent_test() == 0);
+
     assert(spu_coh_next_reserved(0, UINT32_MAX) == UINT32_MAX);
     __atomic_store_n(&g_spu_coh_bits, bitmap, __ATOMIC_RELEASE);
     check_range(0x10000u, 0x14000u);

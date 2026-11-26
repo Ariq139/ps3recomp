@@ -34,6 +34,19 @@ extern "C" {
 
 #define SPU_COH_LINE_SHIFT  7   /* 128-byte lines */
 
+/* Atomically add one reservation bit without clobbering a different bit set
+ * concurrently in the same byte. The CAS loop avoids a write when this bit
+ * is already present, which keeps the repeated-reservation fast path read
+ * only. */
+static inline void spu_coh_bitmap_mark_bit(unsigned char* byte, unsigned char bit)
+{
+    unsigned char old = __atomic_load_n(byte, __ATOMIC_RELAXED);
+    while (!(old & bit) &&
+           !__atomic_compare_exchange_n(byte, &old, (unsigned char)(old | bit),
+                                        1, __ATOMIC_RELEASE, __ATOMIC_RELAXED)) {
+    }
+}
+
 /* One bit per line over the 32-bit guest address space; spu_coherency.c
  * publishes it on the first reservation and only ever sets bits. */
 SPU_COH_SHARED const unsigned char* g_spu_coh_bits = 0;

@@ -251,9 +251,7 @@ void spu_coh_reserve(spu_context* ctx, uint32_t ea)
     uint32_t line = ea >> SPU_COH_LINE_SHIFT;
     const unsigned char bit = (unsigned char)(1u << (line & 7));
     unsigned char* byte = &s_coh_bitmap[line >> 3];
-    const unsigned char old = __atomic_load_n(byte, __ATOMIC_RELAXED);
-    if (!(old & bit))
-        __atomic_store_n(byte, (unsigned char)(old | bit), __ATOMIC_RELEASE);
+    spu_coh_bitmap_mark_bit(byte, bit);
     if (!__atomic_load_n(&g_spu_coh_bits, __ATOMIC_RELAXED))
         __atomic_store_n(&g_spu_coh_bits, s_coh_bitmap, __ATOMIC_RELEASE);
 

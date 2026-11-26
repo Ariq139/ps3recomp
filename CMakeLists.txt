@@ -619,7 +619,11 @@ if(PS3RECOMP_BUILD_TESTS)
 
     endif()
     add_executable(test_spu_coh_bitmap_range
-        runtime/spu/tests/test_spu_coh_bitmap_range.c)
+        runtime/spu/tests/test_spu_coh_bitmap_range.c
+        runtime/spu/tests/test_spu_coh_bitmap_concurrent.cpp)
+    if(NOT WIN32)
+        target_link_libraries(test_spu_coh_bitmap_range PRIVATE Threads::Threads)
+    endif()
     if(MSVC)
         target_compile_options(test_spu_coh_bitmap_range PRIVATE /UNDEBUG)
     else()

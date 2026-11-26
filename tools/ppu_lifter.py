@@ -227,8 +227,12 @@ static inline int vm_mm_st_ok(const ppu_mm* m, uint32_t ea, uint32_t n)
     if (!__builtin_expect(vm_mm_in(m->st_span, ea, n), 1) ||
         __builtin_expect((g_barrier_sync_watch | g_null_sweep_hi) != 0, 0))
         return 0;
-    const unsigned char* bits = g_spu_coh_bits;
-    if (bits) { const uint32_t line = ea >> 7; if ((bits[line >> 3] >> (line & 7)) & 1u) return 0; }
+    const unsigned char* bits = __atomic_load_n(&g_spu_coh_bits, __ATOMIC_ACQUIRE);
+    if (bits) {
+        const uint32_t line = ea >> 7;
+        const unsigned char marked = __atomic_load_n(&bits[line >> 3], __ATOMIC_ACQUIRE);
+        if ((marked >> (line & 7)) & 1u) return 0;
+    }
     return 1;
 }
 static inline uint8_t vm_read8_mm(const ppu_mm* m, uint64_t a)
