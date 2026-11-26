@@ -30,9 +30,10 @@ HARNESS = r'''
 #include <cstdio>
 #include <cassert>
 using HANDLE = void*;
-static long _InterlockedExchange(volatile long* p, long n) {
+static long fixture_interlocked_exchange(volatile long* p, long n) {
     long old = *p; *p = n; return old;
 }
+#define _InterlockedExchange fixture_interlocked_exchange
 static void YieldProcessor() {}
 TABLE
 static volatile long g_lwm_tab_lock = 0;
