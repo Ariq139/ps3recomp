@@ -3717,10 +3717,51 @@ static int d3d12_sampler_table_get(const D3D12_SAMPLER_DESC desc[RSX_SAMPLER_TAB
     return 1;
 }
 
+/* Only the registers consumed by sampler translation, including the
+ * manual-shadow border path. No guest addresses or pointer-only identity. */
+typedef struct {
+    u64 compare;
+    u8 normal[RSX_TEXTURE_UNITS], shadow[RSX_TEXTURE_UNITS], legacy;
+    u32 filter[RSX_TEXTURE_UNITS], address[RSX_TEXTURE_UNITS],
+        control0[RSX_TEXTURE_UNITS], border[RSX_TEXTURE_UNITS],
+        shadow_enabled[RSX_TEXTURE_UNITS];
+} D3D12SamplerDrawKey;
+static D3D12SamplerDrawKey s_sampler_draw_key;
+static u32 s_sampler_draw_index;
+static int s_sampler_draw_valid;
+
 static int d3d12_sampler_table_for_draw(const D3D12DrawRecord* dr,
                                        const D3D12FPSamplerLayout* layout,
                                        D3D12_GPU_DESCRIPTOR_HANDLE* out)
 {
+    static int cache = -1;
+    if (cache < 0) { const char* e = getenv("RSX_D3D12_SAMPLER_KEY_CACHE"); cache = e && !strcmp(e, "1"); }
+    D3D12SamplerDrawKey key;
+    const int use_key = cache && dr && layout;
+    if (use_key) {
+        memset(&key, 0, sizeof(key));
+        key.compare = dr->tex_shadow_compare_key;
+        memcpy(key.normal, layout->normal_slot, sizeof(key.normal));
+        memcpy(key.shadow, layout->shadow_slot, sizeof(key.shadow));
+        key.legacy = layout->legacy_fallback;
+        if (!key.legacy) for (u32 u = 0; u < RSX_TEXTURE_UNITS; ++u) {
+            if (key.normal[u] == 0xFFu && key.shadow[u] == 0xFFu) continue;
+            key.filter[u] = dr->tex[u].filter;
+            key.address[u] = dr->tex[u].address;
+            key.control0[u] = dr->tex[u].control0;
+            key.border[u] = dr->tex[u].border_color;
+            key.shadow_enabled[u] = dr->tex_shadow[u].enabled == 1;
+        }
+        ID3D12DescriptorHeap* heap = s_d3d.sampler_heap[s_d3d.vp_parity];
+        if (s_sampler_draw_valid && heap && out && s_d3d.sampler_inc &&
+            s_sampler_draw_index < s_d3d.sampler_table_count &&
+            !memcmp(&key, &s_sampler_draw_key, sizeof(key))) {
+            heap->lpVtbl->GetGPUDescriptorHandleForHeapStart(heap, out);
+            out->ptr += (u64)s_sampler_draw_index * RSX_SAMPLER_TABLE_SIZE * s_d3d.sampler_inc;
+            s_d3d.sampler_table_last = s_sampler_draw_index;
+            return 1;
+        }
+    }
     D3D12_SAMPLER_DESC desc[RSX_SAMPLER_TABLE_SIZE];
     d3d12_sampler_default_table(desc);
     if (dr && layout) {
@@ -3760,7 +3801,13 @@ static int d3d12_sampler_table_for_draw(const D3D12DrawRecord* dr,
             }
         }
     }
-    return d3d12_sampler_table_get(desc, out);
+    const int ok = d3d12_sampler_table_get(desc, out);
+    if (use_key && ok) {
+        s_sampler_draw_key = key;
+        s_sampler_draw_index = s_d3d.sampler_table_last;
+        s_sampler_draw_valid = 1;
+    }
+    return ok;
 }
 
 /* RPCS3_REFERENCE_REVIEWED: stencil compare/op enum mapping follows the NV40
@@ -7324,6 +7371,7 @@ static void render_frame_impl(void)
         s_d3d.vb_view.BufferLocation =
             s_d3d.vertex_buffer->lpVtbl->GetGPUVirtualAddress(s_d3d.vertex_buffer)
             + (u64)slot * MAX_VERTICES * VERTEX_STRIDE;
+    s_sampler_draw_valid = 0;
     s_d3d.sampler_table_count = 0;
     D3D12_SAMPLER_DESC default_sampler_desc[RSX_SAMPLER_TABLE_SIZE];
     d3d12_sampler_default_table(default_sampler_desc);
