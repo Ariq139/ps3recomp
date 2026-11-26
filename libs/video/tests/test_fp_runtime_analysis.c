@@ -19,8 +19,49 @@ static void put_word(u8* p, u32 word)
 }
 
 static rsx_fp_metadata_cache metadata_cache;
+
+static void check_metadata_changes(void)
+{
+    u8 code[4096] = {0};
+    put_word(code, 0x01000000u);   /* MOV + CONST payload, no END */
+    put_word(code + 4, 2u);
+    put_word(code + 16, 0x3f800000u);
+    put_word(code + 32, 0x17000001u | (5u << 17)); /* texture op + END */
+    const rsx_fp_metadata* m = rsx_fp_metadata_get(&metadata_cache, code);
+    assert(m && m->bytes == 48 && m->constants.count == 1 && m->offsets[0] == 16);
+    const u32 original_hash = m->hash;
+    assert(m->constants.values[0][0] == 0x3f800000u);
+    put_word(code + 16, 0x7fc00000u);
+    m = rsx_fp_metadata_get(&metadata_cache, code);
+    assert(m && m->hash == original_hash && m->constants.values[0][0] == 0);
+    put_word(code + 32, 0x01000001u);
+    m = rsx_fp_metadata_get(&metadata_cache, code);
+    assert(m && m->bytes == 48 && m->hash == rsx_fp_code_hash(code, 48));
+    assert(m->units == rsx_fp_texture_units(code, 48));
+    put_word(code, 0x01000001u); /* earlier END still includes payload */
+    m = rsx_fp_metadata_get(&metadata_cache, code);
+    assert(m && m->bytes == 32 && m->constants.count == 1);
+    put_word(code + 4, 0u);       /* changed CONST operand layout */
+    m = rsx_fp_metadata_get(&metadata_cache, code);
+    assert(m && m->bytes == 16 && m->constants.count == 0);
+    memset(code, 0, sizeof(code)); /* no END in the entire bound */
+    assert(!rsx_fp_metadata_get(&metadata_cache, code));
+
+    for (u32 i = 0; i < RSX_FP_METADATA_OFFSETS; ++i) {
+        put_word(code + i * 32u, 0x01000000u | (i + 1u == RSX_FP_METADATA_OFFSETS));
+        put_word(code + i * 32u + 4u, 2u);
+    }
+    m = rsx_fp_metadata_get(&metadata_cache, code);
+    assert(m && m->bytes == sizeof(code) && m->constants.count == RSX_FP_METADATA_OFFSETS);
+    assert(m->offsets[m->constants.count - 1u] == sizeof(code) - 16u);
+    put_word(code + sizeof(code) - 4u, 0x40000000u);
+    m = rsx_fp_metadata_get(&metadata_cache, code);
+    assert(m && m->constants.values[m->constants.count - 1u][3] == 0x40000000u);
+}
+
 int main(void)
 {
+    check_metadata_changes();
     const u32 ops[] = {1, 0x17, 0x18, 0x19, 0x2F, 0x31, 0x33, 0x34};
     for (u32 trial = 0; trial < 3000; trial++) {
         u8 code[4096] = {0};

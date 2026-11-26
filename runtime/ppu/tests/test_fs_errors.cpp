@@ -32,6 +32,8 @@ void vm_write64(uint64_t a, uint64_t v) { uint64_t be = __builtin_bswap64(v); me
 void ppu_guest_caller(char* out, size_t n) { if (n) out[0] = 0; }
 void ps3_vfs_ps3game_fallback(char* path, size_t cap) { (void)path; (void)cap; }
 void ydkj_host_bt(const char* tag) { (void)tag; }
+bool ps3recomp_materialize_cpk_event_folder(const char*) { return false; }
+int ps3recomp_resolve_event_editor_path(const char*, const char*, char*, size_t) { return 0; }
 void ps3_hle_register_ctx(uint32_t, const char*, void (*)(ppu_context*)) {}
 }
 ps3_guest_caller_fn g_ps3_guest_caller = nullptr;

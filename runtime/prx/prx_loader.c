@@ -16,17 +16,31 @@
 extern uint8_t* vm_base;
 
 /* ---- export registry ---------------------------------------------------- *
- * Flat NID -> guest-address table, filled as modules load. A handful of system
- * PRXs export a few hundred symbols total, so a linear array with linear lookup
- * is plenty (lookups happen once per import resolution, not per call). */
+ * NID -> guest-address table, filled as modules load. The HLE dispatcher
+ * calls prx_resolve_export on ordinary imports, including misses, so index
+ * this table instead of scanning all loaded exports on every call. */
 typedef struct {
     uint32_t nid;
     uint32_t guest_addr;
     uint32_t library_index;
 } prx_export_reg_entry;
-#define PRX_EXPORT_REG_CAP 2048
-static prx_export_reg_entry s_export_reg[PRX_EXPORT_REG_CAP];
+#define PRX_EXPORT_REG_CAP 2048u
+#define PRX_EXPORT_HASH_BITS 12u
+#define PRX_EXPORT_HASH_SIZE (1u << PRX_EXPORT_HASH_BITS)
+#define PRX_EXPORT_HASH_MASK (PRX_EXPORT_HASH_SIZE - 1u)
+/* NID zero is not published by prx_load_module. Keep the original maximum
+ * export count and a load factor of at most one half. Module loading is a
+ * startup operation; this does not change the registry's threading contract. */
+static prx_export_reg_entry s_export_reg[PRX_EXPORT_HASH_SIZE];
 static uint32_t             s_export_reg_n = 0;
+
+static prx_export_reg_entry* prx_export_slot(uint32_t nid)
+{
+    uint32_t i = (nid * 2654435761u) >> (32u - PRX_EXPORT_HASH_BITS);
+    while (s_export_reg[i].nid && s_export_reg[i].nid != nid)
+        i = (i + 1u) & PRX_EXPORT_HASH_MASK;
+    return &s_export_reg[i];
+}
 
 typedef struct {
     uint8_t descriptor[0x1C];
@@ -43,17 +57,17 @@ static void prx_export_register(uint32_t nid, uint32_t guest_addr,
 {
     /* Last writer wins if two modules export the same NID (matches the PS3
      * loader's link order). Overwrite an existing entry rather than duplicate. */
-    for (uint32_t i = 0; i < s_export_reg_n; i++) {
-        if (s_export_reg[i].nid == nid) {
-            s_export_reg[i].guest_addr = guest_addr;
-            s_export_reg[i].library_index = library_index;
-            return;
-        }
+    if (!nid) return;
+    prx_export_reg_entry* e = prx_export_slot(nid);
+    if (e->nid) {
+        e->guest_addr = guest_addr;
+        e->library_index = library_index;
+        return;
     }
-    if (s_export_reg_n < PRX_EXPORT_REG_CAP)
-        s_export_reg[s_export_reg_n++] =
-            (prx_export_reg_entry){ nid, guest_addr, library_index };
-    else
+    if (s_export_reg_n < PRX_EXPORT_REG_CAP) {
+        *e = (prx_export_reg_entry){ nid, guest_addr, library_index };
+        ++s_export_reg_n;
+    } else
         fprintf(stderr, "[prx] export registry full, dropping NID 0x%08X\n", nid);
 }
 
@@ -76,10 +90,9 @@ static uint32_t prx_library_register_loaded(const prx_module* m,
 
 uint32_t prx_resolve_export(uint32_t nid)
 {
-    for (uint32_t i = 0; i < s_export_reg_n; i++)
-        if (s_export_reg[i].nid == nid)
-            return s_export_reg[i].guest_addr;
-    return 0;
+    if (!nid || !s_export_reg_n) return 0;
+    const prx_export_reg_entry* e = prx_export_slot(nid);
+    return e->nid ? e->guest_addr : 0;
 }
 
 uint32_t prx_export_registry_count(void) { return s_export_reg_n; }
@@ -106,14 +119,12 @@ int prx_register_library_descriptor(const uint8_t descriptor[0x1C],
 
 int prx_export_library_is_registered(uint32_t nid)
 {
-    for (uint32_t i = 0; i < s_export_reg_n; ++i) {
-        if (s_export_reg[i].nid != nid ||
-            s_export_reg[i].library_index == UINT32_MAX ||
-            s_export_reg[i].library_index >= s_loaded_libraries_n)
-            continue;
-        return s_loaded_libraries[s_export_reg[i].library_index].externally_registered;
-    }
-    return 0;
+    if (!nid || !s_export_reg_n) return 0;
+    const prx_export_reg_entry* e = prx_export_slot(nid);
+    if (!e->nid || e->library_index == UINT32_MAX ||
+        e->library_index >= s_loaded_libraries_n)
+        return 0;
+    return s_loaded_libraries[e->library_index].externally_registered;
 }
 
 prx_load_result prx_load_module(const prx_module* m, prx_register_fn reg)

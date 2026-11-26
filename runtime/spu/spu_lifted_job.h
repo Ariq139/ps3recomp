@@ -26,7 +26,17 @@ typedef void (*spu_lifted_entry_fn)(spu_context*);
 /* Guest RAM base, for decoding a raw SPU thread's argument block. */
 extern uint8_t* vm_base;
 
-
+/* A supplied full LS image overwrites all 256 KiB. For a private, unpublished
+ * context initialize everything outside ls_store. The caller must overwrite
+ * all LS bytes at its original copy-in point before executing or publishing.
+ * Keep ls == ls_store: several channel paths use that identity to distinguish
+ * raw-SPU guest mappings. Published workers retain full initialization. */
+static inline void spu_job_init_private_ls(spu_context* ctx, const uint8_t* local_store)
+{
+    /* Share the tested prefix initializer: the copied job image is exactly
+     * one full local store, and NULL keeps the complete-init fallback. */
+    spu_context_init_job_prefix(ctx, 0, local_store ? SPU_LS_SIZE : 0);
+}
 
 /* Run an UN-LIFTED SPU image via the interpreter. Same context/LS/ABI bring-up
  * as spu_run_lifted_job (r1 = LS top, LS in/out, raw-thread arg EA in r3), but
@@ -45,7 +55,7 @@ static inline int32_t spu_run_interp_job(uint8_t* local_store, uint32_t entry_pc
 {
     extern uint8_t* vm_base;
     spu_context ctx;
-    spu_context_init(&ctx, 0);
+    spu_job_init_private_ls(&ctx, local_store);
     if (inmbox_val) spu_channel_write(&ctx.ch_in_mbox, inmbox_val);
     /* Identify the context as the real thread so a WrOutMbox/WrOutIntrMbox the
      * SPU issues reaches the RIGHT connected event queue: g_spu_out_mbox_hook ->
@@ -106,9 +116,8 @@ static inline int32_t spu_run_interp_job(uint8_t* local_store, uint32_t entry_pc
     /* `ctx` is about to go out of scope: take it out of the reserving set
      * first, or the coherency walk dereferences this stack frame after it is
      * gone. See spu_coh_unregister. */
-    spu_mfc_release(&ctx);
     spu_coh_unregister(&ctx);
-    spu_mfc_release(&ctx);   /* or its MFC slot leaks and later SPUs share one engine */
+    spu_mfc_release(&ctx);   /* retire the private MFC engine exactly once */
     return (int32_t)ctx.stop_code;
 }
 
@@ -164,7 +173,11 @@ static inline int32_t spu_run_lifted_job_abi(spu_lifted_entry_fn entry,
 {
     if (!entry) return -1;
     spu_context ctx;
-    spu_context_init(&ctx, 0);
+    const int publish_worker = opts && opts->spu_id;
+    if (publish_worker)
+        spu_context_init(&ctx, 0);
+    else
+        spu_job_init_private_ls(&ctx, local_store);
     { static int s_cl = -1;
       if (s_cl < 0) s_cl = getenv("SPU_CTX_LOG") ? 1 : 0;
       if (s_cl) { fprintf(stderr, "[spu-ctx] new job context %p image=%d\n",
@@ -339,9 +352,8 @@ static inline int32_t spu_run_lifted_job_abi(spu_lifted_entry_fn entry,
     /* ctx is a stack local that may have taken a lock-line reservation; left
      * in the reserver set it is walked by the next PPU store to that line.
      * GH3's Havok task returning is what first hit it. */
-    spu_mfc_release(&ctx);
     spu_coh_unregister(&ctx);
-    spu_mfc_release(&ctx);   /* or its MFC slot leaks and later SPUs share one engine */
+    spu_mfc_release(&ctx);   /* retire the private MFC engine exactly once */
     if (local_store) memcpy(local_store, ctx.ls, SPU_LS_SIZE);  /* LS back out */
     return 0;
 }
