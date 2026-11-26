@@ -22,10 +22,9 @@ def function(name):
     return source[match.start():end]
 
 functions = '\n'.join(function(name) for name in
-                      ['rd_be16', 'rd_be32', 'spu_elf_image_size', 'ts_running',
-                       'ts_lock', 'ts_unlock', 'spu_taskset_task_exited'])
-tables = source[source.index('#define TS_TRACK '):
-                source.index('static uint8_t* ts_running(')]
+                      ['rd_be16','rd_be32','spu_elf_image_size','ts_retire_locked','spu_taskset_task_exited'])
+tables = source[source.index('#define TS_BUCKETS '):
+                source.index('/* CellSpursTaskset2 keeps')]
 fixture = (root / 'runtime/spu/tests/test_spu_taskset_elf_flags.c').read_text()
 fixture = fixture.replace('/* PRODUCTION_FUNCTIONS */', tables + functions)
 env = {k: v for k, v in os.environ.items()

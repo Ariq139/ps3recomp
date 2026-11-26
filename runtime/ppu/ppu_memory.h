@@ -302,9 +302,8 @@ static inline uint32_t ppu_lwarx(ppu_context* ctx, uint32_t addr)
     uint32_t raw;
     _Atomic(uint32_t)* atom = (_Atomic(uint32_t)*)vm_ptr32(addr);
     if (g_resv_open_active) ppu_resv_open_note(ctx, addr);
+    __atomic_store_n(&ctx->reserve_addr,addr,__ATOMIC_RELEASE);
     raw = atomic_load_explicit(atom, memory_order_acquire);
-
-    ctx->reserve_addr  = addr;
     ctx->reserve_value = raw;
     ctx->reserve_valid = 1;
 
@@ -313,10 +312,11 @@ static inline uint32_t ppu_lwarx(ppu_context* ctx, uint32_t addr)
 
 static inline int ppu_stwcx(ppu_context* ctx, uint32_t addr, uint32_t val)
 {
-    if (!ctx->reserve_valid || ctx->reserve_addr != addr) {
+    if (!ctx->reserve_valid || __atomic_load_n(&ctx->reserve_addr,__ATOMIC_ACQUIRE) != addr) {
         /* No reservation or address mismatch -- fail */
         ppu_cr_set(ctx, 0, PPU_CR_SO * ppu_xer_get_so(ctx));
         ctx->reserve_valid = 0;
+    __atomic_store_n(&ctx->reserve_addr,0x100000000ull,__ATOMIC_RELEASE);
         if (g_resv_open_active > 0) ppu_resv_open_done(ctx);
         return 0;
     }
@@ -344,6 +344,7 @@ static inline int ppu_stwcx(ppu_context* ctx, uint32_t addr, uint32_t val)
     }
 
     ctx->reserve_valid = 0;
+    __atomic_store_n(&ctx->reserve_addr,0x100000000ull,__ATOMIC_RELEASE);
     if (g_resv_open_active > 0) ppu_resv_open_done(ctx);
 
     if (ok)
@@ -359,9 +360,8 @@ static inline uint64_t ppu_ldarx(ppu_context* ctx, uint32_t addr)
 {
     _Atomic(uint64_t)* atom = (_Atomic(uint64_t)*)vm_ptr64(addr);
     if (g_resv_open_active) ppu_resv_open_note(ctx, addr);
+    __atomic_store_n(&ctx->reserve_addr,addr,__ATOMIC_RELEASE);
     uint64_t raw = atomic_load_explicit(atom, memory_order_acquire);
-
-    ctx->reserve_addr  = addr;
     ctx->reserve_value = raw;
     ctx->reserve_valid = 1;
 
@@ -370,9 +370,10 @@ static inline uint64_t ppu_ldarx(ppu_context* ctx, uint32_t addr)
 
 static inline int ppu_stdcx(ppu_context* ctx, uint32_t addr, uint64_t val)
 {
-    if (!ctx->reserve_valid || ctx->reserve_addr != addr) {
+    if (!ctx->reserve_valid || __atomic_load_n(&ctx->reserve_addr,__ATOMIC_ACQUIRE) != addr) {
         ppu_cr_set(ctx, 0, PPU_CR_SO * ppu_xer_get_so(ctx));
         ctx->reserve_valid = 0;
+    __atomic_store_n(&ctx->reserve_addr,0x100000000ull,__ATOMIC_RELEASE);
         if (g_resv_open_active > 0) ppu_resv_open_done(ctx);
         return 0;
     }
@@ -396,6 +397,7 @@ static inline int ppu_stdcx(ppu_context* ctx, uint32_t addr, uint64_t val)
     }
 
     ctx->reserve_valid = 0;
+    __atomic_store_n(&ctx->reserve_addr,0x100000000ull,__ATOMIC_RELEASE);
     if (g_resv_open_active > 0) ppu_resv_open_done(ctx);
 
     if (ok)

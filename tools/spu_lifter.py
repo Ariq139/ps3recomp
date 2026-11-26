@@ -51,6 +51,7 @@ import sys
 from dataclasses import dataclass, field
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from register_regions import SPU_PURE_GPR, PureGprLine, promote_register_regions
 
 try:
     from spu_disasm import SPUInstruction, disassemble_spu, spu_decode, CHANNEL_NAMES
@@ -572,6 +573,7 @@ class SPULifter:
         # each merged chunk entry hands back to the drain when one is pending.
         merged_starts = {a for a in getattr(self, "func_starts", ()) if start < a < end}
         last_insn = None
+        promote_gprs = os.environ.get("PS3RECOMP_PROMOTE_SPU_GPRS") == "1" and not self.trace
         for insn in insns:
             if insn.addr < start or insn.addr >= end:
                 continue
@@ -586,7 +588,10 @@ class SPULifter:
             if c:
                 if self.trace:
                     func.body_lines.append(f"    spu_trace_pc(ctx, {self._pc(insn.addr)});")
-                func.body_lines.append(f"    {c}")
+                emitted = f"    {c}"
+                if promote_gprs and insn.mnemonic in SPU_PURE_GPR:
+                    emitted = PureGprLine(emitted, "spu", insn.addr, insn.mnemonic)
+                func.body_lines.append(emitted)
                 if self.trace and insn.mnemonic not in _NO_RT_WRITE:
                     rt_idx = insn.raw & 0x7F
                     func.body_lines.append(f"    spu_trace_rt(ctx, {rt_idx});")
@@ -1167,7 +1172,10 @@ class SPULifter:
         weak = "__attribute__((weak)) " if getattr(self, "weak_emit", False) else ""
         for f in self.functions:
             lines.append(f"void {weak}{f.name}(spu_context* ctx) {{")
-            for b in f.body_lines:
+            body = f.body_lines
+            if os.environ.get("PS3RECOMP_PROMOTE_SPU_GPRS") == "1" and not self.trace:
+                body = promote_register_regions(body, "spu")
+            for b in body:
                 lines.append(b if b.endswith(":") else f"    {b}")
             lines.append("}")
             lines.append("")

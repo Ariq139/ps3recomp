@@ -75,7 +75,9 @@ def main():
         if args.build_only:
             print(f"built {exe}")
             return 0
-        r = subprocess.run([exe, td], capture_output=True, text=True)
+        env = os.environ.copy()
+        env.pop("PS3RECOMP_FS_AIO_WORKER", None)  # legacy path + explicit fixture hooks
+        r = subprocess.run([exe, td], capture_output=True, text=True, env=env, timeout=120)
         sys.stdout.write(r.stdout)
         sys.stderr.write(r.stderr)
         return r.returncode
