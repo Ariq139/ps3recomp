@@ -27,9 +27,12 @@ profiles (PowerShell):
 
 Run the instrumented executable on representative gameplay. Use a normal
 exit so the profile runtime can flush its counters. Merge profiles with
-llvm-profdata from the same LLVM installation, for example:
+llvm-profdata from the same LLVM installation. Pass only raw profile files;
+passing the directory also makes llvm-profdata inspect unrelated files:
 
-    llvm-profdata merge -output=C:/profiles/P5.profdata C:/profiles
+    $profiles = Get-ChildItem C:/profiles -Filter 'P5-*.profraw' | ForEach-Object FullName
+    if (-not $profiles) { throw "No P5 raw profiles found" }
+    llvm-profdata merge -output=C:/profiles/P5.profdata $profiles
 
 Reconfigure the same build with -DP5_PGO_MODE=USE and
 -DP5_PGO_DATA=C:/profiles/P5.profdata, then rebuild. Use a directory containing
