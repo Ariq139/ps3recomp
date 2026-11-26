@@ -697,6 +697,18 @@ if(PS3RECOMP_BUILD_TESTS)
         COMMAND test_constant_snapshot_cache)
 
     if(WIN32)
+        add_executable(test_d3d12_srv_cache
+            libs/video/tests/test_d3d12_srv_cache.c)
+        target_include_directories(test_d3d12_srv_cache PRIVATE libs/video)
+        target_compile_definitions(test_d3d12_srv_cache PRIVATE _CRT_SECURE_NO_WARNINGS)
+        if(MSVC)
+            target_compile_options(test_d3d12_srv_cache PRIVATE /UNDEBUG)
+        else()
+            target_compile_options(test_d3d12_srv_cache PRIVATE -UNDEBUG)
+        endif()
+        add_test(NAME d3d12_srv_cache COMMAND test_d3d12_srv_cache)
+        set_tests_properties(d3d12_srv_cache PROPERTIES TIMEOUT 30)
+
         add_executable(test_vertex_raw_gpu
             libs/video/tests/test_vertex_raw_gpu.c
             libs/video/rsx_vertex_fetch.c
