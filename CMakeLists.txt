@@ -527,6 +527,18 @@ if(PS3RECOMP_BUILD_TESTS)
         target_compile_definitions(test_spu_lockline_srw PRIVATE PS3RECOMP_SPU_LOCKLINE_SRW=1)
         add_test(NAME spu_lockline_srw COMMAND test_spu_lockline_srw)
         set_tests_properties(spu_lockline_srw PROPERTIES TIMEOUT 40)
+
+        # Exercise the SPURS job preparation paths in isolated processes so
+        # their process-cached opt-in flags cannot leak between fixtures.
+        add_executable(test_spurs_jq_copy_async libs/spurs/tests/test_jq_copy_async.c)
+        target_include_directories(test_spurs_jq_copy_async PRIVATE
+            include libs/spurs runtime/ppu runtime/spu)
+        add_test(NAME spurs_jq_copy_async COMMAND test_spurs_jq_copy_async --async)
+        add_test(NAME spurs_jq_shared_images COMMAND test_spurs_jq_copy_async --share)
+        add_test(NAME spurs_jq_task_recycling COMMAND test_spurs_jq_copy_async --recycle)
+        add_test(NAME spurs_jq_sync_copy COMMAND test_spurs_jq_copy_async --sync)
+        set_tests_properties(spurs_jq_copy_async spurs_jq_shared_images
+            spurs_jq_task_recycling spurs_jq_sync_copy PROPERTIES TIMEOUT 30)
     endif()
     # sync_stress is written directly against the Win32 threading API
     # (WaitForMultipleObjects, joinable HANDLEs, Interlocked*, CRITICAL_SECTION).

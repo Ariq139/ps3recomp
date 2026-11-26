@@ -29,9 +29,9 @@
 #define JQ_WORKER_MAX 6
 #define CELL_SPURS_JQ_MAX_PORTS 64
 
+typedef struct JqImage JqImage;
 enum { JQ_FLAG_SYNC_JOB=1u, JQ_FLAG_EXCLUSIVE_JOB=2u, JQ_FLAG_NON_BLOCKING=4u };
 #define JQ_BARRIER_FLAGS (JQ_FLAG_SYNC_JOB | JQ_FLAG_EXCLUSIVE_JOB)
-
 typedef struct JqTask JqTask;
 struct JqTask {
     JqTask* next; /* global worker dispatch list */
@@ -43,7 +43,8 @@ struct JqTask {
     u32 owned_descriptor, flags, pending_index;
     uint64_t sequence;
     uint8_t descriptor[256];
-    uint8_t* binary;
+    const uint8_t* binary;
+    JqImage* image;
 };
 typedef struct {
     int in_use, accepting, copy_sync_active;
@@ -253,6 +254,59 @@ static void jq_finish_locked(JqTask* t, s32 status)
 extern int32_t ps3_guest_memory_alloc(uint32_t, uint32_t, uint32_t*);
 extern int32_t ps3_guest_memory_free(uint32_t);
 
+/* Bounded directory of active immutable snapshots. Slots do not own a
+ * reference; a task or a temporary comparison pin must keep the image alive.
+ * Collisions only lose reuse, never invalidate an in-flight job. */
+#define JQ_IMAGE_SLOTS 64u
+struct JqImage {
+    u32 ea, size, refs, slot;
+    uint8_t bytes[];
+};
+static JqImage* s_jq_images[JQ_IMAGE_SLOTS];
+
+static int jq_share_images(void)
+{
+    static atomic_int cached;
+    int on = atomic_load_explicit(&cached, memory_order_relaxed);
+    if (!on) {
+        const char* e = getenv("SPURS_JQ_SHARE_IMAGES");
+        on = e && !strcmp(e, "1") ? 2 : 1;
+        atomic_store_explicit(&cached, on, memory_order_relaxed);
+    }
+    return on == 2;
+}
+static void jq_image_release(JqImage* image)
+{
+    if (!image) return;
+    jq_lock();
+    if (--image->refs) { jq_unlock(); return; }
+    if (s_jq_images[image->slot] == image) s_jq_images[image->slot] = NULL;
+    jq_unlock();
+    free(image);
+}
+static JqImage* jq_image_capture(u32 ea, u32 size)
+{
+    const u32 slot = ((ea >> 4) ^ (ea >> 16) ^ (size >> 4)) & (JQ_IMAGE_SLOTS - 1u);
+    jq_lock();
+    JqImage* old = s_jq_images[slot];
+    if (old && old->ea == ea && old->size == size && old->refs != UINT32_MAX)
+        ++old->refs;
+    else old = NULL;
+    jq_unlock();
+    /* Guest reads outside the queue lock (may fault); pin protects snapshot.
+     * The title must synchronize binary writes with submission, as for memcpy. */
+    if (old && !memcmp(old->bytes, vm_base + ea, size)) return old;
+    jq_image_release(old);
+    JqImage* image = (JqImage*)malloc(sizeof(*image) + (size_t)size);
+    if (!image) return NULL;
+    image->ea = ea; image->size = size; image->slot = slot; image->refs = 1;
+    memcpy(image->bytes, vm_base + ea, size);
+    jq_lock();
+    s_jq_images[slot] = image;
+    jq_unlock();
+    return image;
+}
+
 /* Optional bounded allocation recycling. The allocation is private until
  * jq_free_task, after its pending entry has retired and guest-owned copy has
  * been freed. The existing queue mutex protects the pool as well; allocation
@@ -296,7 +350,10 @@ static void jq_free_task(JqTask* t)
 {
     if (!t) return;
     if (t->owned_descriptor) ps3_guest_memory_free(t->owned_descriptor);
-    if (jq_recycle_enabled()) {
+    const int has_shared_image = t->image != NULL;
+    jq_image_release(t->image);
+    /* Shared-image tasks only allocate a header, never inline binary storage. */
+    if (!has_shared_image && jq_recycle_enabled()) {
         const unsigned c = jq_alloc_class(t->binary_size);
         jq_lock();
         if (!atomic_load_explicit(&s_queue_shutdown_requested, memory_order_acquire) &&
@@ -720,18 +777,24 @@ static JqTask* jq_prepare(u32 job_ea, u32 descriptor_size)
         binary_size > 0x40000u || ea64 > UINT32_MAX - binary_size)
         return NULL;
 
-    /* One allocation instead of a header allocation plus a binary allocation.
-     * Keep a private byte-for-byte snapshot for every in-flight job. No
-     * shared-image lifetime, guest-memory, or completion rules change. */
-    JqTask* t = jq_alloc_task(binary_size);
+    /* Keep private snapshots inline in the recyclable task allocation. Shared
+     * snapshots use an exact-size header and a pinned immutable image. */
+    const int share = jq_share_images();
+    JqTask* t = share ? (JqTask*)malloc(sizeof(*t)) : jq_alloc_task(binary_size);
     if (!t) return NULL;
     memset(t, 0, sizeof(*t));
     memcpy(t->descriptor, descriptor, descriptor_size);
-    t->binary = (uint8_t*)(t + 1);
     t->binary_size = binary_size;
     t->job_ea = job_ea;
     t->descriptor_size = descriptor_size;
-    memcpy(t->binary, vm_base + (u32)ea64, binary_size);
+    if (share) {
+        t->image = jq_image_capture((u32)ea64, binary_size);
+        if (!t->image) { free(t); return NULL; }
+        t->binary = t->image->bytes;
+    } else {
+        t->binary = (const uint8_t*)(t + 1);
+        memcpy((uint8_t*)t->binary, vm_base + (u32)ea64, binary_size);
+    }
     return t;
 }
 
