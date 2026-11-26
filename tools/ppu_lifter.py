@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 # We import the disassembler from the same directory.
 # ---------------------------------------------------------------------------
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from register_regions import PPU_PURE_GPR, PureGprLine, promote_register_regions
 
 try:
     from ppu_disasm import (Instruction, disassemble_bytes, detect_functions,
@@ -1198,6 +1199,7 @@ class PPULifter:
                         internal_targets.add(_c)
 
         emitted_labels: set[int] = set()
+        promote_gprs = os.environ.get("PS3RECOMP_PROMOTE_PPU_GPRS") == "1" and not self.insn_patches
         for insn in range_insns:
             # Label
             if insn.addr in internal_targets:
@@ -1210,7 +1212,10 @@ class PPULifter:
             else:
                 c_line = self._translate(insn, func)
             if c_line:
-                func.body_lines.append(f"    {c_line}")
+                emitted = f"    {c_line}"
+                if promote_gprs and patch is None and insn.mnemonic in PPU_PURE_GPR:
+                    emitted = PureGprLine(emitted, "ppu", insn.addr, insn.mnemonic)
+                func.body_lines.append(emitted)
 
         # An in-range branch target with no decoded instruction at its address
         # (a branch into a data / undecoded region inside a too-large function
@@ -4256,7 +4261,10 @@ class PPULifter:
                       f"extern int {g};", "#endif"]
         lines.append(f"void {weak}{func.name}(ppu_context* ctx) {{")
         lines.append("    PPU_MM_SNAP")
-        for bline in _fuse_cr(func.body_lines):
+        body = _fuse_cr(func.body_lines)
+        if os.environ.get("PS3RECOMP_PROMOTE_PPU_GPRS") == "1" and not self.insn_patches:
+            body = promote_register_regions(body, "ppu")
+        for bline in body:
             lines.append(f"    {bline}" if not bline.endswith(":") else bline)
 
         # If a function doesn't end with blr/b/bctr (a return or unconditional
