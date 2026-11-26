@@ -32,7 +32,16 @@ extern "C" {
  * exclusion semantics, now shared. MSVC uses a bounded polite spin loop;
  * POSIX spins briefly and then parks on a mutex (see below).
  * ===========================================================================*/
-#if defined(_MSC_VER)
+#if defined(_WIN32) && defined(PS3RECOMP_SPU_LOCKLINE_SRW)
+#include <windows.h>
+/* Keep exactly the same global exclusion and publication domain. The
+ * native lock can park a contended waiter and wake it on release rather
+ * than waiting for the next Sleep(1) interval. Compile-time selection
+ * guarantees acquisition and release always use the same implementation. */
+static SRWLOCK g_lockline_srw = SRWLOCK_INIT;
+void spu_lockline_lock(void) { AcquireSRWLockExclusive(&g_lockline_srw); }
+void spu_lockline_unlock(void) { ReleaseSRWLockExclusive(&g_lockline_srw); }
+#elif defined(_MSC_VER)
 #include <intrin.h>
 #include <windows.h>   /* SwitchToThread */
 static volatile long g_lockline = 0;
