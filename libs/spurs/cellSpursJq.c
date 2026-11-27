@@ -29,9 +29,9 @@
 #define JQ_WORKER_MAX 6
 #define CELL_SPURS_JQ_MAX_PORTS 64
 
+typedef struct JqImage JqImage;
 enum { JQ_FLAG_SYNC_JOB=1u, JQ_FLAG_EXCLUSIVE_JOB=2u, JQ_FLAG_NON_BLOCKING=4u };
 #define JQ_BARRIER_FLAGS (JQ_FLAG_SYNC_JOB | JQ_FLAG_EXCLUSIVE_JOB)
-
 typedef struct JqTask JqTask;
 struct JqTask {
     JqTask* next; /* global worker dispatch list */
@@ -43,7 +43,8 @@ struct JqTask {
     u32 owned_descriptor, flags, pending_index;
     uint64_t sequence;
     uint8_t descriptor[256];
-    uint8_t* binary;
+    const uint8_t* binary;
+    JqImage* image;
 };
 typedef struct {
     int in_use, accepting, copy_sync_active;
@@ -74,22 +75,45 @@ static uint64_t s_task_sequence;
 static JqTask* s_task_head;
 static JqTask* s_task_tail;
 static int s_pool_workers, s_pool_stopping;
+/* These counts are changed with s_jq_mutex held before/after each wait.
+ * Avoid adding two needless OS broadcasts to every completion. */
+static unsigned s_jq_completion_waiters, s_jq_worker_waiters, s_jq_producer_waiters;
 #ifdef _WIN32
 static SRWLOCK s_jq_mutex = SRWLOCK_INIT;
 static CONDITION_VARIABLE s_jq_cond = CONDITION_VARIABLE_INIT;
+static CONDITION_VARIABLE s_jq_worker_cond = CONDITION_VARIABLE_INIT;
+static CONDITION_VARIABLE s_jq_producer_cond = CONDITION_VARIABLE_INIT;
 static HANDLE s_jq_threads[JQ_WORKER_MAX];
 static void jq_lock(void) { AcquireSRWLockExclusive(&s_jq_mutex); }
 static void jq_unlock(void) { ReleaseSRWLockExclusive(&s_jq_mutex); }
-static void jq_notify(void) { WakeAllConditionVariable(&s_jq_cond); }
-static void jq_await(void) { SleepConditionVariableSRW(&s_jq_cond, &s_jq_mutex, INFINITE, 0); }
+static void jq_notify_workers(void) { if (s_jq_worker_waiters) WakeAllConditionVariable(&s_jq_worker_cond); }
+static void jq_notify_producers(void) { if (s_jq_producer_waiters) WakeAllConditionVariable(&s_jq_producer_cond); }
+static void jq_notify(void) {
+    if (s_jq_completion_waiters) WakeAllConditionVariable(&s_jq_cond);
+    jq_notify_workers();
+    jq_notify_producers();
+}
+static void jq_await(void) { ++s_jq_completion_waiters; SleepConditionVariableSRW(&s_jq_cond, &s_jq_mutex, INFINITE, 0); --s_jq_completion_waiters; }
+static void jq_await_worker(void) { ++s_jq_worker_waiters; SleepConditionVariableSRW(&s_jq_worker_cond, &s_jq_mutex, INFINITE, 0); --s_jq_worker_waiters; }
+static void jq_await_producer(void) { ++s_jq_producer_waiters; SleepConditionVariableSRW(&s_jq_producer_cond, &s_jq_mutex, INFINITE, 0); --s_jq_producer_waiters; }
 #else
 static pthread_mutex_t s_jq_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t s_jq_cond = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t s_jq_worker_cond = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t s_jq_producer_cond = PTHREAD_COND_INITIALIZER;
 static pthread_t s_jq_threads[JQ_WORKER_MAX];
 static void jq_lock(void) { pthread_mutex_lock(&s_jq_mutex); }
 static void jq_unlock(void) { pthread_mutex_unlock(&s_jq_mutex); }
-static void jq_notify(void) { pthread_cond_broadcast(&s_jq_cond); }
-static void jq_await(void) { pthread_cond_wait(&s_jq_cond, &s_jq_mutex); }
+static void jq_notify_workers(void) { if (s_jq_worker_waiters) pthread_cond_broadcast(&s_jq_worker_cond); }
+static void jq_notify_producers(void) { if (s_jq_producer_waiters) pthread_cond_broadcast(&s_jq_producer_cond); }
+static void jq_notify(void) {
+    if (s_jq_completion_waiters) pthread_cond_broadcast(&s_jq_cond);
+    jq_notify_workers();
+    jq_notify_producers();
+}
+static void jq_await(void) { ++s_jq_completion_waiters; pthread_cond_wait(&s_jq_cond, &s_jq_mutex); --s_jq_completion_waiters; }
+static void jq_await_worker(void) { ++s_jq_worker_waiters; pthread_cond_wait(&s_jq_worker_cond, &s_jq_mutex); --s_jq_worker_waiters; }
+static void jq_await_producer(void) { ++s_jq_producer_waiters; pthread_cond_wait(&s_jq_producer_cond, &s_jq_mutex); --s_jq_producer_waiters; }
 #endif
 
 static void jq_trace_port2(const char* op, u32 port_ea, u32 queue_ea,
@@ -230,12 +254,130 @@ static void jq_finish_locked(JqTask* t, s32 status)
 extern int32_t ps3_guest_memory_alloc(uint32_t, uint32_t, uint32_t*);
 extern int32_t ps3_guest_memory_free(uint32_t);
 
+/* Bounded directory of active immutable snapshots. Slots do not own a
+ * reference; a task or a temporary comparison pin must keep the image alive.
+ * Collisions only lose reuse, never invalidate an in-flight job. */
+#define JQ_IMAGE_SLOTS 64u
+struct JqImage {
+    u32 ea, size, refs, slot;
+    uint8_t bytes[];
+};
+static JqImage* s_jq_images[JQ_IMAGE_SLOTS];
+
+static int jq_share_images(void)
+{
+    static atomic_int cached;
+    int on = atomic_load_explicit(&cached, memory_order_relaxed);
+    if (!on) {
+        const char* e = getenv("SPURS_JQ_SHARE_IMAGES");
+        on = e && !strcmp(e, "1") ? 2 : 1;
+        atomic_store_explicit(&cached, on, memory_order_relaxed);
+    }
+    return on == 2;
+}
+static void jq_image_release(JqImage* image)
+{
+    if (!image) return;
+    jq_lock();
+    if (--image->refs) { jq_unlock(); return; }
+    if (s_jq_images[image->slot] == image) s_jq_images[image->slot] = NULL;
+    jq_unlock();
+    free(image);
+}
+static JqImage* jq_image_capture(u32 ea, u32 size)
+{
+    const u32 slot = ((ea >> 4) ^ (ea >> 16) ^ (size >> 4)) & (JQ_IMAGE_SLOTS - 1u);
+    jq_lock();
+    JqImage* old = s_jq_images[slot];
+    if (old && old->ea == ea && old->size == size && old->refs != UINT32_MAX)
+        ++old->refs;
+    else old = NULL;
+    jq_unlock();
+    /* Guest reads outside the queue lock (may fault); pin protects snapshot.
+     * The title must synchronize binary writes with submission, as for memcpy. */
+    if (old && !memcmp(old->bytes, vm_base + ea, size)) return old;
+    jq_image_release(old);
+    JqImage* image = (JqImage*)malloc(sizeof(*image) + (size_t)size);
+    if (!image) return NULL;
+    image->ea = ea; image->size = size; image->slot = slot; image->refs = 1;
+    memcpy(image->bytes, vm_base + ea, size);
+    jq_lock();
+    s_jq_images[slot] = image;
+    jq_unlock();
+    return image;
+}
+
+/* Optional bounded allocation recycling. The allocation is private until
+ * jq_free_task, after its pending entry has retired and guest-owned copy has
+ * been freed. The existing queue mutex protects the pool as well; allocation
+ * and disposal callers run outside that lock. */
+#define JQ_ALLOC_CLASSES 11u /* 256 B through 256 KiB */
+#define JQ_ALLOC_PER_CLASS 2u
+static JqTask* s_alloc_free[JQ_ALLOC_CLASSES];
+static unsigned s_alloc_count[JQ_ALLOC_CLASSES];
+
+static int jq_recycle_enabled(void)
+{
+    static atomic_int cached;
+    int value = atomic_load_explicit(&cached, memory_order_relaxed);
+    if (!value) {
+        const char* e = getenv("SPURS_JQ_ALLOC_RECYCLE");
+        value = e && !strcmp(e, "1") ? 2 : 1;
+        atomic_store_explicit(&cached, value, memory_order_relaxed);
+    }
+    return value == 2;
+}
+static unsigned jq_alloc_class(u32 bytes)
+{
+    unsigned c = 0;
+    while (bytes > (256u << c)) ++c; /* caller validated 1..0x40000 */
+    return c;
+}
+static JqTask* jq_alloc_task(u32 bytes)
+{
+    if (!jq_recycle_enabled()) return (JqTask*)malloc(sizeof(JqTask) + bytes);
+    const unsigned c = jq_alloc_class(bytes);
+    jq_lock();
+    JqTask* t = s_alloc_free[c];
+    if (t) {
+        s_alloc_free[c] = t->next;
+        --s_alloc_count[c];
+    }
+    jq_unlock();
+    return t ? t : (JqTask*)malloc(sizeof(JqTask) + (256u << c));
+}
 static void jq_free_task(JqTask* t)
 {
     if (!t) return;
     if (t->owned_descriptor) ps3_guest_memory_free(t->owned_descriptor);
-    /* The immutable binary snapshot is the tail of this allocation. */
+    const int has_shared_image = t->image != NULL;
+    jq_image_release(t->image);
+    /* Shared-image tasks only allocate a header, never inline binary storage. */
+    if (!has_shared_image && jq_recycle_enabled()) {
+        const unsigned c = jq_alloc_class(t->binary_size);
+        jq_lock();
+        if (!atomic_load_explicit(&s_queue_shutdown_requested, memory_order_acquire) &&
+            s_alloc_count[c] < JQ_ALLOC_PER_CLASS) {
+            t->next = s_alloc_free[c];
+            s_alloc_free[c] = t;
+            ++s_alloc_count[c];
+            jq_unlock();
+            return;
+        }
+        jq_unlock();
+    }
     free(t);
+}
+static void jq_release_recycled_locked(void)
+{
+    for (unsigned c = 0; c < JQ_ALLOC_CLASSES; ++c) {
+        while (s_alloc_free[c]) {
+            JqTask* t = s_alloc_free[c];
+            s_alloc_free[c] = t->next;
+            free(t);
+        }
+        s_alloc_count[c] = 0;
+    }
 }
 static s32 jq_execute(JqTask* t)
 {
@@ -283,7 +425,7 @@ static void* jq_worker_main(void* arg)
     for (;;) {
         jq_lock();
         JqTask* t=NULL;
-        while (!(t=jq_take_runnable()) && !s_pool_stopping) jq_await();
+        while (!(t=jq_take_runnable()) && !s_pool_stopping) jq_await_worker();
         if (!t) { jq_unlock(); break; }
         jq_unlock();
         s32 result = jq_execute(t);
@@ -536,6 +678,7 @@ s32 cellSpursDestroyJobQueue(CellSpursJobQueue* jq)
         jq_unlock(); return (s32)CELL_SPURS_JQ_ERROR_INVALID_ARGUMENT;
     }
     q->accepting = 0;
+    jq_notify_producers();
     while (q->jobCount) jq_await();
     q->in_use = 0;
     for (int i = 0; i < CELL_SPURS_JQ_MAX_PORTS; ++i)
@@ -594,6 +737,7 @@ s32 cellSpursShutdownJobQueue(void)
     jq_lock();
     s_pool_workers = 0;
     s_pool_stopping = 0;
+    jq_release_recycled_locked();
     const JqRejectProfile rejected = s_jq_reject_profile;
     const int report_rejected = s_jq_reject_profile_enabled == 1;
     memset(&s_jq_reject_profile, 0, sizeof(s_jq_reject_profile));
@@ -633,18 +777,24 @@ static JqTask* jq_prepare(u32 job_ea, u32 descriptor_size)
         binary_size > 0x40000u || ea64 > UINT32_MAX - binary_size)
         return NULL;
 
-    /* One allocation instead of a header allocation plus a binary allocation.
-     * Keep a private byte-for-byte snapshot for every in-flight job. No
-     * shared-image lifetime, guest-memory, or completion rules change. */
-    JqTask* t = (JqTask*)malloc(sizeof(*t) + (size_t)binary_size);
+    /* Keep private snapshots inline in the recyclable task allocation. Shared
+     * snapshots use an exact-size header and a pinned immutable image. */
+    const int share = jq_share_images();
+    JqTask* t = share ? (JqTask*)malloc(sizeof(*t)) : jq_alloc_task(binary_size);
     if (!t) return NULL;
     memset(t, 0, sizeof(*t));
     memcpy(t->descriptor, descriptor, descriptor_size);
-    t->binary = (uint8_t*)(t + 1);
     t->binary_size = binary_size;
     t->job_ea = job_ea;
     t->descriptor_size = descriptor_size;
-    memcpy(t->binary, vm_base + (u32)ea64, binary_size);
+    if (share) {
+        t->image = jq_image_capture((u32)ea64, binary_size);
+        if (!t->image) { free(t); return NULL; }
+        t->binary = t->image->bytes;
+    } else {
+        t->binary = (const uint8_t*)(t + 1);
+        memcpy((uint8_t*)t->binary, vm_base + (u32)ea64, binary_size);
+    }
     return t;
 }
 
@@ -690,7 +840,7 @@ static s32 jq_push_slot_mode_flags(u32 slot, u32 job_ea, u32 jobSize,
             jq_note_rejected_locked(t, flags, result);
             jq_unlock();jq_free_task(t);return result;
         }
-        jq_await();
+        jq_await_producer();
     }
     if (!q->in_use || !q->accepting ||
         atomic_load_explicit(&s_queue_shutdown_requested, memory_order_acquire)) {
@@ -719,7 +869,9 @@ static s32 jq_push_slot_mode_flags(u32 slot, u32 job_ea, u32 jobSize,
         if (s_task_tail) s_task_tail->next = t;
         else s_task_head = t;
         s_task_tail = t;
-        jq_notify();
+        /* Only workers gain runnable work on enqueue. Completion and
+         * capacity predicates cannot become true until a job finishes. */
+        jq_notify_workers();
         jq_unlock();
         return CELL_OK;
     }
@@ -733,7 +885,7 @@ static s32 jq_push_slot_mode_flags(u32 slot, u32 job_ea, u32 jobSize,
     s32 result = jq_execute(t);
     jq_lock();
     jq_finish_locked(t, result);
-    q->copy_sync_active = 0; jq_notify();
+    q->copy_sync_active = 0; jq_notify_producers();
     jq_unlock();
     jq_free_task(t);
     return result;

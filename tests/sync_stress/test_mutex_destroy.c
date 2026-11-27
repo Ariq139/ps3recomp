@@ -97,6 +97,7 @@ int main(void) {
     /* 5. sys_cond_wait's re-lock counts as a waiter. */
     CHECK(call(sys_cond_create,&c,0x204,mid,0)==CELL_OK);
     cid=be_read(0x204);
+    CHECK(call(sys_mutex_destroy,&c,mid,0,0)==(int32_t)CELL_EBUSY);
     CHECK(call(sys_mutex_lock,&c,mid,0,0)==CELL_OK);
     h=CreateThread(NULL,0,signaler,NULL,0,NULL);
     CHECK(call(sys_cond_wait,&c,cid,0,0)==CELL_OK);

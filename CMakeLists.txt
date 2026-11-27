@@ -21,6 +21,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # ---------------------------------------------------------------------------
 option(PS3RECOMP_BUILD_TESTS "Build unit tests" OFF)
 option(PS3RECOMP_SPU_LOCKLINE_SRW "Use a native parking lock for Windows SPU coherency" OFF)
+option(PS3RECOMP_SPU_LOOKUP_CACHE_HASH_MIX
+    "Mix full SPU lookup keys before selecting cache buckets (experimental)" OFF)
 
 # cellFiber switches host contexts with Windows fibers on Windows and the
 # ucontext routines everywhere else. Apple arm64 has a third, opt-in option: a
@@ -161,6 +163,10 @@ if(PS3RECOMP_SPU_LOCKLINE_SRW)
         message(FATAL_ERROR "PS3RECOMP_SPU_LOCKLINE_SRW requires Windows")
     endif()
     target_compile_definitions(ps3recomp_runtime PRIVATE PS3RECOMP_SPU_LOCKLINE_SRW=1)
+endif()
+if(PS3RECOMP_SPU_LOOKUP_CACHE_HASH_MIX)
+    target_compile_definitions(ps3recomp_runtime PRIVATE
+        PS3RECOMP_SPU_LOOKUP_CACHE_HASH_MIX=1)
 endif()
 # cellFiber picks its host context path on this; nothing else reads it.
 if(PS3RECOMP_FIBER_BACKEND STREQUAL "aarch64")
@@ -521,6 +527,18 @@ if(PS3RECOMP_BUILD_TESTS)
         target_compile_definitions(test_spu_lockline_srw PRIVATE PS3RECOMP_SPU_LOCKLINE_SRW=1)
         add_test(NAME spu_lockline_srw COMMAND test_spu_lockline_srw)
         set_tests_properties(spu_lockline_srw PROPERTIES TIMEOUT 40)
+
+        # Exercise the SPURS job preparation paths in isolated processes so
+        # their process-cached opt-in flags cannot leak between fixtures.
+        add_executable(test_spurs_jq_copy_async libs/spurs/tests/test_jq_copy_async.c)
+        target_include_directories(test_spurs_jq_copy_async PRIVATE
+            include libs/spurs runtime/ppu runtime/spu)
+        add_test(NAME spurs_jq_copy_async COMMAND test_spurs_jq_copy_async --async)
+        add_test(NAME spurs_jq_shared_images COMMAND test_spurs_jq_copy_async --share)
+        add_test(NAME spurs_jq_task_recycling COMMAND test_spurs_jq_copy_async --recycle)
+        add_test(NAME spurs_jq_sync_copy COMMAND test_spurs_jq_copy_async --sync)
+        set_tests_properties(spurs_jq_copy_async spurs_jq_shared_images
+            spurs_jq_task_recycling spurs_jq_sync_copy PROPERTIES TIMEOUT 30)
     endif()
     # sync_stress is written directly against the Win32 threading API
     # (WaitForMultipleObjects, joinable HANDLEs, Interlocked*, CRITICAL_SECTION).
@@ -643,12 +661,88 @@ if(PS3RECOMP_BUILD_TESTS)
         set_tests_properties(spu_lockline_wait PROPERTIES TIMEOUT 15)
 
     endif()
+    add_executable(test_spu_coh_bitmap_range
+        runtime/spu/tests/test_spu_coh_bitmap_range.c
+        runtime/spu/tests/test_spu_coh_bitmap_concurrent.cpp)
+    if(NOT WIN32)
+        target_link_libraries(test_spu_coh_bitmap_range PRIVATE Threads::Threads)
+    endif()
+    if(MSVC)
+        target_compile_options(test_spu_coh_bitmap_range PRIVATE /UNDEBUG)
+    else()
+        target_compile_options(test_spu_coh_bitmap_range PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME spu_coh_bitmap_range COMMAND test_spu_coh_bitmap_range)
+    set_tests_properties(spu_coh_bitmap_range PROPERTIES TIMEOUT 60)
+
+    # The private SPU job initializer skips clearing LS only when the caller
+    # immediately supplies the full image. Compare every context byte against
+    # ordinary initialization at the prefix-size boundary cases.
+    add_executable(test_spu_context_job_prefix
+        runtime/spu/tests/test_spu_context_job_prefix.c)
+    target_include_directories(test_spu_context_job_prefix PRIVATE include runtime/spu)
+    if(MSVC)
+        target_compile_options(test_spu_context_job_prefix PRIVATE /UNDEBUG)
+    else()
+        target_compile_options(test_spu_context_job_prefix PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME spu_context_job_prefix COMMAND test_spu_context_job_prefix)
+    set_tests_properties(spu_context_job_prefix PROPERTIES TIMEOUT 30)
+
     add_executable(test_rsx_present_policy tests/test_rsx_present_policy.c)
     target_include_directories(test_rsx_present_policy PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/libs/video")
     add_test(NAME rsx_present_policy COMMAND test_rsx_present_policy)
 
+    # Exact-byte reuse for the D3D12 vertex-constant snapshot cache. This is
+    # a pure host-side test and does not require a GPU or the full backend.
+    add_executable(test_constant_snapshot_cache
+        libs/video/tests/test_constant_snapshot_cache.c)
+    target_include_directories(test_constant_snapshot_cache PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/libs/video")
+    if(MSVC)
+        target_compile_options(test_constant_snapshot_cache PRIVATE /UNDEBUG)
+    else()
+        target_compile_options(test_constant_snapshot_cache PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME rsx_constant_snapshot_cache
+        COMMAND test_constant_snapshot_cache)
+
+    # Texture decoding has exact-byte host tests: exercise the active SIMD
+    # dispatch, its forced-scalar fallback, and the standalone SSE2 helpers.
+    add_executable(test_rsx_texture_layout
+        libs/video/tests/test_texture_layout.c
+        libs/video/rsx_texture_layout.c)
+    target_include_directories(test_rsx_texture_layout PRIVATE include libs/video)
+    add_test(NAME rsx_texture_layout COMMAND test_rsx_texture_layout)
+
+    add_executable(test_rsx_texture_layout_scalar
+        libs/video/tests/test_texture_layout.c
+        libs/video/rsx_texture_layout.c)
+    target_include_directories(test_rsx_texture_layout_scalar PRIVATE include libs/video)
+    target_compile_definitions(test_rsx_texture_layout_scalar PRIVATE
+        RSX_TEXTURE_FORCE_SCALAR=1)
+    add_test(NAME rsx_texture_layout_scalar COMMAND test_rsx_texture_layout_scalar)
+
+    add_executable(test_rsx_texture_simd
+        libs/video/tests/test_texture_simd.c)
+    target_include_directories(test_rsx_texture_simd PRIVATE libs/video)
+    add_test(NAME rsx_texture_simd COMMAND test_rsx_texture_simd)
+    set_tests_properties(rsx_texture_simd PROPERTIES SKIP_RETURN_CODE 77)
+
     if(WIN32)
+        add_executable(test_d3d12_srv_cache
+            libs/video/tests/test_d3d12_srv_cache.c)
+        target_include_directories(test_d3d12_srv_cache PRIVATE libs/video)
+        target_compile_definitions(test_d3d12_srv_cache PRIVATE _CRT_SECURE_NO_WARNINGS)
+        if(MSVC)
+            target_compile_options(test_d3d12_srv_cache PRIVATE /UNDEBUG)
+        else()
+            target_compile_options(test_d3d12_srv_cache PRIVATE -UNDEBUG)
+        endif()
+        add_test(NAME d3d12_srv_cache COMMAND test_d3d12_srv_cache)
+        set_tests_properties(d3d12_srv_cache PROPERTIES TIMEOUT 30)
+
         add_executable(test_vertex_raw_gpu
             libs/video/tests/test_vertex_raw_gpu.c
             libs/video/rsx_vertex_fetch.c

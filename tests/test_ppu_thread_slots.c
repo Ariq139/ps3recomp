@@ -54,11 +54,24 @@ static void settle(void)
     }
 }
 
+static void fixture_stack_arena(void)
+{
+#ifdef _WIN32
+    vm_base = (uint8_t*)VirtualAlloc(NULL, 16u << 20, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+#else
+    void* p = mmap(NULL, 16u << 20, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    vm_base = p == MAP_FAILED ? NULL : (uint8_t*)p;
+#endif
+    assert(vm_base);
+    ppu_vm_size = 16u << 20;
+    g_vm_stack_alloc.next_addr = 0x10000u;
+    g_vm_stack_alloc.region_end = 8u << 20;
+    g_vm_stack_alloc.retired_count = 0;
+}
+
 int main(void)
 {
-    vm_base = calloc(1, 0x10000); assert(vm_base);
-    g_vm_stack_alloc.next_addr = 0x10000000u;   /* the guest stack region the threads bump-allocate from */
-    g_vm_stack_alloc.region_end = 0xA0000000u;
+    fixture_stack_arena();
     g_ppu_thread_entry_trampoline = guest_entry;
     ppu_thread_register_main();
 
@@ -103,6 +116,7 @@ int main(void)
         settle();
     }
     EXPECT_EQ(ok, 3 * PPU_THREAD_MAX);
+    EXPECT_EQ(g_vm_stack_alloc.next_addr < 2u * 1024u * 1024u, 1); // reuse rather than bump exhaustion
     for (int i = 0; i < 1000 && used_slots(); i++) { struct timespec ts = { 0, 1000000 }; nanosleep(&ts, NULL); }
     EXPECT_EQ(used_slots(), 0);
 
@@ -129,7 +143,7 @@ int main(void)
         EXPECT_EQ(create(1, NULL), 0);
     }
 
-    free(vm_base);
+    // The process owns the fixture VM mapping until exit.
     if (g_fails) { fprintf(stderr, "%d check(s) failed\n", g_fails); return 1; }
     puts("PASS: non-joinable PPU threads free their slot when they end; joinable ones keep it until joined");
     return 0;

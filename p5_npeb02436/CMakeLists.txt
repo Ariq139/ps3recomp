@@ -309,6 +309,56 @@ if(P5_SPU_AVX2)
     endforeach()
 endif()
 
+# Release loop selection is deliberately explicit: beta addresses and
+# fingerprints are not evidence for the retail build. Capture first, then
+# NATIVE requires a successful replay of supplied release captures.
+set(P5_RELEASE_SPU_LOOP_MODE "OFF" CACHE STRING "Release SPU loop: OFF, CAPTURE, NATIVE")
+set_property(CACHE P5_RELEASE_SPU_LOOP_MODE PROPERTY STRINGS OFF CAPTURE NATIVE)
+set(P5_RELEASE_SPU_LOOP_SOURCE "" CACHE FILEPATH "Exact release lifted SPU source (under SPU_DIR)")
+set(P5_RELEASE_SPU_LOOP_SHA256 "" CACHE STRING "SHA256 of the exact lifted source")
+set(P5_RELEASE_SPU_LOOP_FUNCTION "" CACHE STRING "Generated function name")
+set(P5_RELEASE_SPU_LOOP_START "" CACHE STRING "Loop start PC")
+set(P5_RELEASE_SPU_LOOP_ENTRY "" CACHE STRING "Loop entry PC")
+set(P5_RELEASE_SPU_LOOP_EXIT "" CACHE STRING "Loop exit PC")
+set(P5_RELEASE_SPU_LOOP_IMAGE "" CACHE STRING "Runtime image ID for capture verification")
+set(P5_RELEASE_SPU_LOOP_CAPTURES "" CACHE STRING "Semicolon-separated real capture files")
+set(P5_RELEASE_SPU_REPLAY_COMPILER "" CACHE FILEPATH "Optional clang/cc replay compiler")
+string(TOUPPER "${P5_RELEASE_SPU_LOOP_MODE}" release_loop_mode)
+if(NOT release_loop_mode MATCHES "^(OFF|CAPTURE|NATIVE)$")
+    message(FATAL_ERROR "Invalid P5_RELEASE_SPU_LOOP_MODE")
+endif()
+if(NOT release_loop_mode STREQUAL "OFF")
+    if(NOT PORT_ENABLE_SPU OR NOT P5_RELEASE_SPU_LOOP_SOURCE OR
+       NOT P5_RELEASE_SPU_LOOP_SHA256 OR NOT P5_RELEASE_SPU_LOOP_FUNCTION OR
+       "${P5_RELEASE_SPU_LOOP_START}" STREQUAL "" OR
+       "${P5_RELEASE_SPU_LOOP_ENTRY}" STREQUAL "" OR
+       "${P5_RELEASE_SPU_LOOP_EXIT}" STREQUAL "")
+        message(FATAL_ERROR "Release loop needs exact lifted source, SHA256, function and PCs")
+    endif()
+    get_filename_component(release_source "${P5_RELEASE_SPU_LOOP_SOURCE}" ABSOLUTE BASE_DIR "${SPU_DIR}")
+    list(FIND SPU_LIFTED "${release_source}" release_source_index)
+    if(release_source_index EQUAL -1)
+        message(FATAL_ERROR "Selected release loop source is not a lifted title SPU TU")
+    endif()
+    file(SHA256 "${release_source}" release_digest)
+    string(TOLOWER "${P5_RELEASE_SPU_LOOP_SHA256}" release_expected)
+    if(NOT release_digest STREQUAL release_expected)
+        message(FATAL_ERROR "Release SPU source SHA256 mismatch")
+    endif()
+    set(replay_flags "")
+    if(P5_SPU_AVX2)
+        list(APPEND replay_flags "-mavx2")
+    endif()
+    include("${PS3RECOMP_DIR}/cmake/PS3RecompSPUKernel.cmake")
+    ps3recomp_outline_spu_loop(${PROJECT_NAME} "${release_source}"
+        "${P5_RELEASE_SPU_LOOP_FUNCTION}" "${P5_RELEASE_SPU_LOOP_START}"
+        "${P5_RELEASE_SPU_LOOP_ENTRY}" "${P5_RELEASE_SPU_LOOP_EXIT}"
+        "${release_loop_mode}" release_transformed
+        SOURCE_SHA "${release_expected}" IMAGE "${P5_RELEASE_SPU_LOOP_IMAGE}"
+        COMPILER "${P5_RELEASE_SPU_REPLAY_COMPILER}"
+        CAPTURES ${P5_RELEASE_SPU_LOOP_CAPTURES} CFLAGS ${replay_flags})
+endif()
+
 target_include_directories(${PROJECT_NAME} PRIVATE
     "${RECOMP_DIR}"                            # the generated ppu_recomp.h
     "${PS3RECOMP_DIR}/include"
