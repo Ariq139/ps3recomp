@@ -404,8 +404,10 @@ extern "C" void ps3_hle_call(uint32_t nid, ppu_context* ctx)
                       unsigned t = (unsigned)c->thread_id;
                       if (t < PS3_HLE_INFLIGHT_MAX) g_hle_inflight[t] = nullptr;
                       if (ft0) { const uint64_t t1 = ps3_ft_now();
-                                 if (t1 - ft0 >= ps3_ft_min_ns())
-                                     ps3_ft_span(PS3_FT_HLE, t, nid, lr, ft0, t1); } }
+                                 if (t1 - ft0 >= ps3_ft_min_ns()) {
+                                     ps3_ft_span(PS3_FT_HLE, t, nid, lr, ft0, t1);
+                                     ps3_ft_span(PS3_FT_HLE_HOST, t, ps3_ft_host_tid(), nid, ft0, t1);
+                                 } } }
     } _tg{ ctx, ctx->gpr[2], ctx->gpr[1], PS3_FT_ON() ? ps3_ft_now() : 0, nid, (uint32_t)ctx->lr };
     /* Deliver any pending vblank/flip tick on THIS (guest) thread, serialized with
      * guest execution -- the vblank ticker only marks ticks pending; the handlers

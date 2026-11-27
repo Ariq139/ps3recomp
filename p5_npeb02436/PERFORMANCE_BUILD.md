@@ -1,7 +1,24 @@
-# Persona 5: opt-in host compiler optimization
+# Persona 5: host optimization build notes
 
-The default Release configuration is unchanged. These options are independent
-of P5_SPU_AVX2 and the generated-source directory. Record the exact compiler,
+The retail target writes `Persona5.exe`. The Feb 26, 2016 prototype target
+writes `xrd664.exe` and uses `XRD664` as its default window title. Its guest
+PS3 title ID remains `TEST00000`.
+
+The P5 runners enable the reviewed SPURS shared-image path and D3D12 sampler
+and resident-cache indexes by default. Explicit environment values still win,
+including `0`. The live-draw cache flags default to `1`, but only take effect
+when the optional `RSX_LIVE_DRAW` renderer is explicitly enabled; the P5 helper
+does not enable that renderer. SSE2 texture decoding is selected automatically
+on x64. IPO and PGO remain opt-in, independent of `P5_SPU_AVX2` and the
+generated-source directory.
+
+`P5_SPU_AVX2` remains off by default so a portable build runs on hosts without
+AVX2. Enable it only for an AVX2-capable CPU, for example:
+
+    cmake -S p5_npeb02436 -B p5_npeb02436/build -DP5_SPU_AVX2=ON
+
+The release-specific native SPU loop is also left off until its exact retail
+source and real capture replay are validated. Record the exact compiler,
 linker, source/lift hashes and configuration with benchmark results.
 
 ## IPO

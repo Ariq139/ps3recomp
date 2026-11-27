@@ -131,12 +131,12 @@ int main(int argc,char** argv)
     }
 #ifdef _WIN32
     s_ref_qhead=s_ref_qtail=0;s_ref_last_pub=0;
-    const long long before=g_gcm_ref_pub_count;
+    const long long before=gcm_ref_pub_count_snapshot();
     HANDLE threads[2]={CreateThread(NULL,0,producer,NULL,0,NULL),CreateThread(NULL,0,consumer,NULL,0,NULL)};
     assert(threads[0]&&threads[1]);
     assert(WaitForMultipleObjects(2,threads,TRUE,10000)==WAIT_OBJECT_0);
     CloseHandle(threads[0]);CloseHandle(threads[1]);
-    assert(s_ref_qhead==s_ref_qtail && g_gcm_ref_pub_count-before==2000);
+    assert(s_ref_qhead==s_ref_qtail && gcm_ref_pub_count_snapshot()-before==2000);
 #endif
     free(vm_base);
     puts("GCM ordering: bindings, rebinds, acquire/resume, shared pacing, queue overflow, wrap and concurrent publication passed");

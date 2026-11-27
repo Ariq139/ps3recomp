@@ -11,6 +11,7 @@
 #include "../../runtime/ppu/ppu_memory.h"   /* GUEST_PTR, vm_write*: guest EA -> host pointer */
 #include "../../runtime/spu/spu_workload.h"
 #include "../system/sysPrxForUser.h"
+#include "ps3emu/ps3_ftrace.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -75,6 +76,9 @@ static uint64_t s_task_sequence;
 static JqTask* s_task_head;
 static JqTask* s_task_tail;
 static int s_pool_workers, s_pool_stopping;
+/* Worker 0 and synchronous fallbacks both expose logical SPU 0 to jobs.
+ * Protect that identity across queues, including allocation-failure fallback. */
+static int s_jq_spu0_busy;
 /* These counts are changed with s_jq_mutex held before/after each wait.
  * Avoid adding two needless OS broadcasts to every completion. */
 static unsigned s_jq_completion_waiters, s_jq_worker_waiters, s_jq_producer_waiters;
@@ -136,15 +140,17 @@ static int jq_requested_workers(void)
 {
     /* Opt out with 0; 1 is an asynchronous PPU/offload lane. Multiple lanes
      * may expose other titles' non-thread-safe SPU globals: opt in deliberately. */
-    static int cached = -1;
-    if (cached < 0) {
+    static atomic_int cached = ATOMIC_VAR_INIT(-1);
+    int value = atomic_load_explicit(&cached, memory_order_acquire);
+    if (value < 0) {
         const char* e = getenv("SPURS_JQ_WORKERS");
         int n = e ? atoi(e) : 1;
         if (n < 0) n = 0;
         if (n > JQ_WORKER_MAX) n = JQ_WORKER_MAX;
-        cached = n;
+        atomic_store_explicit(&cached, n, memory_order_release);
+        value = n;
     }
-    return cached;
+    return value;
 }
 static s32 jq_status_for_id(const JqState* q, u32 id)
 {
@@ -241,6 +247,9 @@ static void jq_finish_locked(JqTask* t, s32 status)
 {
     JqState* q = &s_queues[t->queue_slot];
     jq_pending_remove(q, t);
+    if (PS3_FT_ON()) { const uint64_t now = ps3_ft_now();
+        ps3_ft_span(PS3_FT_JQ_COMPLETE, t->queue_slot, t->id,
+                    (u32)status, now, now); }
     q->completedIds[q->completedHead] = t->id;
     q->completionCodes[q->completedHead] = status;
     q->completedHead = (q->completedHead + 1u) % CELL_SPURS_JQ_MAX_JOBS;
@@ -384,10 +393,14 @@ static s32 jq_execute(JqTask* t)
     /* The generated SPU code gets a fresh local store. Descriptor/binary reads
      * performed by the runner are from immutable copies; DMA payload EAs remain
      * guest-owned and must remain valid until completion. */
-    return spu_workload_dispatch_job_snapshot(t->binary, t->binary_size,
+    const uint64_t ft0 = PS3_FT_ON() ? ps3_ft_now() : 0;
+    s32 rc = spu_workload_dispatch_job_snapshot(t->binary, t->binary_size,
                                                t->job_ea, t->descriptor_size,
                                                t->descriptor)
         ? CELL_OK : (s32)CELL_SPURS_JQ_ERROR_JOB_NOT_FOUND;
+    if (ft0) ps3_ft_span(PS3_FT_JQ_EXEC, ps3_ft_host_tid(), t->queue_slot,
+                         t->id, ft0, ps3_ft_now());
+    return rc;
 }
 static int jq_task_runnable(const JqTask* task)
 {
@@ -425,11 +438,14 @@ static void* jq_worker_main(void* arg)
     for (;;) {
         jq_lock();
         JqTask* t=NULL;
-        while (!(t=jq_take_runnable()) && !s_pool_stopping) jq_await_worker();
+        while (((worker_no == 0 && s_jq_spu0_busy) || !(t=jq_take_runnable())) &&
+               !s_pool_stopping) jq_await_worker();
         if (!t) { jq_unlock(); break; }
+        if (worker_no == 0) s_jq_spu0_busy = 1;
         jq_unlock();
         s32 result = jq_execute(t);
         jq_lock();
+        if (worker_no == 0) s_jq_spu0_busy = 0;
         jq_finish_locked(t, result);
         jq_unlock();
         jq_free_task(t);
@@ -481,11 +497,20 @@ static void jq_wait_for_tag_mask(u32 slot, u32 mask)
     if (slot >= CELL_SPURS_JQ_MAX_QUEUES || !mask) return;
     uint64_t target[32] = {0};
     jq_lock();
+    const uint64_t ft0 = PS3_FT_ON() ? ps3_ft_now() : 0;
+    const uint32_t host_tid = ft0 ? ps3_ft_host_tid() : 0;
     for (u32 tag = 0; tag < 32; ++tag)
-        if (mask & (1u << tag))
+        if (mask & (1u << tag)) {
             target[tag] = atomic_load_explicit(&s_tag_submitted[slot][tag],
                                                  memory_order_acquire);
+            if (ft0 && target[tag]) {
+                const uint64_t now = ps3_ft_now();
+                ps3_ft_span(PS3_FT_JQ_TARGET, host_tid, slot * 32u + tag,
+                            (u32)target[tag], now, now);
+            }
+        }
     while (jq_pending_tag_before(slot, mask, target)) jq_await();
+    if (ft0) ps3_ft_span(PS3_FT_JQ_SYNC, host_tid, slot, mask, ft0, ps3_ft_now());
     jq_unlock();
 }
 static void jq_wait_for_queue_dispatches(u32 slot)
@@ -803,21 +828,27 @@ static s32 jq_push_slot_mode_flags(u32 slot, u32 job_ea, u32 jobSize,
 {
     if (slot >= CELL_SPURS_JQ_MAX_QUEUES || tag >= 32u || (flags & ~7u))
         return (s32)CELL_SPURS_JQ_ERROR_INVALID_ARGUMENT;
-    static int order_trace=-1;
-    if(order_trace<0)order_trace=getenv("SPURS_JQ_ORDER_TRACE")!=NULL;
-    if(order_trace) {
+    static atomic_int order_trace = ATOMIC_VAR_INIT(-1);
+    int trace = atomic_load_explicit(&order_trace, memory_order_acquire);
+    if (trace < 0) {
+        trace = getenv("SPURS_JQ_ORDER_TRACE") != NULL;
+        atomic_store_explicit(&order_trace, trace, memory_order_release);
+    }
+    if(trace) {
         static atomic_uint records;
         if(atomic_fetch_add_explicit(&records,1,memory_order_relaxed)<32)
             fprintf(stderr,"[jq-order] queue=%u tag=%u flags=%u copy=%d job=%08X\n",slot,tag,flags,copy_push,job_ea);
     }
     JqTask* t = jq_prepare(job_ea, jobSize);
     if (!t) return (s32)CELL_SPURS_JQ_ERROR_INVALID_ARGUMENT;
-    static int async_copy_enabled = -1;
-    if (async_copy_enabled < 0) {
+    static atomic_int async_copy_enabled = ATOMIC_VAR_INIT(-1);
+    int async_copy = atomic_load_explicit(&async_copy_enabled, memory_order_acquire);
+    if (async_copy < 0) {
         const char* setting=getenv("SPURS_JQ_ASYNC_COPY");
-        async_copy_enabled=!setting || setting[0]!='0';
+        async_copy = !setting || setting[0]!='0';
+        atomic_store_explicit(&async_copy_enabled, async_copy, memory_order_release);
     }
-    if (copy_push && async_copy_enabled) {
+    if (copy_push && async_copy) {
         u32 copied_ea = 0;
         if (ps3_guest_memory_alloc(jobSize, 128u, &copied_ea) == 0 && copied_ea) {
             t->owned_descriptor = copied_ea;
@@ -861,6 +892,12 @@ static s32 jq_push_slot_mode_flags(u32 slot, u32 job_ea, u32 jobSize,
     t->tag_serial = atomic_fetch_add_explicit(&s_tag_submitted[slot][tag], 1,
                                                memory_order_acq_rel) + 1u;
     jq_pending_insert(q, t);
+    if (PS3_FT_ON()) {
+        const uint64_t now = ps3_ft_now();
+        ps3_ft_span(PS3_FT_JQ_ADMIT, slot, t->id, tag, now, now);
+        ps3_ft_span(PS3_FT_JQ_SERIAL, slot, t->id, (u32)t->tag_serial, now, now);
+        ps3_ft_span(PS3_FT_JQ_FLAGS, slot, t->id, t->flags, now, now);
+    }
     q->submitCount++;
     atomic_fetch_add_explicit(&s_active_job_dispatches, 1, memory_order_acq_rel);
     if (id_ea) vm_write32(id_ea, t->id);
@@ -879,11 +916,14 @@ static s32 jq_push_slot_mode_flags(u32 slot, u32 job_ea, u32 jobSize,
         q->copy_sync_active=1;
         while (!jq_task_runnable(t)) jq_await();
     }
+    while (s_jq_spu0_busy) jq_await();
+    s_jq_spu0_busy = 1;
     jq_unlock();
     /* SPURS_JQ_WORKERS=0 retains synchronous execution. */
     spurs_job_set_spu_num(0);
     s32 result = jq_execute(t);
     jq_lock();
+    s_jq_spu0_busy = 0;
     jq_finish_locked(t, result);
     q->copy_sync_active = 0; jq_notify_producers();
     jq_unlock();
@@ -1107,8 +1147,8 @@ u64 _cellSpursJobQueuePort2CopyPushJobBody(
     const u32 tag = (u32)a4;
     const int slot = jq_port_slot(port_ea);
     if (getenv("GFD_QUEUE_TRACE") && slot != 1 && slot != 2) {
-        static unsigned seen = 0;
-        if (seen++ < 12)
+        static atomic_uint seen;
+        if (atomic_fetch_add_explicit(&seen, 1, memory_order_relaxed) < 12)
             fprintf(stderr, "[gfd-copy-push] port=%08X job=%08X size=%u slot=%d\n",
                     port_ea, job_ea, descriptor_size, slot);
         fprintf(stderr, "[gfd-copy-header] binary=%016llX size16=%04X\n",

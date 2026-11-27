@@ -539,6 +539,11 @@ if(PS3RECOMP_BUILD_TESTS)
         add_test(NAME spurs_jq_sync_copy COMMAND test_spurs_jq_copy_async --sync)
         set_tests_properties(spurs_jq_copy_async spurs_jq_shared_images
             spurs_jq_task_recycling spurs_jq_sync_copy PROPERTIES TIMEOUT 30)
+        add_executable(test_spurs_jq_spu0_lease libs/spurs/tests/test_jq_spu0_lease.c)
+        target_include_directories(test_spurs_jq_spu0_lease PRIVATE
+            include libs/spurs runtime/ppu runtime/spu)
+        add_test(NAME spurs_jq_spu0_lease COMMAND test_spurs_jq_spu0_lease)
+        set_tests_properties(spurs_jq_spu0_lease PROPERTIES TIMEOUT 30)
     endif()
     # sync_stress is written directly against the Win32 threading API
     # (WaitForMultipleObjects, joinable HANDLEs, Interlocked*, CRITICAL_SECTION).

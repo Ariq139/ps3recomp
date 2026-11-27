@@ -31,6 +31,7 @@ def extract(src, name):
 
 HARNESS = r'''
 #include <cstdint>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -38,12 +39,23 @@ static uint8_t mem[0x10000];
 static void vm_write32(uint32_t a, uint32_t v) { for (int i = 0; i < 4; i++) mem[a + i] = (uint8_t)(v >> (24 - 8 * i)); }
 static uint32_t vm_read32(uint32_t a) { return (uint32_t)mem[a] << 24 | mem[a + 1] << 16 | mem[a + 2] << 8 | mem[a + 3]; }
 struct ppu_context { uint64_t gpr[32]; uint64_t thread_id; };
+#define LWM_SIZE 0x18u
 #define LWM_OWNER 0x00
 #define LWM_ATTR  0x08
 #define LWM_RECUR 0x0C
 #define LWM_SELF(ctx) ((uint32_t)(ctx)->thread_id ? (uint32_t)(ctx)->thread_id : 0x7FFFFFFEu)
+/* This harness uses valid guest addresses and keeps optional tracing disabled. */
+static uint32_t lwm_guest_address_error(uint32_t, uint32_t) { return 0; }
+static void lwm_return_address_error(ppu_context* ctx, uint32_t, uint32_t error, const char*)
+{ ctx->gpr[3] = (uint64_t)(int64_t)(int32_t)error; }
+static int lwm_trace_for(uint32_t) { return 0; }
 /* The kernel-object side: one binary lock per lwmutex, held by `s_held`. */
-struct LwmSlot { int held; long holder; long long acq_us, acq_fences; unsigned long long acq_cpu_us; };
+struct LwmSlot {
+    int held;
+    std::atomic<long> holder{0};
+    std::atomic<long long> acq_us{0}, acq_fences{0};
+    std::atomic<unsigned long long> acq_cpu_us{0};
+};
 static LwmSlot s_slot;
 static struct LwmSlot* lwm_slot(uint32_t) { return &s_slot; }
 static void lwm_release(struct LwmSlot* sl) { sl->held = 0; }
@@ -51,7 +63,7 @@ static int lwm_try(struct LwmSlot* sl) { if (sl->held) return 0; sl->held = 1; r
 static int lwm_trace() { return 0; }
 static struct LwmSlot* lwm_find(uint32_t) { return nullptr; }
 static long long lwm_now_us() { return 0; }
-static long long g_gcm_ref_pub_count = 0;
+static long long gcm_ref_pub_count_snapshot(void) { return 0; }
 static unsigned long long ppu_thread_cpu_us(unsigned) { return 0; }
 %s
 %s

@@ -46,16 +46,12 @@ typedef struct {
 
 /* Snapshot the union of referenced guest ranges. Interleaved attributes share
  * one copy; descriptors retain their own stride, frequency and byte offset. */
-static int rsx_raw_vertex_prepare(const rsx_state* state, u32 mask,
-    const u32* vertices, u32 count, u32 capacity,
+static int rsx_raw_vertex_prepare_range(const rsx_state* state, u32 mask,
+    u32 lo, u32 hi, u32 count, u32 capacity,
     u32 (*resolve)(int, u32), rsx_raw_vertex_plan* plan)
 {
-    if (!state || !vertices || !count || !resolve || !plan) return 0;
-    u32 lo = vertices[0], hi = vertices[0], sources[16] = {0};
-    for (u32 v = 1; v < count; ++v) {
-        if (vertices[v] < lo) lo = vertices[v];
-        if (vertices[v] > hi) hi = vertices[v];
-    }
+    if (!state || !count || !resolve || !plan) return 0;
+    u32 sources[16] = {0};
     memset(plan, 0, sizeof(*plan));
     plan->header[0] = RSX_RAW_VERTEX_HEADER_BYTES;
     plan->header[1] = count;
@@ -137,6 +133,20 @@ static int rsx_raw_vertex_prepare(const rsx_state* state, u32 mask,
     return 1;
 }
 
+static int rsx_raw_vertex_prepare(const rsx_state* state, u32 mask,
+    const u32* vertices, u32 count, u32 capacity,
+    u32 (*resolve)(int, u32), rsx_raw_vertex_plan* plan)
+{
+    if (!state || !vertices || !count || !resolve || !plan) return 0;
+    u32 lo = vertices[0], hi = vertices[0];
+    for (u32 v = 1; v < count; ++v) {
+        if (vertices[v] < lo) lo = vertices[v];
+        if (vertices[v] > hi) hi = vertices[v];
+    }
+    return rsx_raw_vertex_prepare_range(state, mask, lo, hi, count, capacity,
+                                        resolve, plan);
+}
+
 static int rsx_raw_vertex_indexed_prepare(const rsx_state* state, u32 mask,
     u32* indices, u32 count, u32* dense, u32 capacity,
     u32 (*resolve)(int, u32), rsx_raw_vertex_plan* plan)
@@ -152,7 +162,7 @@ static int rsx_raw_vertex_indexed_prepare(const rsx_state* state, u32 mask,
     const u32 index_bytes = (count * 4u + 15u) & ~15u;
     if (index_bytes > capacity) return 0;
     for (u32 i = 0; i < dense_count; ++i) dense[i] = lo + i;
-    if (!rsx_raw_vertex_prepare(state, mask, dense, dense_count,
+    if (!rsx_raw_vertex_prepare_range(state, mask, lo, hi, dense_count,
             capacity - index_bytes, resolve, plan)) return 0;
     for (u32 i = 0; i < count; ++i) indices[i] -= lo;
     return 1;

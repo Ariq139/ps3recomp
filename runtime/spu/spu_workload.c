@@ -22,6 +22,7 @@
 #include <stdatomic.h>
 #include "ps3emu/log_first.h"
 #include "ps3emu/ps3_env_once.h"   /* ps3_env_once: each switch looked up once */
+#include "ps3emu/ps3_ftrace.h"
 #ifdef _WIN32
 #include <windows.h>
 #else
@@ -1804,6 +1805,11 @@ static int spu_workload_dispatch_job_internal(const uint8_t* image,
         job_abi = e->job_abi;
     }
     if (!fn) fn = find_raw_region(image, image_size, &image_id, &job_abi);
+    if (desc_copy && PS3_FT_ON()) {
+        const uint64_t now = ps3_ft_now();
+        ps3_ft_span(PS3_FT_JQ_IMAGE, ps3_ft_host_tid(), (uint32_t)image_id,
+                    job_ea, now, now);
+    }
     if (!fn) {
         if (profile_period)
             spu_job_profile_record(fp, image_size, -1, 0, 0,
