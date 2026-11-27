@@ -106,7 +106,7 @@ general-purpose recompiler and runtime, with two Persona 5 PS3 projects:
 | Project | PS3 build | CMake target | Window title |
 |---|---|---|---|
 | [p5_npeb02436](p5_npeb02436) | NPEB02436 release | `P5Npeb02436Recomp` | Persona 5 |
-| [p5_feb16](p5_feb16) | TEST00000 test build | `P5Feb16Recomp` | TEST00000 |
+| [p5_feb16](p5_feb16) | XRD664 test build | `P5Feb16Recomp` | XRD664 |
 
 These game ports are still in progress; their presence here is not a claim of
 full playability. The fork includes the projects' existing generated code, but
