@@ -27,6 +27,7 @@ def extract(src, name):
 
 HARNESS = r'''
 #include <cstdint>
+#include <atomic>
 #include <cstdio>
 #include <cassert>
 using HANDLE = void*;
@@ -84,7 +85,7 @@ def main():
         return
     src = (ROOT / "runtime/ppu/ppu_sysprx.cpp").read_text()
     start = src.index("#define LWM_HASH_BITS")
-    end = src.index("extern \"C\" { extern volatile long long g_gcm_ref_pub_count;", start)
+    end = src.index("extern \"C\" { long long gcm_ref_pub_count_snapshot(void);", start)
     code = HARNESS.replace("TABLE", src[start:end]).replace("FIND", extract(src, "lwm_find")).replace("SLOT", extract(src, "lwm_slot"))
     with tempfile.TemporaryDirectory() as tmp:
         c = Path(tmp) / "t.cpp"

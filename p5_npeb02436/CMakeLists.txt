@@ -229,6 +229,8 @@ add_executable(${PROJECT_NAME}
     ${LIBSRE_SPU_SOURCES}
 )
 
+set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME "Persona5")
+
 if(WIN32)
     get_property(_sdl2_runtime GLOBAL PROPERTY PS3RECOMP_SDL2_RUNTIME)
     if(_sdl2_runtime AND EXISTS "${_sdl2_runtime}")
@@ -307,6 +309,15 @@ if(P5_SPU_AVX2)
         set_property(SOURCE ${P5_VECTOR_SOURCE} APPEND PROPERTY
             COMPILE_OPTIONS ${P5_SPU_VECTOR_FLAGS})
     endforeach()
+endif()
+
+# Runtime opt-in caches are enabled for this P5 runner by default. Users can
+# override any setting by exporting its environment variable, including "0".
+option(P5_ENABLE_HOST_OPTIMIZATION_DEFAULTS
+    "Enable reviewed SPURS/RSX cache paths by default in the P5 runner" ON)
+if(P5_ENABLE_HOST_OPTIMIZATION_DEFAULTS)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE
+        PS3RECOMP_P5_HOST_OPTIMIZATION_DEFAULTS=1)
 endif()
 
 # Release loop selection is deliberately explicit: beta addresses and

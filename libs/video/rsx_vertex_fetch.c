@@ -152,8 +152,12 @@ static void rsx_fetch_attrib_internal(const rsx_state* st, int idx, u32 vi, floa
      * array drops translation in the vertex shader and produces clip-space w=0,
      * which causes the hardware clipper to discard every vertex. */
     if (n < 4) out[3] = 1.0f;
-    if (n < 3) out[2] = 0.0f;
-    if (n < 2) out[1] = 0.0f;
+    /* CMP stores one packed word, but that word expands to three components.
+     * Its size describes the packed input, not the decoded vector width. */
+    if (a->type != 6) {
+        if (n < 3) out[2] = 0.0f;
+        if (n < 2) out[1] = 0.0f;
+    }
 }
 
 void rsx_vertex_fetch_prepare(rsx_vertex_fetch_prepared* plan, const rsx_state* state)

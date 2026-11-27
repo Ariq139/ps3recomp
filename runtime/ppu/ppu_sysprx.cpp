@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <atomic>
 #include <mutex>
 #include <condition_variable>
 #include <chrono>
@@ -196,16 +197,15 @@ static void sys_lwmutex_create(ppu_context* ctx)
  * race-free). Keyed by guest address in an open-addressed table. */
 #define LWM_HASH_BITS 16u
 #define LWM_HASH (1u << LWM_HASH_BITS)
-/* All readers observe the slot's initial state before accepting its key,
- * including hosts without x86's total store ordering. The supported
- * Clang/GCC toolchains implement these operations on the existing long. */
-static inline long lwm_addr_load(const volatile long* addr)
+/* Publish a slot's address only after initializing its atomic state. Readers
+ * that observe the address with acquire ordering also observe that state. */
+static inline long lwm_addr_load(const std::atomic<long>* addr)
 {
-    return __atomic_load_n(addr, __ATOMIC_ACQUIRE);
+    return addr->load(std::memory_order_acquire);
 }
-static inline void lwm_addr_publish(volatile long* addr, long value)
+static inline void lwm_addr_publish(std::atomic<long>* addr, long value)
 {
-    __atomic_store_n(addr, value, __ATOMIC_RELEASE);
+    addr->store(value, std::memory_order_release);
 }
 static inline uint32_t lwm_hash_home(uint32_t addr)
 {
@@ -213,12 +213,28 @@ static inline uint32_t lwm_hash_home(uint32_t addr)
      * The old low-bit mask aliases addresses separated by 64 KiB. */
     return (uint32_t)(addr * 2654435761u) >> (32u - LWM_HASH_BITS);
 }
-struct LwmWaiter { struct LwmWaiter* next; HANDLE ev; volatile long granted; };
-static struct LwmSlot { volatile long addr; volatile long state;
-    volatile long qlock; struct LwmWaiter* qhead; struct LwmWaiter* qtail;   /* waiters, FIFO */
-    volatile long holder; volatile long long acq_us; volatile long long acq_fences;
-    volatile unsigned long long acq_cpu_us; } g_lwm[LWM_HASH];
-extern "C" { extern volatile long long g_gcm_ref_pub_count;    /* cellGcmSys.c */
+struct LwmWaiter {
+    struct LwmWaiter* next;
+    HANDLE ev;
+    /* Set by the unlocking host thread and observed outside qlock by this
+     * waiter's thread. The event is a wakeup mechanism, not a C++ memory
+     * synchronization primitive for this stack-resident flag. */
+    std::atomic<long> granted{0};
+};
+static struct LwmSlot {
+    std::atomic<long> addr{0};
+    std::atomic<long> state{0};
+    std::atomic<long> qlock{0};
+    struct LwmWaiter* qhead;
+    struct LwmWaiter* qtail;   /* waiters, FIFO */
+    /* Optional trace metadata can be sampled by a contender while the new
+     * owner stamps it, so keep those cross-thread observations race-free. */
+    std::atomic<long> holder{0};
+    std::atomic<long long> acq_us{0};
+    std::atomic<long long> acq_fences{0};
+    std::atomic<unsigned long long> acq_cpu_us{0};
+} g_lwm[LWM_HASH];
+extern "C" { long long gcm_ref_pub_count_snapshot(void);      /* cellGcmSys.c */
              unsigned long long ppu_thread_cpu_us(unsigned tid);   /* sys_ppu_thread.c */
              unsigned ppu_thread_prof_pc(unsigned tid); }
 static volatile long g_lwm_tab_lock = 0;
@@ -227,7 +243,23 @@ static volatile long g_lwm_tab_lock = 0;
  * contended block it logs who holds it and for how long; on unlock it flags a
  * long hold. The leaf holder (the one blocked on a non-lwmutex wait) is the
  * convoy root. Default OFF. */
-static int lwm_trace(void){ static int v=-1; if(v<0){const char*e=getenv("PS3_LWMUTEX_TRACE"); v=e?1:0;} return v; }
+static int lwm_trace(void)
+{
+    /* Function-local static initialization is thread-safe; the old lazy
+     * integer was raced when multiple PPU threads first touched a mutex. */
+    static const int enabled = []() { return getenv("PS3_LWMUTEX_TRACE") ? 1 : 0; }();
+    return enabled;
+}
+static inline int lwm_trace_for(uint32_t addr)
+{
+    if (!lwm_trace()) return 0;
+    /* Optional address filter keeps a focused trace from timing every mutex. */
+    static const uint32_t watched = []() {
+        const char* value = getenv("PS3_LWMUTEX_TRACE_ADDR");
+        return value ? (uint32_t)strtoul(value, nullptr, 0) : 0u;
+    }();
+    return !watched || watched == addr;
+}
 static long long lwm_now_us(void){
     static LARGE_INTEGER freq={0}; if(!freq.QuadPart) QueryPerformanceFrequency(&freq);
     LARGE_INTEGER c; QueryPerformanceCounter(&c);
@@ -267,7 +299,7 @@ static struct LwmSlot* lwm_slot(uint32_t addr)
             while (_InterlockedExchange(&g_lwm_tab_lock, 1)) YieldProcessor();
             struct LwmSlot* r = nullptr;
             if (lwm_addr_load(&g_lwm[idx].addr) == 0) {
-                g_lwm[idx].state = 0;                                   /* free */
+                g_lwm[idx].state.store(0, std::memory_order_relaxed);   /* free */
                 lwm_addr_publish(&g_lwm[idx].addr, (long)addr); /* publish AFTER init */
                 r = &g_lwm[idx];
             } else if ((uint32_t)lwm_addr_load(&g_lwm[idx].addr) == addr) {
@@ -298,9 +330,19 @@ static struct LwmSlot* lwm_slot(uint32_t addr)
  * touched under contention; each waiter sleeps on its own thread's event. */
 static inline void lwm_qlock(struct LwmSlot* sl)
 {
-    while (_InterlockedExchange(&sl->qlock, 1)) { while (sl->qlock) YieldProcessor(); }
+    for (;;) {
+        long expected = 0;
+        if (sl->qlock.compare_exchange_weak(expected, 1,
+                                           std::memory_order_acquire,
+                                           std::memory_order_relaxed))
+            return;
+        while (sl->qlock.load(std::memory_order_relaxed)) YieldProcessor();
+    }
 }
-static inline void lwm_qunlock(struct LwmSlot* sl) { _InterlockedExchange(&sl->qlock, 0); }
+static inline void lwm_qunlock(struct LwmSlot* sl)
+{
+    sl->qlock.store(0, std::memory_order_release);
+}
 /* Per-thread auto-reset wake event. Never closed: a releaser may still signal
  * it just after its waiter returned, so it must outlive any wait. */
 static HANDLE lwm_thread_event(void)
@@ -311,7 +353,10 @@ static HANDLE lwm_thread_event(void)
 }
 static int lwm_try(struct LwmSlot* sl)
 {
-    return InterlockedCompareExchange(&sl->state, 1, 0) == 0;
+    long expected = 0;
+    return sl->state.compare_exchange_strong(expected, 1,
+                                             std::memory_order_acquire,
+                                             std::memory_order_relaxed);
 }
 /* 1 = taken, 0 = timed out. timeout_us 0 waits forever. */
 static int lwm_acquire(struct LwmSlot* sl, uint64_t timeout_us)
@@ -319,26 +364,36 @@ static int lwm_acquire(struct LwmSlot* sl, uint64_t timeout_us)
     if (lwm_try(sl)) return 1;
     const long long deadline = timeout_us ? lwm_now_us() + (long long)timeout_us : 0;
     struct LwmWaiter w;
-    w.next = NULL; w.ev = lwm_thread_event(); w.granted = 0;
+    w.next = NULL; w.ev = lwm_thread_event();
+    w.granted.store(0, std::memory_order_relaxed);
     lwm_qlock(sl);
     for (;;) {                                  /* free now: take it; else mark queued */
-        const long s = sl->state;
+        const long s = sl->state.load(std::memory_order_relaxed);
         if (s == 0) {
-            if (InterlockedCompareExchange(&sl->state, 1, 0) == 0) { lwm_qunlock(sl); return 1; }
-        } else if (s == 2 || InterlockedCompareExchange(&sl->state, 2, 1) == 1) {
+            if (lwm_try(sl)) { lwm_qunlock(sl); return 1; }
+        } else if (s == 2) {
             break;
+        } else {
+            long expected = 1;
+            if (sl->state.compare_exchange_strong(expected, 2,
+                                                  std::memory_order_acq_rel,
+                                                  std::memory_order_relaxed))
+                break;
         }
     }
     if (sl->qtail) sl->qtail->next = &w; else sl->qhead = &w;
     sl->qtail = &w;
     lwm_qunlock(sl);
-    while (!w.granted) {
+    while (w.granted.load(std::memory_order_acquire) == 0) {
         DWORD ms = INFINITE;
         if (timeout_us) {
             const long long left = deadline - lwm_now_us();
             if (left <= 0) {
                 lwm_qlock(sl);
-                if (w.granted) { lwm_qunlock(sl); return 1; }   /* handed over at the deadline */
+                if (w.granted.load(std::memory_order_acquire)) {
+                    lwm_qunlock(sl);
+                    return 1;   /* handed over at the deadline */
+                }
                 struct LwmWaiter* prev = NULL;
                 for (struct LwmWaiter* p = sl->qhead; p; prev = p, p = p->next)
                     if (p == &w) {
@@ -346,31 +401,44 @@ static int lwm_acquire(struct LwmSlot* sl, uint64_t timeout_us)
                         if (sl->qtail == &w) sl->qtail = prev;
                         break;
                     }
-                if (!sl->qhead) InterlockedCompareExchange(&sl->state, 1, 2);   /* held, nobody queued */
+                if (!sl->qhead) {
+                    long expected = 2;
+                    sl->state.compare_exchange_strong(expected, 1,
+                                                      std::memory_order_release,
+                                                      std::memory_order_relaxed); /* held, nobody queued */
+                }
                 lwm_qunlock(sl);
                 return 0;
             }
             const unsigned long long m = ((unsigned long long)left + 999) / 1000;
             ms = m > 0xFFFFFFFEull ? 0xFFFFFFFEu : (DWORD)m;
         }
-        WaitForSingleObject(w.ev, ms);          /* a stale signal just loops */
+        if (WaitForSingleObject(w.ev, ms) == WAIT_FAILED)
+            Sleep(1);                           /* failed event: avoid a hot spin; grant is still polled */
     }
     return 1;
 }
 static void lwm_release(struct LwmSlot* sl)
 {
-    if (InterlockedCompareExchange(&sl->state, 0, 1) == 1) return;   /* nobody queued */
+    long expected = 1;
+    if (sl->state.compare_exchange_strong(expected, 0,
+                                          std::memory_order_release,
+                                          std::memory_order_relaxed))
+        return;   /* nobody queued */
     lwm_qlock(sl);
     struct LwmWaiter* w = sl->qhead;
     if (!w) {                                   /* free already, or every waiter gave up */
-        InterlockedExchange(&sl->state, 0);
+        sl->state.store(0, std::memory_order_release);
         lwm_qunlock(sl);
         return;
     }
     sl->qhead = w->next;
-    if (!sl->qhead) { sl->qtail = NULL; InterlockedExchange(&sl->state, 1); }
+    if (!sl->qhead) {
+        sl->qtail = NULL;
+        sl->state.store(1, std::memory_order_release);
+    }
     const HANDLE ev = w->ev;                    /* w lives on the waiter's stack: read it first */
-    w->granted = 1;
+    w->granted.store(1, std::memory_order_release);
     lwm_qunlock(sl);
     SetEvent(ev);
 }
@@ -413,6 +481,7 @@ static void sys_lwmutex_lock(ppu_context* ctx)
         lwm_return_address_error(ctx, lwm, error, "lock");
         return;
     }
+    const bool trace = lwm_trace_for(lwm);
     uint32_t self = LWM_SELF(ctx);
     /* lv2 ABI: r4 = timeout in microseconds, 0 = infinite. The real kernel
      * returns ETIMEDOUT (0x8001000B) when the wait expires; games rely on that
@@ -437,24 +506,31 @@ static void sys_lwmutex_lock(ppu_context* ctx)
             if (g_nd_inpump || _b <= 40) fprintf(stderr, "[LWM-BLOCK] tid=%llu lwm=0x%08X owner=%u recur=%u tmo=%lluus\n",
                 (unsigned long long)ctx->thread_id, lwm, vm_read32(lwm + LWM_OWNER), vm_read32(lwm + LWM_RECUR),
                 (unsigned long long)timeout_us);
-            if (lwm_trace()) { struct LwmSlot* sl = lwm_find(lwm);
-                long h = sl ? sl->holder : 0; long long held = (sl && h) ? (lwm_now_us() - sl->acq_us) : 0;
+            if (trace) { struct LwmSlot* sl = lwm_find(lwm);
+                long h = sl ? sl->holder.load(std::memory_order_relaxed) : 0;
+                const long long acquired_at = sl ? sl->acq_us.load(std::memory_order_relaxed) : 0;
+                long long held = (sl && h && acquired_at) ? (lwm_now_us() - acquired_at) : 0;
                 fprintf(stderr, "[LWM-CONVOY] tid=%llu BLOCKs lwm=0x%08X -> held-by-tid=%ld for %lldus (guest-owner=%u)\n",
                     (unsigned long long)ctx->thread_id, lwm, h, held, vm_read32(lwm + LWM_OWNER)); fflush(stderr); }
             ppu_thread_note_block(ctx->thread_id);
-            long long _blk_start = lwm_trace() ? lwm_now_us() : 0;
+            long long _blk_start = trace ? lwm_now_us() : 0;
             if (!lwm_acquire(sl0, timeout_us)) {   /* honor the timeout: ETIMEDOUT, no acquire */
-                if (lwm_trace()) fprintf(stderr, "[LWM-CONVOY] tid=%llu TIMED-OUT on lwm=0x%08X after %lldus (ETIMEDOUT, retry)\n",
+                if (trace) fprintf(stderr, "[LWM-CONVOY] tid=%llu TIMED-OUT on lwm=0x%08X after %lldus (ETIMEDOUT, retry)\n",
                     (unsigned long long)ctx->thread_id, lwm, lwm_now_us() - _blk_start);
                 ctx->gpr[3] = (uint64_t)(int64_t)(int32_t)0x8001000Bu;
                 return;
             }
-            if (lwm_trace()) fprintf(stderr, "[LWM-CONVOY] tid=%llu ACQUIRED lwm=0x%08X after waiting %lldus\n",
+            if (trace) fprintf(stderr, "[LWM-CONVOY] tid=%llu ACQUIRED lwm=0x%08X after waiting %lldus\n",
                 (unsigned long long)ctx->thread_id, lwm, lwm_now_us() - _blk_start);
             if (g_nd_inpump || _b <= 40) fprintf(stderr, "[LWM-GOT] tid=%llu lwm=0x%08X\n", (unsigned long long)ctx->thread_id, lwm);
         }
     }
-    if (lwm_trace()) { struct LwmSlot* sl = lwm_find(lwm); if (sl) { sl->holder = (long)self; sl->acq_us = lwm_now_us(); sl->acq_fences = g_gcm_ref_pub_count; sl->acq_cpu_us = ppu_thread_cpu_us(self); } }
+    if (trace) { struct LwmSlot* sl = lwm_find(lwm); if (sl) {
+        sl->holder.store((long)self, std::memory_order_relaxed);
+        sl->acq_us.store(lwm_now_us(), std::memory_order_relaxed);
+        sl->acq_fences.store(gcm_ref_pub_count_snapshot(), std::memory_order_relaxed);
+        sl->acq_cpu_us.store(ppu_thread_cpu_us(self), std::memory_order_relaxed);
+    } }
     vm_write32(lwm + LWM_OWNER, self);
     vm_write32(lwm + LWM_RECUR, 1);
     ctx->gpr[3] = 0;   // CELL_OK
@@ -468,7 +544,7 @@ static int sys_lwmutex_lock_fast(ppu_context* ctx)
     const uint32_t lwm = (uint32_t)ctx->gpr[3];
     if (lwm_guest_address_error(lwm, LWM_SIZE)) return 0;
     struct LwmSlot* sl = lwm_slot(lwm);
-    if (!sl || lwm_trace()) return 0;
+    if (!sl || lwm_trace_for(lwm)) return 0;
     const uint32_t self = LWM_SELF(ctx);
     if (vm_read32(lwm + LWM_OWNER) == self && vm_read32(lwm + LWM_RECUR) > 0)
         vm_write32(lwm + LWM_RECUR, vm_read32(lwm + LWM_RECUR) + 1);
@@ -483,7 +559,7 @@ static int sys_lwmutex_lock_fast(ppu_context* ctx)
 static void sys_lwmutex_unlock(ppu_context* ctx);
 static int sys_lwmutex_unlock_fast(ppu_context* ctx)
 {
-    if (lwm_trace()) return 0;
+    if (lwm_trace_for((uint32_t)ctx->gpr[3])) return 0;
     sys_lwmutex_unlock(ctx);
     return 1;
 }
@@ -495,6 +571,7 @@ static void sys_lwmutex_trylock(ppu_context* ctx)
         lwm_return_address_error(ctx, lwm, error, "trylock");
         return;
     }
+    const bool trace = lwm_trace_for(lwm);
     uint32_t self = LWM_SELF(ctx);
     struct LwmSlot* sl0 = lwm_slot(lwm);
     if (sl0) {
@@ -508,7 +585,12 @@ static void sys_lwmutex_trylock(ppu_context* ctx)
          * that poll with trylock and check for EBUSY treat it as a hard failure. */
         if (!lwm_try(sl0)) { ctx->gpr[3] = (uint64_t)(int64_t)(int32_t)0x8001000Au; return; }
     }
-    if (lwm_trace()) { struct LwmSlot* sl = lwm_find(lwm); if (sl) { sl->holder = (long)self; sl->acq_us = lwm_now_us(); sl->acq_fences = g_gcm_ref_pub_count; sl->acq_cpu_us = ppu_thread_cpu_us(self); } }
+    if (trace) { struct LwmSlot* sl = lwm_find(lwm); if (sl) {
+        sl->holder.store((long)self, std::memory_order_relaxed);
+        sl->acq_us.store(lwm_now_us(), std::memory_order_relaxed);
+        sl->acq_fences.store(gcm_ref_pub_count_snapshot(), std::memory_order_relaxed);
+        sl->acq_cpu_us.store(ppu_thread_cpu_us(self), std::memory_order_relaxed);
+    } }
     vm_write32(lwm + LWM_OWNER, self);
     vm_write32(lwm + LWM_RECUR, 1);
     ctx->gpr[3] = 0;
@@ -522,6 +604,7 @@ static void sys_lwmutex_unlock(ppu_context* ctx)
         lwm_return_address_error(ctx, lwm, error, "unlock");
         return;
     }
+    const bool trace = lwm_trace_for(lwm);
     uint32_t rc = vm_read32(lwm + LWM_RECUR);
     if (rc > 1) {                       /* recursive hold: count down, keep the lock */
         vm_write32(lwm + LWM_RECUR, rc - 1);
@@ -530,16 +613,20 @@ static void sys_lwmutex_unlock(ppu_context* ctx)
     }
     vm_write32(lwm + LWM_RECUR, 0);
     vm_write32(lwm + LWM_OWNER, 0);
-    if (lwm_trace()) { struct LwmSlot* sl = lwm_find(lwm);
-        if (sl && sl->holder) { long long held = lwm_now_us() - sl->acq_us;
+    if (trace) { struct LwmSlot* sl = lwm_find(lwm);
+        const long holder = sl ? sl->holder.load(std::memory_order_relaxed) : 0;
+        const long long acquired_at = sl ? sl->acq_us.load(std::memory_order_relaxed) : 0;
+        if (sl && holder) { long long held = acquired_at ? lwm_now_us() - acquired_at : 0;
             if (held > 100000) {
-                long long fences = g_gcm_ref_pub_count - sl->acq_fences;
-                unsigned long long cpu_now = ppu_thread_cpu_us((unsigned)sl->holder);
-                long long cpu_delta = (cpu_now && sl->acq_cpu_us) ? (long long)(cpu_now - sl->acq_cpu_us) : -1;
+                const long long acquired_fences = sl->acq_fences.load(std::memory_order_relaxed);
+                const unsigned long long acquired_cpu_us = sl->acq_cpu_us.load(std::memory_order_relaxed);
+                long long fences = gcm_ref_pub_count_snapshot() - acquired_fences;
+                unsigned long long cpu_now = ppu_thread_cpu_us((unsigned)holder);
+                long long cpu_delta = (cpu_now && acquired_cpu_us) ? (long long)(cpu_now - acquired_cpu_us) : -1;
                 fprintf(stderr, "[LWM-CONVOY] tid=%ld RELEASES lwm=0x%08X after holding %lldus (LONG HOLD) fences=%lld cpu=%lldus (%.0f%% cpu-bound) last-hle-from=0x%08X\n",
-                    sl->holder, lwm, held, fences, cpu_delta,
+                    holder, lwm, held, fences, cpu_delta,
                     cpu_delta >= 0 ? 100.0 * (double)cpu_delta / (double)held : -1.0,
-                    ppu_thread_prof_pc((unsigned)sl->holder));
+                    ppu_thread_prof_pc((unsigned)holder));
                 /* Name the critical section: the unlocker IS the holder, so its
                  * guest stack right now is the exit of the long-held region.
                  * Back-chain LR slots are 0 under the DRAIN/fragment model, so
@@ -556,7 +643,7 @@ static void sys_lwmutex_unlock(ppu_context* ctx)
                 }
                 fprintf(stderr, "%s\n", b); fflush(stderr);
             }
-            sl->holder = 0; } }
+            sl->holder.store(0, std::memory_order_relaxed); } }
     /* Any thread may release (unlike a CS) -- guest code hands lwmutex
      * ownership across threads. Unlocking a free mutex does nothing. */
     struct LwmSlot* sl0 = lwm_slot(lwm);
@@ -689,7 +776,7 @@ static void lwc_mutex_create_checked(ppu_context* ctx)
     }
     LwmSlot* sl = lwm_slot(ea);
     if (!sl) { lwc_result(ctx, CELL_EKRESOURCE); return; }
-    if (InterlockedCompareExchange(&sl->state, 0, 0)) {
+    if (sl->state.load(std::memory_order_acquire)) {
         lwc_result(ctx, CELL_EBUSY); return;
     }
     if (s_lwc_mutex_generation == UINT64_MAX) {
@@ -1054,7 +1141,8 @@ static void lwc_mutex_destroy_checked(ppu_context* ctx)
     if (live == s_lwc_live_mutexes.end() || !sl) {
         lwc_result(ctx, CELL_ESRCH); return;
     }
-    if (live->second.active || lwc_has_mutex_locked(ea) || InterlockedCompareExchange(&sl->state, 0, 0)) {
+    if (live->second.active || lwc_has_mutex_locked(ea) ||
+        sl->state.load(std::memory_order_acquire)) {
         lwc_result(ctx, CELL_EBUSY); return;
     }
     sys_lwmutex_destroy_counted(ctx);

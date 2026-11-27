@@ -58,6 +58,19 @@ enum ps3_ft_kind {
                               * complete; who = render passes, a = depth resolves | colour copies << 16,
                               * b = 1 present / 0 flush */
     PS3_FT_HLE         = 15, /* who = PPU tid, a = NID, b = guest lr: an HLE import call */
+    PS3_FT_JQ_ADMIT    = 16, /* who = queue slot, a = job id, b = tag */
+    PS3_FT_JQ_SERIAL   = 17, /* who = queue slot, a = job id, b = tag serial low 32 bits */
+    PS3_FT_JQ_EXEC     = 18, /* who = host tid, a = queue slot, b = job id */
+    PS3_FT_JQ_IMAGE    = 19, /* who = host tid, a = image id, b = guest descriptor */
+    PS3_FT_JQ_SYNC     = 20, /* who = host tid, a = queue slot, b = tag mask */
+    PS3_FT_JQ_TARGET   = 21, /* who = host tid, a = queue slot * 32 + tag, b = snapshot serial low 32 */
+    PS3_FT_FLIP_DONE   = 22, /* a = tick sequence, b = 1 when DONE was published */
+    PS3_FT_GPU_SIGNAL  = 23, /* a/b = low/high 32 bits of signalled fence */
+    PS3_FT_HLE_HOST    = 24, /* who = guest tid, a = host tid, b = NID */
+    PS3_FT_FLIP_SEQ_REQ = 25, /* who = host tid, a = request sequence, b = buffer */
+    PS3_FT_JQ_COMPLETE = 26, /* who = queue slot, a = job id, b = status */
+    PS3_FT_JQ_FLAGS    = 27, /* who = queue slot, a = job id, b = admission flags */
+    PS3_FT_RSX_IDLE    = 28, /* a = guest RSX method that requested idle */
 };
 
 /* selectany (a COMDAT "any": one definition kept, every object sees the same
@@ -101,19 +114,22 @@ static inline uint64_t ps3_ft_now(void)
 #endif
 }
 
+static inline uint32_t ps3_ft_host_tid(void)
+{
+#ifdef _WIN32
+    return (uint32_t)GetCurrentThreadId();
+#else
+    return 0; /* no portable numeric OS thread identifier */
+#endif
+}
+
 static inline void ps3_ft_dump(void)
 {
     ps3_ft_state* s = &g_ps3_ft;
     if (__atomic_exchange_n(&s->dumped, 1, __ATOMIC_ACQ_REL)) return;
     __atomic_store_n(&s->on, 3, __ATOMIC_RELEASE);
-    /* Close the open usleep runs; their threads may still be in them. */
-    for (uint32_t t = 0; t < PS3_FT_TIDS; t++) {
-        if (!s->us[t].n) continue;
-        const uint32_t i = __atomic_fetch_add(&s->n, 1, __ATOMIC_RELAXED);
-        if (i >= s->cap) break;
-        ps3_ft_rec r = { s->us[t].t0, s->us[t].t1, s->us[t].n, s->us[t].lr, t, PS3_FT_USLEEP };
-        s->buf[i] = r;
-    }
+    /* Open poll runs belong to live threads. Do not read their mutable slots
+     * here; periodic chunking limits the omitted tail to 10 ms per thread. */
     uint32_t n = __atomic_load_n(&s->n, __ATOMIC_ACQUIRE);
     if (n > s->cap) n = s->cap;
     FILE* f = fopen(s->path, "w");
@@ -122,14 +138,17 @@ static inline void ps3_ft_dump(void)
             (double)(s->start - s->base) / 1e3, (double)(s->end - s->base) / 1e3, n, s->dropped);
     for (uint32_t t = 0; t < PS3_FT_TIDS; t++)
         if (s->names[t][0]) fprintf(f, "T %u %s\n", t, s->names[t]);
+    uint32_t unpublished = 0;
     for (uint32_t i = 0; i < n; i++) {
         const ps3_ft_rec* r = &s->buf[i];
-        if (!r->kind) continue;   /* claimed but never filled: a writer raced the dump */
-        fprintf(f, "%u %u %x %x %.3f %.3f\n", r->kind, r->who, r->a, r->b,
+        const uint32_t kind = __atomic_load_n(&r->kind, __ATOMIC_ACQUIRE);
+        if (!kind) { ++unpublished; continue; } /* writer raced dump */
+        fprintf(f, "%u %u %x %x %.3f %.3f\n", kind, r->who, r->a, r->b,
                 (double)(r->t0 - s->base) / 1e3, (double)(r->t1 - s->base) / 1e3);
     }
     fclose(f);
-    fprintf(stderr, "[ftrace] wrote %u spans (%u dropped) to %s\n", n, s->dropped, s->path);
+    fprintf(stderr, "[ftrace] wrote %u spans (%u dropped, %u unpublished) to %s\n",
+            n - unpublished, s->dropped, unpublished, s->path);
 }
 
 static inline void ps3_ft_dump_atexit(void) { ps3_ft_dump(); }
@@ -195,8 +214,9 @@ static inline void ps3_ft_span(int kind, uint32_t who, uint32_t a, uint32_t b,
     if (t0 > s->end) { ps3_ft_dump(); return; }
     const uint32_t i = __atomic_fetch_add(&s->n, 1, __ATOMIC_RELAXED);
     if (i >= s->cap) { __atomic_fetch_add(&s->dropped, 1, __ATOMIC_RELAXED); return; }
-    ps3_ft_rec r = { t0, t1, a, b, who, (uint32_t)kind };
-    s->buf[i] = r;
+    ps3_ft_rec* r = &s->buf[i];
+    r->t0 = t0; r->t1 = t1; r->a = a; r->b = b; r->who = who;
+    __atomic_store_n(&r->kind, (uint32_t)kind, __ATOMIC_RELEASE);
 }
 
 /* sys_timer_usleep polls come tens of thousands a second; consecutive sleeps of
@@ -206,7 +226,8 @@ static inline void ps3_ft_usleep(uint32_t tid, uint32_t lr, uint64_t t0, uint64_
 {
     ps3_ft_state* s = &g_ps3_ft;
     if (tid >= PS3_FT_TIDS || __atomic_load_n(&s->on, __ATOMIC_RELAXED) != 2) return;
-    if (s->us[tid].n && s->us[tid].lr == lr && t0 - s->us[tid].t1 <= s->merge) {
+    if (s->us[tid].n && s->us[tid].lr == lr && t0 - s->us[tid].t1 <= s->merge &&
+        t1 - s->us[tid].t0 < 10000000ull) {
         s->us[tid].t1 = t1; s->us[tid].n++;
         return;
     }

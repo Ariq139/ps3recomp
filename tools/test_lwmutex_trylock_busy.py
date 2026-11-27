@@ -44,6 +44,7 @@ def define(src, name):
 
 HARNESS = r'''
 #include <cstdint>
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 static uint8_t mem[0x10000];
@@ -53,16 +54,27 @@ struct ppu_context { uint64_t gpr[32]; uint64_t thread_id; };
 %s
 %s
 %s
+#define LWM_SIZE 0x18u
+/* This harness uses valid guest addresses and keeps optional tracing disabled. */
+static uint32_t lwm_guest_address_error(uint32_t, uint32_t) { return 0; }
+static void lwm_return_address_error(ppu_context* ctx, uint32_t, uint32_t error, const char*)
+{ ctx->gpr[3] = (uint64_t)(int64_t)(int32_t)error; }
+static int lwm_trace_for(uint32_t) { return 0; }
 /* One host-side slot standing in for the semaphore table: lwm_try takes it
  * if free. Hold tracking (lwm_trace) stays off. */
-struct LwmSlot { long holder; long long acq_us; long long acq_fences; unsigned long long acq_cpu_us; int held; };
+struct LwmSlot {
+    std::atomic<long> holder{0};
+    std::atomic<long long> acq_us{0}, acq_fences{0};
+    std::atomic<unsigned long long> acq_cpu_us{0};
+    int held;
+};
 static LwmSlot s_slot;
 static struct LwmSlot* lwm_slot(uint32_t) { return &s_slot; }
 static struct LwmSlot* lwm_find(uint32_t) { return &s_slot; }
 static int lwm_try(struct LwmSlot* sl) { if (sl->held) return 0; sl->held = 1; return 1; }
 static int lwm_trace(void) { return 0; }
 static long long lwm_now_us(void) { return 0; }
-static volatile long long g_gcm_ref_pub_count = 0;
+static long long gcm_ref_pub_count_snapshot(void) { return 0; }
 static unsigned long long ppu_thread_cpu_us(unsigned) { return 0; }
 %s
 static int32_t ret(const ppu_context& c) { return (int32_t)(uint32_t)c.gpr[3]; }

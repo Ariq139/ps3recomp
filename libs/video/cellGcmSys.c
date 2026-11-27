@@ -1171,9 +1171,14 @@ void ppu_gcm_pump(void)
          * the flip handler, and hung with get == put on exactly that. Leave
          * the newer flip WAITING for the next tick. */
         FLIP_LOCK();
+        const u32 completed_seq = s_flip_tick_seq;
+        const int published = s_flip_tick_seq == s_flip_req_seq;
         if (s_flip_tick_seq == s_flip_req_seq)
             s_flip_status = CELL_GCM_FLIP_STATUS_DONE;
         FLIP_UNLOCK();
+        if (PS3_FT_ON()) { const uint64_t now = ps3_ft_now();
+            ps3_ft_span(PS3_FT_FLIP_DONE, ps3_ft_host_tid(), completed_seq,
+                        (u32)published, now, now); }
         if (s_flip_handler_opd && g_ps3_guest_caller) {
             ydkj_restore_handler_opd(s_flip_handler_opd, s_flip_handler_code);
             g_ps3_guest_caller(s_flip_handler_opd, 1, 0, 0, 0, 0, 0, 0, 0);
@@ -2429,10 +2434,21 @@ static void gcm_ref_push_at(u32 v, u32 getoff)
     ReleaseSRWLockExclusive(&s_ref_pub_lock);
 }
 
-/* Global fence-publication counter: lets the lwmutex convoy trace correlate a
+/* Fence-publication counter: lets the lwmutex convoy trace correlate a
  * long lock hold with the number of paced fence publications inside it (the
- * 200us pacing x hundreds of one-ahead fences = the ~156ms holds). */
-volatile long long g_gcm_ref_pub_count = 0;
+ * 200us pacing x hundreds of one-ahead fences = the ~156ms holds). All
+ * increments happen in gcm_ref_publish_one() while s_ref_pub_lock is held. */
+static long long s_gcm_ref_pub_count = 0;
+
+/* Cross-module diagnostic snapshot. Taking the existing lock keeps this
+ * optional reader race-free without adding an atomic RMW to the RSX hot path. */
+long long gcm_ref_pub_count_snapshot(void)
+{
+    AcquireSRWLockShared(&s_ref_pub_lock);
+    const long long count = s_gcm_ref_pub_count;
+    ReleaseSRWLockShared(&s_ref_pub_lock);
+    return count;
+}
 /* Absolute microseconds from the QPC hardware counter -- the SAME origin in every
  * translation unit, so two probes in different files can be compared directly.
  * That is the whole point: every wrong conclusion about this stall came from
@@ -2463,7 +2479,7 @@ static int gcm_ref_publish_one(void)
         fprintf(stderr, "[refpub] t=%lluus #%lu wrote 0x%08X -> readback 0x%08X\n", ps3_qpc_us(), _n,
                 s_ref_q[h % GCM_REF_QLEN], vm_read32(GCM_CONTROL_GUEST_ADDR + 8)); } }
     s_ref_qhead = h + 1;
-    g_gcm_ref_pub_count++;
+    s_gcm_ref_pub_count++;
     return 1;
 }
 
@@ -2734,9 +2750,7 @@ void cellGcm_rsx_process_fifo(void)
         s_gcm_perf.lock_us += acquired - begin;
         s_gcm_perf.drain_us += now - acquired;
         if (now - s_gcm_perf.since >= 1000000u) {
-            AcquireSRWLockExclusive(&s_ref_pub_lock);
-            const long long published = g_gcm_ref_pub_count;
-            ReleaseSRWLockExclusive(&s_ref_pub_lock);
+            const long long published = gcm_ref_pub_count_snapshot();
             fprintf(stderr, "[PERF-GCM] %u drains | walker %.3fms | lock %.3fms | sema %u polls %u waits %.3fms completed %.3fms active | refs %u queued %lld published\n",
                 s_gcm_perf.drains, s_gcm_perf.drain_us / 1000.0,
                 s_gcm_perf.lock_us / 1000.0, s_gcm_perf.sema_polls,
@@ -4199,11 +4213,13 @@ static s32 gcm_flip_request(u32 bufferId, int in_fifo)
     FLIP_LOCK();
     s_flip_status = CELL_GCM_FLIP_STATUS_WAITING;
     s_flip_req_seq++;
+    const u32 requested_seq = s_flip_req_seq;
     FLIP_UNLOCK();
     /* cellGcmGetLastFlipTime is stamped where the flip completes (the vblank
      * that shows it: the ticker paths above), not here at the request. */
     if (PS3_FT_ON()) { const uint64_t t = ps3_ft_now();
-                       ps3_ft_span(PS3_FT_FLIP_REQ, 0, bufferId, (uint32_t)in_fifo, t, t); }
+                       ps3_ft_span(PS3_FT_FLIP_REQ, 0, bufferId, (uint32_t)in_fifo, t, t);
+                       ps3_ft_span(PS3_FT_FLIP_SEQ_REQ, ps3_ft_host_tid(), requested_seq, bufferId, t, t); }
 
     /* Invoke via OPD resolution, not a raw call into guest code.
      *

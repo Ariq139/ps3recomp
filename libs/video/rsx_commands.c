@@ -23,6 +23,7 @@
 #include <string.h>
 #include "../../runtime/memory/vm.h"    /* VM_HLE_INJECT_BASE */
 #include "ps3emu/log_first.h"
+#include "ps3emu/ps3_ftrace.h"
 
 /* PS3RECOMP_RSX_RELEASE_LINE_WAKE=1 (opt-in): after an NV4097 semaphore
  * release into main memory (context DMA 0xFEED0001), call this hook with the
@@ -902,8 +903,10 @@ int rsx_process_method(rsx_state* state, u32 method, u32 data)
             (CELL_GCM_CONTEXT_DMA_NOTIFY_MAIN_0 & ~7u))
             return 0;
         const u32 index = (dma & 7u) ^ 7u;
+        const uint64_t ft0 = PS3_FT_ON() ? ps3_ft_now() : 0;
         if (s_backend && s_backend->wait_idle)
             s_backend->wait_idle(s_backend->userdata);
+        if (ft0) ps3_ft_span(PS3_FT_RSX_IDLE, ps3_ft_host_tid(), method, 0, ft0, ps3_ft_now());
         if (!cellGcmWriteNotifyData(index)) {
             static int _missing = 0;
             if (_missing++ < 8)
@@ -913,8 +916,10 @@ int rsx_process_method(rsx_state* state, u32 method, u32 data)
         return 0;
     }
     if (method == 0x0110) {
+        const uint64_t ft0 = PS3_FT_ON() ? ps3_ft_now() : 0;
         if (s_backend && s_backend->wait_idle)
             s_backend->wait_idle(s_backend->userdata);
+        if (ft0) ps3_ft_span(PS3_FT_RSX_IDLE, ps3_ft_host_tid(), method, 0, ft0, ps3_ft_now());
         return 0;
     }
     /* These methods are executed by the FIFO owner, which owns report RAM. */

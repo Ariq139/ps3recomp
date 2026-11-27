@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 project(P5Feb16Recomp
     VERSION 0.1.0
     LANGUAGES C CXX
-    DESCRIPTION "Recompiled PS3 game project (ps3recomp)"
+    DESCRIPTION "Persona 5 (Feb 26, 2016 prototype; XRD664 label, TEST00000 title ID)"
 )
 
 if(WIN32)
@@ -262,6 +262,8 @@ add_executable(${PROJECT_NAME}
     ${JUNE_EVENT_EDITOR_SOURCES}
 )
 
+set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME "xrd664")
+
 if(WIN32)
     get_property(_sdl2_runtime GLOBAL PROPERTY PS3RECOMP_SDL2_RUNTIME)
     if(_sdl2_runtime AND EXISTS "${_sdl2_runtime}")
@@ -272,9 +274,9 @@ if(WIN32)
     endif()
     add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${CMAKE_CURRENT_SOURCE_DIR}/assets/test00000.ico"
+            "${CMAKE_CURRENT_SOURCE_DIR}/assets/xrd664.ico"
             "$<TARGET_FILE_DIR:${PROJECT_NAME}>/ps3recomp.ico"
-        COMMENT "Staging TEST00000 window icon")
+        COMMENT "Staging XRD664 window icon")
 endif()
 
 include("${PS3RECOMP_DIR}/cmake/PS3RecompBootImage.cmake")
@@ -340,6 +342,15 @@ if(P5_SPU_AVX2)
         set_property(SOURCE ${P5_VECTOR_SOURCE} APPEND PROPERTY
             COMPILE_OPTIONS ${P5_SPU_VECTOR_FLAGS})
     endforeach()
+endif()
+
+# Runtime opt-in caches are enabled for this P5 runner by default. Users can
+# override any setting by exporting its environment variable, including "0".
+option(P5_ENABLE_HOST_OPTIMIZATION_DEFAULTS
+    "Enable reviewed SPURS/RSX cache paths by default in the P5 runner" ON)
+if(P5_ENABLE_HOST_OPTIMIZATION_DEFAULTS)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE
+        PS3RECOMP_P5_HOST_OPTIMIZATION_DEFAULTS=1)
 endif()
 
 # This image/function has been replayed against a real input/output capture.

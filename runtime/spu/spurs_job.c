@@ -370,7 +370,7 @@ static int spu_run_spurs_job_internal(spu_lifted_entry_fn entry, int image_id,
     ls32(ls, ctx_ls + JC_EA_JOB_DESCRIPTOR,     0);
     ls32(ls, ctx_ls + JC_EA_JOB_DESCRIPTOR + 4, job_ea);
 
-    { static int _n = 0;
+    { static SPURS_JOB_TLS int _n = 0;
       if (PS3_LOG_FIRST(_n, 4))
           fprintf(stderr,
               "[spurs-job] job 0x%08X: bin 0x%08X+%u -> LS 0 | io=0x%05X(%u, %u dma, %u used)"
@@ -383,7 +383,7 @@ static int spu_run_spurs_job_internal(spu_lifted_entry_fn entry, int image_id,
     /* SPURS_JOB_DESCDUMP=1: hexdump the guest job descriptor. The SPU derives
      * its DMA and atomic EAs from these words, so when a job spins on a
      * lock-line address that is not backed, this is what to read first. */
-    { static int _d = 0;
+    { static SPURS_JOB_TLS int _d = 0;
       if (trace_desc && PS3_LOG_FIRST(_d, 4)) {
           fprintf(stderr, "[spurs-job] desc @0x%08X (%u bytes):", job_ea, dsz);
           for (uint32_t o = 0; o < dsz && o < 128; o += 4) {
@@ -472,7 +472,7 @@ static int spu_run_spurs_job_internal(spu_lifted_entry_fn entry, int image_id,
     ctx->gpr[3]._u32[0] = ctx_ls;                     /* CellSpursJobContext2* */
     ctx->gpr[4]._u32[0] = desc_ls;                    /* CellSpursJob256*      */
 
-    { static int _n = 0;
+    { static SPURS_JOB_TLS int _n = 0;
       if (PS3_LOG_FIRST(_n, 4))
           fprintf(stderr, "[spurs-job] ENTER r3=%08X r4=%08X r1=%08X entry-fn image=%d\n",
                   ctx->gpr[3]._u32[0], ctx->gpr[4]._u32[0], ctx->gpr[1]._u32[0],
@@ -566,7 +566,7 @@ static int spu_run_spurs_job_internal(spu_lifted_entry_fn entry, int image_id,
     if (!desc_copy) memcpy(s_job_ls, ctx->ls, SPU_LS_SIZE);
     /* TEMP SPURS_JOB_LSWORD=<img>:<lsa>: after a job of that image, print the
      * LS word at lsa and every other LS offset holding the same value. */
-    { static int img = -2; static uint32_t lsa; static int n = 0;
+    { static SPURS_JOB_TLS int img = -2; static SPURS_JOB_TLS uint32_t lsa; static SPURS_JOB_TLS int n = 0;
       if (img == -2) { const char* e = ps3_env_once("SPURS_JOB_LSWORD"); img = -1;
           if (e) { img = atoi(e); const char* c = strchr(e, ':'); lsa = c ? (uint32_t)strtoul(c + 1, 0, 16) : 0; } }
       if (img == image_id && n++ < 3) {
@@ -589,8 +589,8 @@ static int spu_run_spurs_job_internal(spu_lifted_entry_fn entry, int image_id,
     g_spurs_job_mbox_valid = g_spurs_job_mbox || g_spurs_job_mbox_intr;
     { uint32_t _cb = job_g32(job_ea, desc_copy, job_desc_size, job_ea + 0x4C);
       g_spurs_job_cmd = _cb ? (g32(_cb) >> 16) : 0; }
-    { static int s_t = -1; if (s_t < 0) s_t = ps3_env_once("SPURS_JOB_MBOX") ? 1 : 0;
-      static int n = 0;
+    { static SPURS_JOB_TLS int s_t = -1; if (s_t < 0) s_t = ps3_env_once("SPURS_JOB_MBOX") ? 1 : 0;
+      static SPURS_JOB_TLS int n = 0;
       if (s_t && PS3_LOG_FIRST(n, 16) && g_spurs_job_mbox_valid)
           fprintf(stderr, "[spurs-job] job 0x%08X posted mbox=0x%08X intr=0x%08X\n",
                   job_ea, g_spurs_job_mbox, g_spurs_job_mbox_intr); }

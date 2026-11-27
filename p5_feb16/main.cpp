@@ -39,6 +39,7 @@
  * names over pthreads and mmap, so the call sites below are written once. */
 #include "win32_compat.h"
 #include "../runtime/platform/ps3_frame_pacing.h"
+#include "../p5_host_optimization_defaults.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -223,7 +224,7 @@ static DWORD WINAPI guest_vblank_clock(LPVOID)
 static DWORD WINAPI frame_clock(LPVOID)
 {
     const char* title = getenv("PS3_TITLE");
-    if (!title || !*title) title = "TEST00000";
+    if (!title || !*title) title = "XRD664";
 
     const uint32_t window_width = window_dimension_from_environment("RSX_W", WINDOW_WIDTH, 320, 7680);
     const uint32_t window_height = window_dimension_from_environment("RSX_H", WINDOW_HEIGHT, 240, 4320);
@@ -428,6 +429,7 @@ static uint32_t ppu_load_embedded_elf(void)
 
 int main(int argc, char** argv)
 {
+    p5_set_host_optimization_defaults();
     const char* elf_path = (argc >= 2) ? argv[1] : NULL;
     if (!elf_path || !*elf_path) elf_path = getenv("PS3_PPU_ELF");
 #ifdef PS3RECOMP_DEFAULT_PPU_ELF

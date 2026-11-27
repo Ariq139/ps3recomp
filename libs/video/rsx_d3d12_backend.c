@@ -66,6 +66,7 @@ static const GUID s_iid_d3d12_pipeline_library =
 
 #include "rsx_d3d12_device.h"
 #include "rsx_d3d12_shadow_border.h"
+#include "ps3emu/ps3_ftrace.h"
 
 /* Link libraries */
 #pragma comment(lib, "d3d12.lib")
@@ -1974,14 +1975,20 @@ static int wait_for_fence_value_impl(u64 target, const char* context, u32* parke
 static int wait_for_fence_value(u64 target, const char* context)
 {
     u32 parked = 0;
-    if (!perf_on()) return wait_for_fence_value_impl(target, context, &parked);
+    const uint64_t ft0 = PS3_FT_ON() ? ps3_ft_now() : 0;
+    if (!perf_on() && !ft0) return wait_for_fence_value_impl(target, context, &parked);
     const int reason = !strcmp(context, "submission-slot") ? FENCE_SLOT :
                        !strcmp(context, "backbuffer-retire") ? FENCE_BACKBUFFER : FENCE_IDLE;
-    const double start = perf_now();
+    const int profiling = perf_on();
+    const double start = profiling ? perf_now() : 0;
     const int result = wait_for_fence_value_impl(target, context, &parked);
-    s_perf_fence_reason[reason].seconds += perf_now() - start;
-    s_perf_fence_reason[reason].calls++;
-    s_perf_fence_reason[reason].parks += parked;
+    if (profiling) {
+        s_perf_fence_reason[reason].seconds += perf_now() - start;
+        s_perf_fence_reason[reason].calls++;
+        s_perf_fence_reason[reason].parks += parked;
+    }
+    if (ft0 && parked) ps3_ft_span(PS3_FT_GPU_WAIT, ps3_ft_host_tid(),
+                                   (u32)reason, (u32)target, ft0, ps3_ft_now());
     return result;
 }
 
@@ -2004,6 +2011,9 @@ static void d3d12_signal_submission(u32 slot)
         return; /* unreachable */
     }
     s_d3d.last_fence_value = value;
+    if (PS3_FT_ON()) { const uint64_t now = ps3_ft_now();
+        ps3_ft_span(PS3_FT_GPU_SIGNAL, ps3_ft_host_tid(), (u32)value,
+                    (u32)(value >> 32), now, now); }
     s_d3d.fence_values[s_d3d.frame_index] = value;
     if (slot < FRAME_COUNT)
         s_d3d.submission_fence_values[slot] = value;
@@ -9198,7 +9208,9 @@ skip_dump_consider: ;
 
     /* Present */
     if (s_present_this_frame) {
+        const uint64_t ft0 = PS3_FT_ON() ? ps3_ft_now() : 0;
         const HRESULT hr = s_d3d.swap_chain->lpVtbl->Present(s_d3d.swap_chain, 1, 0);
+        if (ft0) ps3_ft_span(PS3_FT_PRESENT, ps3_ft_host_tid(), 0, 0, ft0, ps3_ft_now());
         if (FAILED(hr)) {
             fprintf(stderr, "[D3D12] Present failed (0x%08lX)\n", (long)hr);
             d3d12_sync_stop("Present", s_d3d.last_fence_value, hr);
@@ -9333,6 +9345,7 @@ static void d3d12_wait_idle(void* ud)
     (void)ud;
     if (!s_d3d.initialized || !s_d3d.cmd_queue || !s_d3d.fence)
         return;
+    const uint64_t ft0 = PS3_FT_ON() ? ps3_ft_now() : 0;
 
     /* RSX draws are buffered in CPU-side records until a present boundary.
      * Submit that queue without presenting, then wait on the D3D12 fence so
@@ -9344,6 +9357,8 @@ static void d3d12_wait_idle(void* ud)
         s_present_this_frame = saved_present;
     }
     wait_for_gpu();
+    if (ft0) ps3_ft_span(PS3_FT_GPU_WAIT, ps3_ft_host_tid(), 3u,
+                         0, ft0, ps3_ft_now());
 }
 
 static int d3d12_init(void* ud, u32 width, u32 height)

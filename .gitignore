@@ -53,7 +53,8 @@ dist/
 venv/
 env/
 
-# Keep the two runnable title projects trackable: p5_feb16 (TEST00000) and
+# Keep the two runnable title projects trackable: p5_feb16 (TEST00000 ID,
+# XRD664 label) and
 # p5_npeb02436 (NPEB02436). Build trees and executables remain ignored above.
 # Raw PPU/SPU translation units emitted directly from a title EBOOT or its
 # embedded SPU ELF images stay local; surrounding files remain trackable.

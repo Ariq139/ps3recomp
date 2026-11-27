@@ -54,6 +54,11 @@ int main(void)
         assert(rsx_raw_vertex_indexed_prepare(&state,1,expanded,n,dense,sizeof(output),resolve,&plan));
         assert(plan.header[1]==hi-lo+1u);
         for(u32 i=0;i<n;++i) assert(dense[expanded[i]]==original[i]);
+        rsx_raw_vertex_plan reference;
+        const u32 index_bytes=(n*4u+15u)&~15u;
+        assert(rsx_raw_vertex_prepare(&state,1,dense,hi-lo+1u,
+                                     sizeof(output)-index_bytes,resolve,&reference));
+        assert(!memcmp(&plan,&reference,sizeof(plan)));
         memcpy(expanded,original,n*4u);
         assert(!rsx_raw_vertex_indexed_prepare(&state,1,expanded,n,dense,32,resolve,&plan));
         assert(!memcmp(expanded,original,n*4u));
